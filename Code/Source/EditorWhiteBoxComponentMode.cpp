@@ -57,6 +57,7 @@ namespace WhiteBox
     // helper function to return what modifier keys move us to restore mode
     static bool RestoreModifier(AzToolsFramework::ViewportInteraction::KeyboardModifiers modifiers)
     {
+        // AZ_Printf("DrawShapeMode", "ENTER EDGE RESTORE MODE");
         return modifiers.Shift() && modifiers.Ctrl();
     }
 
@@ -393,7 +394,7 @@ namespace WhiteBox
         m_intersectionAndRenderData = {};
         m_currentSubMode = SubMode::Default;
         SetViewportUiClusterActiveButton(m_modeSelectionClusterId, m_defaultModeButtonId);
-
+        // AZ_Printf("DefaultMode", "ENTER DEFAULT MODE");
         // Change sub-mode to default at the next frame to go after the automated mode switching in ComponentModeActionHandler.
         QTimer::singleShot(
             0,
@@ -416,7 +417,7 @@ namespace WhiteBox
         m_intersectionAndRenderData = {};
         m_currentSubMode = SubMode::EdgeRestore;
         SetViewportUiClusterActiveButton(m_modeSelectionClusterId, m_edgeRestoreModeButtonId);
-
+        // AZ_Printf("EdgeRestoreMode", "ENTER EDGE RESTORE MODE");
         // Set the Action Context Mode in the Action Manager, if enabled.
         auto actionManagerInterface = AZ::Interface<AzToolsFramework::ActionManagerInterface>::Get();
         if (actionManagerInterface)
@@ -431,7 +432,7 @@ namespace WhiteBox
         m_intersectionAndRenderData = {};
         m_currentSubMode = SubMode::Transform;
         SetViewportUiClusterActiveButton(m_modeSelectionClusterId, m_transformModeButtonId);
-
+        // AZ_Printf("TransformMode", "ENTER TRANSFORM MODE");
         // Set the Action Context Mode in the Action Manager, if enabled.
         auto actionManagerInterface = AZ::Interface<AzToolsFramework::ActionManagerInterface>::Get();
         if (actionManagerInterface)
@@ -446,7 +447,6 @@ namespace WhiteBox
         AZ_PROFILE_FUNCTION(AzToolsFramework);
     
         const auto modifiers = m_keyboardModifierQueryFn();
-    
         // handle mode switch
         {
             auto* defaultMode = AZStd::get_if<AZStd::unique_ptr<DefaultMode>>(&m_modes);
@@ -457,6 +457,8 @@ namespace WhiteBox
             {
                 if (defaultMode != nullptr)
                 {
+                    // AZ_Printf("DisplayEntityViewport", "ENTER EDGE RESTORE MODE FROM EditorWhiteBoxComponentMode::DisplayEntityViewport");
+
                     EnterEdgeRestoreMode();
                 }
     
@@ -668,6 +670,7 @@ namespace WhiteBox
                 }
                 else if (buttonId == m_edgeRestoreModeButtonId)
                 {
+                    // AZ_Printf("EdgeRestoreMode", "ENTER EDGE RESTORE MODE FROM CreateSubModeSelectionCluster");
                     EnterEdgeRestoreMode();
                 }
                 else if (buttonId == m_transformModeButtonId)
