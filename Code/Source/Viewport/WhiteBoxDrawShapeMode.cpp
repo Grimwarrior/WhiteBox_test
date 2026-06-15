@@ -23,12 +23,17 @@
 #include <WhiteBox/EditorWhiteBoxComponentBus.h>
 #include <WhiteBox/WhiteBoxToolApi.h>
 #include <AzToolsFramework/API/ToolsApplicationAPI.h>
+#include <AzToolsFramework/ComponentMode/EditorComponentModeBus.h>
 
 #include <AzFramework/Render/GeometryIntersectionStructures.h>
 #include <AzFramework/Visibility/EntityVisibilityBoundsUnionSystem.h>
 #include <Atom/RPI.Public/ViewportContext.h>
 #include <AzFramework/Render/Intersector.h>           // IntersectorBus / IntersectorInterface
 #include <AzFramework/Render/GeometryIntersectionStructures.h>  // RayRequest / RayResult
+#include <AzToolsFramework/ActionManager/Action/ActionManagerInterface.h>
+#include <AzToolsFramework/ActionManager/HotKey/HotKeyManagerInterface.h>
+#include <AzToolsFramework/API/ComponentModeCollectionInterface.h>
+#include <AzToolsFramework/Editor/ActionManagerIdentifiers/EditorContextIdentifiers.h>
 
 
 namespace WhiteBox
@@ -51,10 +56,13 @@ namespace WhiteBox
     {
         // Connect to the global viewport rendering bus
         AzFramework::ViewportDebugDisplayEventBus::Handler::BusConnect(AzToolsFramework::GetEntityContextId());
+        // Receive numeric-depth keyboard actions dispatched to this component.
+        EditorWhiteBoxDrawShapeModeRequestBus::Handler::BusConnect(entityComponentIdPair);
     }
     DrawShapeMode::~DrawShapeMode()
     {
         // Disconnect from the bus when mode is exited
+        EditorWhiteBoxDrawShapeModeRequestBus::Handler::BusDisconnect();
         AzFramework::ViewportDebugDisplayEventBus::Handler::BusDisconnect();
     }
     AZ::Vector3 DrawShapeMode::RaycastToSurface(
@@ -203,6 +211,10 @@ namespace WhiteBox
     {
         using MouseEvent = AzToolsFramework::ViewportInteraction::MouseEvent;
 
+        // Cache so a keyboard-driven numeric confirm (which carries no transform)
+        // can commit using the current frame's transform.
+        m_worldFromLocal = worldFromLocal;
+
         const auto& mi     = mouseInteraction.m_mouseInteraction;
         const bool  leftDown  = mi.m_mouseButtons.Left() && mouseInteraction.m_mouseEvent == MouseEvent::Down;
         const bool  leftUp    = mi.m_mouseButtons.Left() && mouseInteraction.m_mouseEvent == MouseEvent::Up;
@@ -274,12 +286,19 @@ namespace WhiteBox
         {
             if (moved)
             {
-                const AZ::Vector3 baseCenterWorld = (m_worldP0 + m_worldP1) * 0.5f;
-                m_height = RaycastToHeightPlane(mi, worldFromLocal, baseCenterWorld);
+                // Once the depth is being typed, the mouse no longer drives it.
+                if (!m_numericInput.IsActive())
+                {
+                    const AZ::Vector3 baseCenterWorld = (m_worldP0 + m_worldP1) * 0.5f;
+                    m_height = RaycastToHeightPlane(mi, worldFromLocal, baseCenterWorld);
+                }
                 return true;
             }
             if (leftDown)
             {
+                // A click also commits (using the typed depth if numeric is active).
+                m_numericInput.Reset();
+
                 if (AZStd::abs(m_height) < cl_whiteBoxMouseClickDeltaThreshold)
                 {
                     Cancel();
@@ -288,63 +307,9 @@ namespace WhiteBox
 
                 if (m_carveMode)
                 {
-                    // Map drawn rectangle size -> inset fraction, using the hit face's size.
-                    float insetScale = 0.5f;       // fallback
-                    float wallThickness = 1.0f;    // fallback
-
-                    WhiteBoxMesh* wb = nullptr;
-                    EditorWhiteBoxComponentRequestBus::EventResult(
-                        wb, m_entityComponentIdPair, &EditorWhiteBoxComponentRequests::GetWhiteBoxMesh);
-
-                    if (wb)
-                    {
-                        // Find the polygon we're carving (closest face to P0 in local space).
-                        const AZ::Transform localFromWorld = worldFromLocal.GetInverse();
-                        const AZ::Vector3 p0Local = localFromWorld.TransformPoint(m_worldP0);
-
-                        Api::FaceHandle bestFace;
-                        float faceBest = AZStd::numeric_limits<float>::max();
-                        for (const Api::FaceHandle fh : Api::MeshFaceHandles(*wb))
-                        {
-                            const float d = (Api::FaceMidpoint(*wb, fh) - p0Local).GetLengthSq();
-                            if (d < faceBest) { faceBest = d; bestFace = fh; }
-                        }
-
-                        if (bestFace.IsValid())
-                        {
-                            const Api::PolygonHandle target = Api::FacePolygonHandle(*wb, bestFace);
-                            if (!target.m_faceHandles.empty())
-                            {
-                                const Api::VertexHandles border =
-                                    Api::PolygonBorderVertexHandlesFlattened(*wb, target);
-                                AZ::Aabb faceAabb = AZ::Aabb::CreateNull();
-                                for (const auto vh : border)
-                                {
-                                    faceAabb.AddPoint(Api::VertexPosition(*wb, vh));
-                                }
-                                const float faceSize = faceAabb.GetExtents().GetMaxElement();
-                                const float drawnSize = (m_worldP1 - m_worldP0).GetLength();
-                                const float holeFraction =
-                                        AZ::GetClamp(drawnSize / AZ::GetMax(faceSize, 0.001f), 0.05f, 0.9f);
-                                const float insetScale = holeFraction - 1.0f;
-
-                                // Estimate wall thickness: smallest AABB extent of the whole mesh,
-                                // a decent proxy for "how thick is this wall".
-                                AZ::Aabb meshAabb = AZ::Aabb::CreateNull();
-                                for (const auto& p : Api::MeshVertexPositions(*wb))
-                                {
-                                    meshAabb.AddPoint(p);
-                                }
-                                wallThickness = meshAabb.GetExtents().GetMinElement();
-                            }
-                        }
-                    }
-
-                    // Open hole if the pull depth reaches/exceeds the wall thickness.
-                    const bool openHole = AZStd::abs(m_height) >= wallThickness * 0.95f;
-
-                    CarveAtPolygon(mi, worldFromLocal, intersectionData,
-                                insetScale, AZStd::abs(m_height), openHole);
+                    // Ctrl + draw = CSG boolean. Pull direction decides:
+                    // pull in -> carve (subtract), pull out -> add (union).
+                    BooleanAtPolygon(worldFromLocal, m_height);
                 }
                 else
                 {
@@ -463,16 +428,15 @@ namespace WhiteBox
             m_entityComponentIdPair.GetEntityId());
     }
 
-    // Carve a hole/doorway through the polygon under the cursor.
-    // insetScale: 0..1, fraction of the face kept around the hole (e.g. 0.6 leaves a 60%-size frame).
-    // depth: how far to push through; use >= wall thickness to punch all the way through.
-    void DrawShapeMode::CarveAtPolygon(
-        const AzToolsFramework::ViewportInteraction::MouseInteraction& mouseInteraction,
-        const AZ::Transform& worldFromLocal,
-        const IntersectionAndRenderData& intersectionData,
-        float insetScale,
-        float depth,
-        bool openHole)   // true = remove caps for a through-hole; false = closed pocket
+    // Apply a CSG boolean using a cutter prism built from the drawn footprint
+    // (m_worldP0..m_worldP1) extruded along the surface normal by the pull depth.
+    // The PULL DIRECTION picks the operation:
+    //   pull INTO the surface (height < 0) -> Subtraction (carve a pocket/hole)
+    //   pull OUT of the surface (height > 0) -> Union       (add a boss/extrusion)
+    // Uses Manifold rather than the legacy inset/extrude/remove-cap trick, so a
+    // carve becomes a closed pocket when shallow and a clean through-hole when it
+    // exceeds the wall thickness - automatically, no special-casing.
+    void DrawShapeMode::BooleanAtPolygon(const AZ::Transform& worldFromLocal, float height)
     {
         WhiteBoxMesh* whiteBox = nullptr;
         EditorWhiteBoxComponentRequestBus::EventResult(
@@ -482,65 +446,94 @@ namespace WhiteBox
         {
             return;
         }
-    
-        // Find polygon under cursor (local space).
-        const AZ::Vector3 rayOriginWorld = mouseInteraction.m_mousePick.m_rayOrigin;
-        const AZ::Vector3 rayDirWorld    = mouseInteraction.m_mousePick.m_rayDirection;
+
+        // Surface basis: up = outward normal of the face the user drew on.
+        AZ::Vector3 right, fwd, up;
+        BasisFromNormal(m_surfaceNormal, right, fwd, up);
+
+        // Drawn rectangle in the surface plane.
+        const AZ::Vector3 drag = m_worldP1 - m_worldP0;
+        AZ::Vector3 uAxis = right * drag.Dot(right);
+        AZ::Vector3 vAxis = fwd   * drag.Dot(fwd);
+
+        const float depth = AZStd::abs(height);
+        if (uAxis.GetLength() < 0.0001f || vAxis.GetLength() < 0.0001f || depth < 0.0001f)
+        {
+            return;
+        }
+
+        // Force CCW winding about +up so the cutter is wound outward consistently
+        // (same convention as CommitBox).
+        if (uAxis.Cross(vAxis).Dot(up) < 0.f)
+        {
+            AZStd::swap(uAxis, vAxis);
+        }
+
+        // Pull direction decides the operation.
+        const bool carve = (height < 0.f);
+        const Api::BooleanOperation operation =
+            carve ? Api::BooleanOperation::Subtraction : Api::BooleanOperation::Union;
+
+        // Either way the cutter must overlap the surface slightly (never sit
+        // exactly coplanar with the target face - coplanar faces make the boolean
+        // fragile) and overshoot the far end so the cut/weld is clean.
+        //   carve: from just OUTSIDE the surface (+eps) inward to -(depth+eps)
+        //   add:   from just INSIDE the surface (-eps) outward to +(depth+eps)
+        // In both cases corners 0-3 stay the +up cap, so the winding (and thus
+        // the outward orientation Manifold needs) matches CommitBox.
+        const float surfaceSpan = AZ::GetMax(uAxis.GetLength(), vAxis.GetLength());
+        const float eps = AZ::GetMax(surfaceSpan * 0.02f, 0.001f);
+
+        const AZ::Vector3 baseCorners[4] = {
+            m_worldP0,
+            m_worldP0 + uAxis,
+            m_worldP0 + uAxis + vAxis,
+            m_worldP0 + vAxis
+        };
+        const float topUp = carve ?  eps            : (depth + eps);  // +up cap offset
+        const float botUp = carve ? -(depth + eps)  : -eps;           // -up cap offset
+        const AZ::Vector3 outOff = up * topUp;
+        const AZ::Vector3 inOff  = up * botUp;
+
+        // 8 cutter corners: 0-3 outer (+up) cap, 4-7 inner (-up) cap.
+        AZ::Vector3 worldCorners[8];
+        for (int i = 0; i < 4; ++i)
+        {
+            worldCorners[i]     = baseCorners[i] + outOff;
+            worldCorners[i + 4] = baseCorners[i] + inOff;
+        }
+
+        // Build the cutter as its own watertight white box mesh, expressed in the
+        // TARGET's local space so we can subtract with an identity transform.
+        Api::WhiteBoxMeshPtr cutter = Api::CreateWhiteBoxMesh();
         const AZ::Transform localFromWorld = worldFromLocal.GetInverse();
-        const AZ::Vector3 localRayOrigin = localFromWorld.TransformPoint(rayOriginWorld);
-        const AZ::Vector3 localRayDir =
-            AzToolsFramework::TransformDirectionNoScaling(localFromWorld, rayDirWorld);
-    
-        float bestDist = AZStd::numeric_limits<float>::max();
-        AZ::Vector3 hitLocal = AZ::Vector3::CreateZero();
-        bool found = false;
-        for (const auto& pb : intersectionData.m_whiteBoxIntersectionData.m_polygonBounds)
+        Api::VertexHandle v[8];
+        for (int i = 0; i < 8; ++i)
         {
-            float dist = AZStd::numeric_limits<float>::max();
-            int64_t triIdx = 0;
-            if (IntersectRayPolygon(pb.m_bound, localRayOrigin, localRayDir, dist, triIdx))
-            {
-                if (dist < bestDist) { bestDist = dist; hitLocal = localRayOrigin + localRayDir * dist; found = true; }
-            }
+            v[i] = Api::AddVertex(*cutter, localFromWorld.TransformPoint(worldCorners[i]));
         }
-        if (!found) { return; }
-    
-        // Resolve the polygon from the closest face to the hit point.
-        Api::FaceHandle bestFace;
-        float faceBest = AZStd::numeric_limits<float>::max();
-        for (const Api::FaceHandle fh : Api::MeshFaceHandles(*whiteBox))
+        // Outward winding (identical ordering to CommitBox: 0-3 is the +up cap).
+        Api::AddQuadPolygon(*cutter, v[0], v[1], v[2], v[3]); // +up cap
+        Api::AddQuadPolygon(*cutter, v[7], v[6], v[5], v[4]); // -up cap
+        Api::AddQuadPolygon(*cutter, v[4], v[5], v[1], v[0]); // sides
+        Api::AddQuadPolygon(*cutter, v[5], v[6], v[2], v[1]);
+        Api::AddQuadPolygon(*cutter, v[6], v[7], v[3], v[2]);
+        Api::AddQuadPolygon(*cutter, v[7], v[4], v[0], v[3]);
+        Api::CalculateNormals(*cutter);
+
+        AzToolsFramework::ScopedUndoBatch undoBatch(carve ? "Carve White Box" : "Add White Box");
+
+        // Apply the boolean (identity transform: the cutter is already built in
+        // the target's local space).
+        if (!Api::MeshBoolean(*whiteBox, *cutter, AZ::Transform::CreateIdentity(), operation))
         {
-            const float d = (Api::FaceMidpoint(*whiteBox, fh) - hitLocal).GetLengthSq();
-            if (d < faceBest) { faceBest = d; bestFace = fh; }
+            // No intersection / empty result - nothing to do.
+            return;
         }
-        if (!bestFace.IsValid()) { return; }
-    
-        const Api::PolygonHandle target = Api::FacePolygonHandle(*whiteBox, bestFace);
-        if (target.m_faceHandles.empty()) { return; }
-    
-        AzToolsFramework::ScopedUndoBatch undoBatch("Carve White Box");
-    
-        // Inset -> inner opening polygon.
-        // NEW — pass the negative inset directly, clamped to the valid inset range:
-        const Api::PolygonHandle inset =
-            Api::ScalePolygonAppendRelative(*whiteBox, target, AZ::GetClamp(insetScale, -0.95f, -0.05f));
-        if (inset.m_faceHandles.empty()) { return; }
-    
-        // Extrude inward.
-        const Api::PolygonHandle cap =
-            Api::TranslatePolygonAppend(*whiteBox, inset, -AZStd::abs(depth));
-    
-        if (openHole && !cap.m_faceHandles.empty())
-        {
-            // Remove the inner cap to open the hole.
-            Api::RemoveFaces(*whiteBox, cap.m_faceHandles);
-            // Note: for a wall, you may also want to remove the matching faces on the
-            // back side if the extrude punched through — handle once you see the result.
-        }
-    
+
         Api::CalculateNormals(*whiteBox);
         Api::CalculatePlanarUVs(*whiteBox);
-    
+
         EditorWhiteBoxComponentRequestBus::Event(
             m_entityComponentIdPair, &EditorWhiteBoxComponentRequests::SerializeWhiteBox);
         EditorWhiteBoxComponentRequestBus::Event(
@@ -555,8 +548,76 @@ namespace WhiteBox
 
     void DrawShapeMode::Cancel()
     {
+        m_numericInput.Reset();
         m_state  = DrawState::Idle;
         m_height = 0.f;
+    }
+
+    bool DrawShapeMode::BeginNumericIfPulling()
+    {
+        // Numeric depth is only meaningful once the base is locked and we're
+        // pulling height.
+        if (m_state != DrawState::PullingHeight)
+        {
+            return false;
+        }
+        if (!m_numericInput.IsActive())
+        {
+            m_numericInput.Begin(NumericOpMode::Draw);
+        }
+        return true;
+    }
+
+    void DrawShapeMode::SyncPreviewHeight()
+    {
+        // Live-preview the typed expression as the pull depth.
+        if (m_numericInput.IsActive() && !m_numericInput.IsEmpty())
+        {
+            m_height = m_numericInput.GetValue();
+        }
+    }
+
+    void DrawShapeMode::NumericConfirm()
+    {
+        if (!m_numericInput.IsActive() || m_state != DrawState::PullingHeight)
+        {
+            return;
+        }
+
+        const float value = m_numericInput.GetValue();
+        m_numericInput.Reset();
+        m_height = value;
+
+        if (AZStd::abs(m_height) < 0.0001f)
+        {
+            Cancel();
+            return;
+        }
+
+        // Ctrl gates the boolean; the sign of the depth picks add vs carve.
+        if (m_carveMode)
+        {
+            BooleanAtPolygon(m_worldFromLocal, m_height);
+        }
+        else
+        {
+            CommitBox(m_worldFromLocal);
+        }
+        m_state = DrawState::Idle;
+    }
+
+    void DrawShapeMode::NumericCancel()
+    {
+        // First Escape drops just the numeric entry (back to mouse pull);
+        // a second one (nothing typed) cancels the whole draw.
+        if (m_numericInput.IsActive())
+        {
+            m_numericInput.Reset();
+        }
+        else
+        {
+            Cancel();
+        }
     }
 
     void DrawShapeMode::DisplayViewport(
@@ -644,6 +705,17 @@ namespace WhiteBox
             debugDisplay.SetColor(fillColor);
             debugDisplay.DrawQuad(top0, top1, top2, top3);
         }
+
+        // --- Numeric depth overlay (Blender-style) ---
+        if (m_numericInput.IsActive())
+        {
+            const AZ::Vector3 labelPos = (corner0 + corner2) * 0.5f + ext;
+            const AZStd::string status = m_carveMode
+                ? (AZStd::string("[Ctrl] ") + m_numericInput.GetStatusText())
+                : m_numericInput.GetStatusText();
+            debugDisplay.SetColor(AZ::Color(1.0f, 1.0f, 1.0f, 1.0f));
+            debugDisplay.DrawTextLabel(labelPos, 1.5f, status.c_str(), true, 0, 0);
+        }
     }
     
 
@@ -652,6 +724,110 @@ namespace WhiteBox
         [[maybe_unused]] const AZ::EntityComponentIdPair& entityComponentIdPair)
     {
         return {};
+    }
+
+    // ----------------------------------------------------------------------- //
+    // Numeric-depth keyboard actions (Blender-style), scoped to the draw mode  //
+    // ----------------------------------------------------------------------- //
+    namespace
+    {
+        constexpr AZStd::string_view DrawNumericConfirmId   = "o3de.action.whiteBoxDraw.numeric.confirm";
+        constexpr AZStd::string_view DrawNumericCancelId    = "o3de.action.whiteBoxDraw.numeric.cancel";
+        constexpr AZStd::string_view DrawNumericBackspaceId = "o3de.action.whiteBoxDraw.numeric.backspace";
+        constexpr AZStd::string_view DrawNumericDecimalId   = "o3de.action.whiteBoxDraw.numeric.decimal";
+        constexpr AZStd::string_view DrawNumericNegateId    = "o3de.action.whiteBoxDraw.numeric.negate";
+        constexpr AZStd::string_view DrawNumericOpPlusId    = "o3de.action.whiteBoxDraw.numeric.opPlus";
+        constexpr AZStd::string_view DrawNumericOpMultId    = "o3de.action.whiteBoxDraw.numeric.opMult";
+        constexpr AZStd::string_view DrawNumericOpDivId     = "o3de.action.whiteBoxDraw.numeric.opDiv";
+        constexpr AZStd::string_view DrawNumericDigitIds[10] = {
+            "o3de.action.whiteBoxDraw.numeric.digit0", "o3de.action.whiteBoxDraw.numeric.digit1",
+            "o3de.action.whiteBoxDraw.numeric.digit2", "o3de.action.whiteBoxDraw.numeric.digit3",
+            "o3de.action.whiteBoxDraw.numeric.digit4", "o3de.action.whiteBoxDraw.numeric.digit5",
+            "o3de.action.whiteBoxDraw.numeric.digit6", "o3de.action.whiteBoxDraw.numeric.digit7",
+            "o3de.action.whiteBoxDraw.numeric.digit8", "o3de.action.whiteBoxDraw.numeric.digit9",
+        };
+    } // namespace
+
+    void DrawShapeMode::RegisterActions()
+    {
+        auto actionManagerInterface = AZ::Interface<AzToolsFramework::ActionManagerInterface>::Get();
+        AZ_Assert(actionManagerInterface, "WhiteBoxDrawShapeMode - could not get ActionManagerInterface on RegisterActions.");
+        auto hotKeyManagerInterface = AZ::Interface<AzToolsFramework::HotKeyManagerInterface>::Get();
+        AZ_Assert(hotKeyManagerInterface, "WhiteBoxDrawShapeMode - could not get HotKeyManagerInterface on RegisterActions.");
+
+        // Dispatch a no-arg request to every active White Box component in draw mode.
+        auto dispatchToDrawModes = [](auto fn)
+        {
+            auto cmci = AZ::Interface<AzToolsFramework::ComponentModeCollectionInterface>::Get();
+            AZ_Assert(cmci, "Could not retrieve component mode collection.");
+            cmci->EnumerateActiveComponents(
+                [fn](const AZ::EntityComponentIdPair& id, const AZ::Uuid&)
+                {
+                    EditorWhiteBoxDrawShapeModeRequestBus::Event(id, fn);
+                });
+        };
+
+        const auto registerSimple =
+            [&](AZStd::string_view id, const char* name, const char* hotkey, auto fn)
+        {
+            AzToolsFramework::ActionProperties p;
+            p.m_name = name;
+            p.m_category = "White Box Component Mode - Draw Shape";
+            actionManagerInterface->RegisterAction(
+                EditorIdentifiers::MainWindowActionContextIdentifier, id, p,
+                [dispatchToDrawModes, fn] { dispatchToDrawModes(fn); });
+            hotKeyManagerInterface->SetActionHotKey(id, hotkey);
+        };
+
+        registerSimple(DrawNumericConfirmId,   "Draw Numeric Confirm",   "Return",    &EditorWhiteBoxDrawShapeModeRequests::NumericConfirm);
+        registerSimple(DrawNumericCancelId,    "Draw Numeric Cancel",    "Escape",    &EditorWhiteBoxDrawShapeModeRequests::NumericCancel);
+        registerSimple(DrawNumericBackspaceId, "Draw Numeric Backspace", "Backspace", &EditorWhiteBoxDrawShapeModeRequests::NumericBackspace);
+        registerSimple(DrawNumericDecimalId,   "Draw Numeric Decimal",   ".",         &EditorWhiteBoxDrawShapeModeRequests::NumericAppendDecimal);
+        registerSimple(DrawNumericNegateId,    "Draw Numeric Minus",     "-",         &EditorWhiteBoxDrawShapeModeRequests::NumericNegate);
+        registerSimple(DrawNumericOpPlusId,    "Draw Numeric Plus",      "+",         &EditorWhiteBoxDrawShapeModeRequests::NumericAppendOperatorPlus);
+        registerSimple(DrawNumericOpMultId,    "Draw Numeric Multiply",  "*",         &EditorWhiteBoxDrawShapeModeRequests::NumericAppendOperatorMult);
+        registerSimple(DrawNumericOpDivId,     "Draw Numeric Divide",    "/",         &EditorWhiteBoxDrawShapeModeRequests::NumericAppendOperatorDiv);
+
+        // Digits 0-9 (NumericAppendDigit takes a char, so inline the dispatch).
+        const char* digitKeys[10] = {"0","1","2","3","4","5","6","7","8","9"};
+        for (int d = 0; d <= 9; ++d)
+        {
+            AzToolsFramework::ActionProperties p;
+            p.m_name = AZStd::string::format("Draw Numeric Digit %d", d).c_str();
+            p.m_category = "White Box Component Mode - Draw Shape";
+            const char digit = static_cast<char>('0' + d);
+            actionManagerInterface->RegisterAction(
+                EditorIdentifiers::MainWindowActionContextIdentifier, DrawNumericDigitIds[d], p,
+                [digit]
+                {
+                    auto cmci = AZ::Interface<AzToolsFramework::ComponentModeCollectionInterface>::Get();
+                    AZ_Assert(cmci, "Could not retrieve component mode collection.");
+                    cmci->EnumerateActiveComponents(
+                        [digit](const AZ::EntityComponentIdPair& id, const AZ::Uuid&)
+                        {
+                            EditorWhiteBoxDrawShapeModeRequestBus::Event(
+                                id, &EditorWhiteBoxDrawShapeModeRequests::NumericAppendDigit, digit);
+                        });
+                });
+            hotKeyManagerInterface->SetActionHotKey(DrawNumericDigitIds[d], digitKeys[d]);
+        }
+    }
+
+    void DrawShapeMode::BindActionsToModes(const AZStd::string& modeIdentifier)
+    {
+        auto actionManagerInterface = AZ::Interface<AzToolsFramework::ActionManagerInterface>::Get();
+        AZ_Assert(actionManagerInterface, "WhiteBoxDrawShapeMode - could not get ActionManagerInterface on BindActionsToModes.");
+
+        for (const auto& id :
+             { DrawNumericConfirmId, DrawNumericCancelId, DrawNumericBackspaceId, DrawNumericDecimalId,
+               DrawNumericNegateId, DrawNumericOpPlusId, DrawNumericOpMultId, DrawNumericOpDivId })
+        {
+            actionManagerInterface->AssignModeToAction(modeIdentifier, id);
+        }
+        for (const auto& digitId : DrawNumericDigitIds)
+        {
+            actionManagerInterface->AssignModeToAction(modeIdentifier, digitId);
+        }
     }
 
 } // namespace WhiteBox

@@ -22,6 +22,7 @@ namespace WhiteBox
         Scale,
         Extrude, //!< Polygon extrude along normal OR edge extrude along displacement
         Inset,   //!< Face inset (scale-append, ratio 0=collapse → 1=no-inset)
+        Draw,    //!< Draw-shape pull depth (+ = add, - = carve)
     };
 
     enum class NumericAxisConstraint
@@ -227,6 +228,7 @@ namespace WhiteBox
                 case NumericOpMode::Scale:   return "Scale";
                 case NumericOpMode::Extrude: return "Extrude";
                 case NumericOpMode::Inset:   return "Inset";
+                case NumericOpMode::Draw:    return "Depth";
                 default:                     return "?";
                 }
             }();

@@ -14,6 +14,8 @@
 #include <AzFramework/Entity/EntityDebugDisplayBus.h>
 #include <AzToolsFramework/Viewport/ViewportTypes.h>
 #include <EditorWhiteBoxComponentModeTypes.h>
+#include <SubComponentModes/WhiteBoxNumericInput.h>
+#include <Viewport/WhiteBoxDrawShapeModeBus.h>
 
 namespace WhiteBox
 {
@@ -27,14 +29,36 @@ namespace WhiteBox
     //!   4. Mouse move       → pull height along up-axis (live preview)
     //!   5. Left mouse down  → commit box to white box mesh + undo batch
     //!   Right-click / Esc  → cancel at any phase
-    class DrawShapeMode 
+    //!
+    //! During the height-pull phase the depth can also be typed (Blender-style
+    //! numeric entry, expressions allowed e.g. "-5+3"). The first digit/minus
+    //! locks the mouse pull; Enter commits, Escape cancels the numeric entry.
+    //! In Ctrl (boolean) mode the sign decides the operation: + adds, - carves.
+    class DrawShapeMode
         : private AzFramework::ViewportDebugDisplayEventBus::Handler
+        , public EditorWhiteBoxDrawShapeModeRequestBus::Handler
     {
     public:
         AZ_CLASS_ALLOCATOR_DECL
 
         explicit DrawShapeMode(const AZ::EntityComponentIdPair& entityComponentIdPair);
         ~DrawShapeMode();
+
+        //! Register/assign the numeric-entry keyboard actions for the draw sub-mode.
+        static void RegisterActions();
+        static void BindActionsToModes(const AZStd::string& modeIdentifier);
+
+        // EditorWhiteBoxDrawShapeModeRequestBus overrides - feed typed keys into
+        // the numeric input state (only while pulling height).
+        void NumericAppendDigit(char digit) override   { if (BeginNumericIfPulling()) { m_numericInput.AppendDigit(digit); SyncPreviewHeight(); } }
+        void NumericAppendDecimal() override            { if (BeginNumericIfPulling()) { m_numericInput.AppendDecimal(); SyncPreviewHeight(); } }
+        void NumericNegate() override                   { if (BeginNumericIfPulling()) { m_numericInput.AppendOperator('-'); SyncPreviewHeight(); } }
+        void NumericAppendOperatorPlus() override       { if (m_numericInput.IsActive()) { m_numericInput.AppendOperator('+'); SyncPreviewHeight(); } }
+        void NumericAppendOperatorMult() override       { if (m_numericInput.IsActive()) { m_numericInput.AppendOperator('*'); SyncPreviewHeight(); } }
+        void NumericAppendOperatorDiv() override        { if (m_numericInput.IsActive()) { m_numericInput.AppendOperator('/'); SyncPreviewHeight(); } }
+        void NumericBackspace() override                { if (m_numericInput.IsActive()) { m_numericInput.Backspace(); SyncPreviewHeight(); } }
+        void NumericConfirm() override;
+        void NumericCancel() override;
 
         //! Forward a raw mouse interaction event.
         //! @return true if the event was consumed (prevents other handlers from seeing it).
@@ -85,13 +109,11 @@ namespace WhiteBox
             const AZ::Transform& worldFromLocal,
             const AZ::Vector3& baseCenterWorld) const;
 
-        void CarveAtPolygon(
-            const AzToolsFramework::ViewportInteraction::MouseInteraction& mouseInteraction,
-            const AZ::Transform& worldFromLocal,
-            const IntersectionAndRenderData& intersectionData,
-            float insetScale,
-            float depth,
-            bool openHole);
+        //! Ctrl + draw: apply a CSG boolean using a cutter prism (the drawn
+        //! footprint pulled to @p height along the surface normal). The sign of
+        //! @p height picks the operation: pull in = subtract (carve), pull out =
+        //! union (add).
+        void BooleanAtPolygon(const AZ::Transform& worldFromLocal, float height);
         
         bool m_carveMode = false;   // set on first click if Ctrl is held
         //! Stamp the current drawn AABB into the white box mesh and record an undo batch.
@@ -100,9 +122,24 @@ namespace WhiteBox
         //! Cancel draw and return to Idle, discarding any in-progress shape.
         void Cancel();
 
+        //! Begin a numeric depth session if we're in the height-pull phase.
+        //! @return true if numeric input is now active (and the key should apply).
+        bool BeginNumericIfPulling();
+
+        //! Mirror the live numeric value into m_height so the ghost preview and
+        //! the eventual commit follow the typed expression.
+        void SyncPreviewHeight();
+
         AZ::EntityComponentIdPair m_entityComponentIdPair;
 
         DrawState m_state = DrawState::Idle;
+
+        //! Blender-style numeric depth entry (active only during height pull).
+        NumericInputState m_numericInput;
+
+        //! Latest worldFromLocal seen in HandleMouseInteraction, cached so a
+        //! keyboard-driven confirm (which carries no transform) can commit.
+        AZ::Transform m_worldFromLocal = AZ::Transform::CreateIdentity();
 
         // Add a member to store the anchor's surface frame:
         AZ::Vector3 m_surfaceNormal = AZ::Vector3::CreateAxisZ();

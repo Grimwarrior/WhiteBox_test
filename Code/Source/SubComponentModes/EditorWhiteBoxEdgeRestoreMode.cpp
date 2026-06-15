@@ -172,7 +172,7 @@ namespace WhiteBox
             interactiveEdgeHandles);
         // draw hidden/mesh edges in a bright orange so they stand out as "restorable"
         DrawEdges(
-            debugDisplay, ed_whiteBoxOutlineHover, renderData.m_whiteBoxEdgeRenderData.m_bounds.m_mesh,
+            debugDisplay, ed_whiteBoxEdgeUnselected, renderData.m_whiteBoxEdgeRenderData.m_bounds.m_mesh,
             interactiveEdgeHandles);
 
         WhiteBoxMesh* whiteBox = nullptr;

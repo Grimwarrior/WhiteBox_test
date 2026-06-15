@@ -129,6 +129,7 @@ namespace WhiteBox
         DefaultMode::RegisterActions();
         EdgeRestoreMode::RegisterActions();
         TransformMode::RegisterActions();
+        DrawShapeMode::RegisterActions();
     }
 
     void EditorWhiteBoxComponentMode::BindActionsToModes()
@@ -136,6 +137,7 @@ namespace WhiteBox
         DefaultMode::BindActionsToModes(WhiteBoxDefaultSubModeIdentifier);
         EdgeRestoreMode::BindActionsToModes(WhiteBoxEdgeRestoreSubModeIdentifier);
         TransformMode::BindActionsToModes(WhiteBoxTransformSubModeIdentifier);
+        DrawShapeMode::BindActionsToModes(WhiteBoxDrawShapeSubModeIdentifier);
     }
 
     void EditorWhiteBoxComponentMode::BindActionsToMenus()
