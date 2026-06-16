@@ -30,6 +30,7 @@
 #include <AzQtComponents/Components/Widgets/FileDialog.h>
 #include <AzToolsFramework/API/ComponentEntitySelectionBus.h>
 #include <AzToolsFramework/API/EditorAssetSystemAPI.h>
+#include <AzToolsFramework/API/ToolsApplicationAPI.h>
 #include <AzToolsFramework/API/EditorPythonRunnerRequestsBus.h>
 #include <AzToolsFramework/Entity/EditorEntityHelpers.h>
 #include <AzToolsFramework/Entity/EditorEntityInfoBus.h>
@@ -163,6 +164,171 @@ namespace WhiteBox
         return AZ::Edit::PropertyRefreshLevels::ValuesOnly;
     }
 
+    void EditorWhiteBoxComponent::ApplyBoolean()
+    {
+        if (!m_booleanSourceEntity.IsValid() || m_booleanSourceEntity == GetEntityId())
+        {
+            AZ_Warning("EditorWhiteBoxComponent", false, "Boolean Source is not set (or is this same entity).");
+            return;
+        }
+
+        WhiteBoxMesh* targetMesh = GetWhiteBoxMesh();
+        if (targetMesh == nullptr)
+        {
+            return;
+        }
+
+        AZ::Entity* sourceEntity = nullptr;
+        AZ::ComponentApplicationBus::BroadcastResult(
+            sourceEntity, &AZ::ComponentApplicationRequests::FindEntity, m_booleanSourceEntity);
+        if (sourceEntity == nullptr)
+        {
+            AZ_Warning("EditorWhiteBoxComponent", false, "Boolean Source entity could not be found.");
+            return;
+        }
+
+        const auto sourceComponents = sourceEntity->FindComponents<EditorWhiteBoxComponent>();
+        if (sourceComponents.empty())
+        {
+            AZ_Warning("EditorWhiteBoxComponent", false, "Boolean Source entity has no White Box component.");
+            return;
+        }
+        WhiteBoxMesh* sourceMesh = sourceComponents[0]->GetWhiteBoxMesh();
+        if (sourceMesh == nullptr)
+        {
+            return;
+        }
+
+        // Bring the source mesh from its local space into this entity's local space:
+        // operandTransform = thisWorldFromLocal^-1 * sourceWorldFromLocal.
+        AZ::Transform thisWorldTM = AZ::Transform::CreateIdentity();
+        AZ::TransformBus::EventResult(thisWorldTM, GetEntityId(), &AZ::TransformBus::Events::GetWorldTM);
+        AZ::Transform sourceWorldTM = AZ::Transform::CreateIdentity();
+        AZ::TransformBus::EventResult(sourceWorldTM, m_booleanSourceEntity, &AZ::TransformBus::Events::GetWorldTM);
+        const AZ::Transform operandTransform = thisWorldTM.GetInverse() * sourceWorldTM;
+
+        AzToolsFramework::ScopedUndoBatch undoBatch("White Box Boolean");
+
+        if (!Api::MeshBoolean(*targetMesh, *sourceMesh, operandTransform, m_booleanOperation))
+        {
+            AZ_Warning(
+                "EditorWhiteBoxComponent", false,
+                "White Box boolean produced no result (the meshes may not overlap, or are not closed).");
+            return;
+        }
+
+        Api::CalculateNormals(*targetMesh);
+        Api::CalculatePlanarUVs(*targetMesh);
+
+        SerializeWhiteBox();
+        RebuildWhiteBox();
+        undoBatch.MarkEntityDirty(GetEntityId());
+
+        // Optionally tidy up the source entity once it has been consumed.
+        if (m_deleteSourceAfterApply)
+        {
+            const AZ::EntityId sourceId = m_booleanSourceEntity;
+            m_booleanSourceEntity = AZ::EntityId{}; // clear the now-dangling reference
+            AzToolsFramework::ToolsApplicationRequestBus::Broadcast(
+                &AzToolsFramework::ToolsApplicationRequests::DeleteEntityById, sourceId);
+        }
+        else if (m_hideSourceAfterApply)
+        {
+            AzToolsFramework::SetEntityVisibility(m_booleanSourceEntity, false);
+        }
+    }
+
+    WhiteBoxMesh* EditorWhiteBoxComponent::EvaluatedMesh()
+    {
+        // Non-destructive: render/collide/select against the evaluated result while
+        // the editable base (GetWhiteBoxMesh) stays untouched.
+        if (m_liveBoolean && m_displayMesh)
+        {
+            return m_displayMesh.get();
+        }
+        return GetWhiteBoxMesh();
+    }
+
+    void EditorWhiteBoxComponent::EvaluateLiveBoolean()
+    {
+        m_displayMesh.reset();
+
+        if (!m_liveBoolean || !m_booleanSourceEntity.IsValid() || m_booleanSourceEntity == GetEntityId())
+        {
+            return;
+        }
+
+        WhiteBoxMesh* baseMesh = GetWhiteBoxMesh();
+        if (baseMesh == nullptr)
+        {
+            return;
+        }
+
+        AZ::Entity* sourceEntity = nullptr;
+        AZ::ComponentApplicationBus::BroadcastResult(
+            sourceEntity, &AZ::ComponentApplicationRequests::FindEntity, m_booleanSourceEntity);
+        if (sourceEntity == nullptr)
+        {
+            return;
+        }
+        const auto sourceComponents = sourceEntity->FindComponents<EditorWhiteBoxComponent>();
+        if (sourceComponents.empty())
+        {
+            return;
+        }
+        WhiteBoxMesh* sourceMesh = sourceComponents[0]->GetWhiteBoxMesh();
+        if (sourceMesh == nullptr)
+        {
+            return;
+        }
+
+        AZ::Transform thisWorldTM = AZ::Transform::CreateIdentity();
+        AZ::TransformBus::EventResult(thisWorldTM, GetEntityId(), &AZ::TransformBus::Events::GetWorldTM);
+        AZ::Transform sourceWorldTM = AZ::Transform::CreateIdentity();
+        AZ::TransformBus::EventResult(sourceWorldTM, m_booleanSourceEntity, &AZ::TransformBus::Events::GetWorldTM);
+        const AZ::Transform operandTransform = thisWorldTM.GetInverse() * sourceWorldTM;
+
+        // Evaluate into a clone so the editable base is never modified.
+        Api::WhiteBoxMeshPtr evaluated = Api::CloneMesh(*baseMesh);
+        if (!evaluated)
+        {
+            return;
+        }
+        if (Api::MeshBoolean(*evaluated, *sourceMesh, operandTransform, m_booleanOperation))
+        {
+            Api::CalculateNormals(*evaluated);
+            Api::CalculatePlanarUVs(*evaluated);
+            m_displayMesh = AZStd::move(evaluated);
+        }
+        // on failure (no overlap) m_displayMesh stays null -> falls back to the base.
+    }
+
+    void EditorWhiteBoxComponent::UpdateBooleanSourceListener()
+    {
+        m_booleanSourceListener.BusDisconnect();
+        if (m_liveBoolean && m_booleanSourceEntity.IsValid() && m_booleanSourceEntity != GetEntityId())
+        {
+            m_booleanSourceListener.m_owner = this;
+            m_booleanSourceListener.BusConnect(m_booleanSourceEntity);
+        }
+    }
+
+    AZ::u32 EditorWhiteBoxComponent::OnLiveBooleanChange()
+    {
+        UpdateBooleanSourceListener();
+        RebuildWhiteBox(); // evaluates the live boolean (or reverts to base) + rebuilds render/physics
+        return AZ::Edit::PropertyRefreshLevels::ValuesOnly;
+    }
+
+    void EditorWhiteBoxComponent::BooleanSourceListener::OnTransformChanged(
+        const AZ::Transform& /*local*/, const AZ::Transform& /*world*/)
+    {
+        if (m_owner != nullptr)
+        {
+            m_owner->RebuildWhiteBox(); // source moved -> re-evaluate + rebuild
+        }
+    }
+
     bool EditorWhiteBoxVersionConverter(
         AZ::SerializeContext& context, AZ::SerializeContext::DataElementNode& classElement)
     {
@@ -216,7 +382,12 @@ namespace WhiteBox
                 ->Field("ComponentMode", &EditorWhiteBoxComponent::m_componentModeDelegate)
                 ->Field("FlipYZForExport", &EditorWhiteBoxComponent::m_flipYZForExport)
                 ->Field("DrawSides", &EditorWhiteBoxComponent::m_drawSides)
-                ->Field("DrawShape", &EditorWhiteBoxComponent::m_drawShape);
+                ->Field("DrawShape", &EditorWhiteBoxComponent::m_drawShape)
+                ->Field("BooleanSource", &EditorWhiteBoxComponent::m_booleanSourceEntity)
+                ->Field("BooleanOp", &EditorWhiteBoxComponent::m_booleanOperation)
+                ->Field("BooleanHideSource", &EditorWhiteBoxComponent::m_hideSourceAfterApply)
+                ->Field("BooleanDeleteSource", &EditorWhiteBoxComponent::m_deleteSourceAfterApply)
+                ->Field("BooleanLive", &EditorWhiteBoxComponent::m_liveBoolean);
 
             if (AZ::EditContext* editContext = serializeContext->GetEditContext())
             {
@@ -278,7 +449,33 @@ namespace WhiteBox
                         AZ::Edit::UIHandlers::Default,
                         &EditorWhiteBoxComponent::m_flipYZForExport,
                         "Flip Y and Z for Export",
-                        "Flip the Y and Z axes when exportings so they aren't imported sideways into coord systems where the Y-axis goes up.");
+                        "Flip the Y and Z axes when exportings so they aren't imported sideways into coord systems where the Y-axis goes up.")
+                    ->DataElement(
+                        AZ::Edit::UIHandlers::Default, &EditorWhiteBoxComponent::m_booleanSourceEntity, "Boolean Source",
+                        "Another entity with a White Box component to use as the boolean operand.")
+                    ->Attribute(AZ::Edit::Attributes::ChangeNotify, &EditorWhiteBoxComponent::OnLiveBooleanChange)
+                    ->DataElement(
+                        AZ::Edit::UIHandlers::ComboBox, &EditorWhiteBoxComponent::m_booleanOperation, "Boolean Operation",
+                        "How to combine the source mesh with this one.")
+                    ->EnumAttribute(Api::BooleanOperation::Subtraction, "Subtract")
+                    ->EnumAttribute(Api::BooleanOperation::Union, "Union")
+                    ->EnumAttribute(Api::BooleanOperation::Intersection, "Intersect")
+                    ->Attribute(AZ::Edit::Attributes::ChangeNotify, &EditorWhiteBoxComponent::OnLiveBooleanChange)
+                    ->DataElement(
+                        AZ::Edit::UIHandlers::Default, &EditorWhiteBoxComponent::m_liveBoolean,
+                        "Non-Destructive (Live)",
+                        "Keep this mesh editable and show the boolean result live (re-evaluates when the source "
+                        "moves or either mesh changes). Leave off to use the one-shot Apply Boolean below.")
+                    ->Attribute(AZ::Edit::Attributes::ChangeNotify, &EditorWhiteBoxComponent::OnLiveBooleanChange)
+                    ->DataElement(
+                        AZ::Edit::UIHandlers::Default, &EditorWhiteBoxComponent::m_hideSourceAfterApply,
+                        "Hide Source After Apply", "Hide the source entity once the boolean is applied.")
+                    ->DataElement(
+                        AZ::Edit::UIHandlers::Default, &EditorWhiteBoxComponent::m_deleteSourceAfterApply,
+                        "Delete Source After Apply", "Delete the source entity once the boolean is applied.")
+                    ->UIElement(AZ::Edit::UIHandlers::Button, "", "Apply the boolean using the source entity's mesh")
+                    ->Attribute(AZ::Edit::Attributes::ChangeNotify, &EditorWhiteBoxComponent::ApplyBoolean)
+                    ->Attribute(AZ::Edit::Attributes::ButtonText, "Apply Boolean");
             }
         }
     }
@@ -363,6 +560,10 @@ namespace WhiteBox
         // deserialize the white box data into a mesh object or load the serialized asset ref
         DeserializeWhiteBox();
 
+        // re-evaluate the live boolean and listen for the source entity moving
+        UpdateBooleanSourceListener();
+        EvaluateLiveBoolean();
+
         if (AzToolsFramework::IsEntityVisible(entityId))
         {
             ShowRenderMesh();
@@ -382,10 +583,13 @@ namespace WhiteBox
         EditorWhiteBoxComponentNotificationBus::Handler::BusDisconnect();
         AzToolsFramework::Components::EditorComponentBase::Deactivate();
 
+        m_booleanSourceListener.BusDisconnect();
+
         m_componentModeDelegate.Disconnect();
         m_editorMeshAsset->Release();
         m_renderMesh.reset();
         m_whiteBox.reset();
+        m_displayMesh.reset();
     }
 
     void EditorWhiteBoxComponent::DeserializeWhiteBox()
@@ -414,6 +618,7 @@ namespace WhiteBox
 
     void EditorWhiteBoxComponent::RebuildWhiteBox()
     {
+        EvaluateLiveBoolean(); // refresh m_displayMesh so render/physics/bounds use the latest result
         RebuildRenderMesh();
         RebuildPhysicsMesh();
     }
@@ -472,7 +677,7 @@ namespace WhiteBox
         if (m_renderMesh.has_value())
         {
             // cache the white box render data
-            m_renderData = CreateWhiteBoxRenderData(*GetWhiteBoxMesh(), m_material);
+            m_renderData = CreateWhiteBoxRenderData(*EvaluatedMesh(), m_material);
 
             // it's possible the white box mesh data isn't yet ready (for example if it's stored
             // in an asset which hasn't finished loading yet) so don't attempt to create a render
@@ -537,6 +742,11 @@ namespace WhiteBox
         {
             (*m_renderMesh)->UpdateTransform(world);
         }
+
+        if (m_liveBoolean)
+        {
+            RebuildWhiteBox(); // moving this entity changes the cut relative to the source
+        }
     }
 
     void EditorWhiteBoxComponent::RebuildPhysicsMesh()
@@ -544,7 +754,7 @@ namespace WhiteBox
         AZ_PROFILE_FUNCTION(AzToolsFramework);
 
         EditorWhiteBoxColliderRequestBus::Event(
-            GetEntityId(), &EditorWhiteBoxColliderRequests::CreatePhysics, *GetWhiteBoxMesh());
+            GetEntityId(), &EditorWhiteBoxColliderRequests::CreatePhysics, *EvaluatedMesh());
     }
 
     static AZStd::string WhiteBoxPathAtProjectRoot(const AZStd::string_view name, const AZStd::string_view extension)
@@ -829,7 +1039,7 @@ namespace WhiteBox
 
         if (!m_localAabb.has_value())
         {
-            auto& whiteBoxMesh = *const_cast<EditorWhiteBoxComponent*>(this)->GetWhiteBoxMesh();
+            auto& whiteBoxMesh = *const_cast<EditorWhiteBoxComponent*>(this)->EvaluatedMesh();
 
             m_localAabb = CalculateAabb(
                 whiteBoxMesh,
@@ -853,7 +1063,7 @@ namespace WhiteBox
 
         // Extract white box geometry data to convert to visible geometry vertices and indices
         const WhiteBoxRenderData renderData =
-            CreateWhiteBoxRenderData(*const_cast<EditorWhiteBoxComponent*>(this)->GetWhiteBoxMesh(), m_material);
+            CreateWhiteBoxRenderData(*const_cast<EditorWhiteBoxComponent*>(this)->EvaluatedMesh(), m_material);
 
         // Convert the white box render data into visible geometry data
         const AzFramework::VisibleGeometry geometry = BuildVisibleGeometryFromWhiteBoxRenderData(GetEntityId(), renderData);
@@ -872,7 +1082,7 @@ namespace WhiteBox
 
         if (!m_faces.has_value())
         {
-            m_faces = Api::MeshFaces(*GetWhiteBoxMesh());
+            m_faces = Api::MeshFaces(*EvaluatedMesh());
         }
 
         // must have at least one triangle

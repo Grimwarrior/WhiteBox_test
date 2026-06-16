@@ -121,6 +121,20 @@ namespace WhiteBox
         //! When the Draw Shape changes, set a sensible default Draw Sides for it and
         //! refresh the property grid so the Draw Sides field updates.
         AZ::u32 OnDrawShapeChange();
+        //! Apply a CSG boolean using the White Box mesh on m_booleanSourceEntity.
+        void ApplyBoolean();
+
+        //! The mesh used for RENDER / collision / bounds / selection. In live
+        //! (non-destructive) boolean mode this is the evaluated result; otherwise
+        //! it is the editable base mesh (GetWhiteBoxMesh).
+        WhiteBoxMesh* EvaluatedMesh();
+        //! Rebuild m_displayMesh = base (boolean) source, when live mode is active.
+        void EvaluateLiveBoolean();
+        //! Connect/disconnect the listener that re-evaluates when the source moves.
+        void UpdateBooleanSourceListener();
+        //! ChangeNotify for the live-boolean / source / operation fields.
+        AZ::u32 OnLiveBooleanChange();
+
         void OnMaterialChange();
         AZ::Crc32 AssetVisibility() const;
 
@@ -146,6 +160,23 @@ namespace WhiteBox
         bool m_flipYZForExport = false; //!< Flips the Y and Z components of white box vertices when exporting for different coordinate systems
         int m_drawSides = 4; //!< Side count the Draw Shape tool uses for round / N-gon shapes (4 = box/square).
         DrawShapeType m_drawShape = DrawShapeType::Box; //!< Shape the Draw Shape tool builds.
+
+        AZ::EntityId m_booleanSourceEntity; //!< Another entity whose White Box mesh is used as a boolean operand.
+        Api::BooleanOperation m_booleanOperation =
+            Api::BooleanOperation::Subtraction; //!< How to combine the source mesh with this one.
+        bool m_hideSourceAfterApply = false;   //!< Hide the source entity after a successful Apply Boolean.
+        bool m_deleteSourceAfterApply = false; //!< Delete the source entity after a successful Apply Boolean.
+
+        bool m_liveBoolean = false; //!< Non-destructive: keep the base editable, evaluate the boolean for display only.
+        Api::WhiteBoxMeshPtr m_displayMesh; //!< Evaluated (base [op] source) mesh used for display while live.
+
+        //! Re-evaluates this component's live boolean when the source entity moves.
+        struct BooleanSourceListener : public AZ::TransformNotificationBus::Handler
+        {
+            void OnTransformChanged(const AZ::Transform& local, const AZ::Transform& world) override;
+            EditorWhiteBoxComponent* m_owner = nullptr;
+        };
+        BooleanSourceListener m_booleanSourceListener;
     };
 
     inline bool EditorWhiteBoxComponent::SupportsEditorRayIntersect()
