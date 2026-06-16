@@ -63,6 +63,8 @@ namespace WhiteBox
         void WriteAssetToComponent() override;
         void RebuildWhiteBox() override;
         void SetDefaultShape(DefaultShapeType defaultShape) override;
+        int GetDrawSides() override { return m_drawSides; }
+        DrawShapeType GetDrawShape() override { return m_drawShape; }
 
         // EditorComponentSelectionRequestsBus overrides ...
         AZ::Aabb GetEditorSelectionBoundsViewport(const AzFramework::ViewportInfo& viewportInfo) override;
@@ -116,6 +118,9 @@ namespace WhiteBox
         void ExportDescendantsToFile();
         AZ::Crc32 SaveAsAsset();
         AZ::Crc32 OnDefaultShapeChange();
+        //! When the Draw Shape changes, set a sensible default Draw Sides for it and
+        //! refresh the property grid so the Draw Sides field updates.
+        AZ::u32 OnDrawShapeChange();
         void OnMaterialChange();
         AZ::Crc32 AssetVisibility() const;
 
@@ -139,6 +144,8 @@ namespace WhiteBox
         DefaultShapeType m_defaultShape =
             DefaultShapeType::Cube; //!< Used for selecting a default shape for the White Box mesh.
         bool m_flipYZForExport = false; //!< Flips the Y and Z components of white box vertices when exporting for different coordinate systems
+        int m_drawSides = 4; //!< Side count the Draw Shape tool uses for round / N-gon shapes (4 = box/square).
+        DrawShapeType m_drawShape = DrawShapeType::Box; //!< Shape the Draw Shape tool builds.
     };
 
     inline bool EditorWhiteBoxComponent::SupportsEditorRayIntersect()

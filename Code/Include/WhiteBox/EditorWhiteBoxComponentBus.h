@@ -58,6 +58,13 @@ namespace WhiteBox
         //! Set the white box mesh default shape.
         virtual void SetDefaultShape(DefaultShapeType defaultShape) = 0;
 
+        //! Number of sides the draw-shape tool uses for round / N-gon shapes
+        //! (4 = box / square). Sourced from the component's "Draw Sides" property.
+        virtual int GetDrawSides() { return 4; }
+
+        //! Shape the draw-shape tool builds, from the component's "Draw Shape" property.
+        virtual DrawShapeType GetDrawShape() { return DrawShapeType::Box; }
+
     protected:
         ~EditorWhiteBoxComponentRequests() = default;
     };

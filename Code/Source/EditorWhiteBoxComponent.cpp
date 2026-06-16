@@ -141,6 +141,28 @@ namespace WhiteBox
         return AZ::Edit::PropertyRefreshLevels::EntireTree;
     }
 
+    AZ::u32 EditorWhiteBoxComponent::OnDrawShapeChange()
+    {
+        // Reset Draw Sides to a sensible default for the newly chosen shape:
+        // angular shapes -> 4 (box / square base), round shapes -> 24 (smooth).
+        switch (m_drawShape)
+        {
+        case DrawShapeType::Box:
+        case DrawShapeType::Pyramid:
+            m_drawSides = 4;
+            break;
+        case DrawShapeType::Cylinder:
+        case DrawShapeType::Cone:
+            m_drawSides = 24;
+            break;
+        default:
+            break;
+        }
+
+        // refresh so the Draw Sides field shows the new value
+        return AZ::Edit::PropertyRefreshLevels::ValuesOnly;
+    }
+
     bool EditorWhiteBoxVersionConverter(
         AZ::SerializeContext& context, AZ::SerializeContext::DataElementNode& classElement)
     {
@@ -192,7 +214,9 @@ namespace WhiteBox
                 ->Field("Material", &EditorWhiteBoxComponent::m_material)
                 ->Field("RenderData", &EditorWhiteBoxComponent::m_renderData)
                 ->Field("ComponentMode", &EditorWhiteBoxComponent::m_componentModeDelegate)
-                ->Field("FlipYZForExport", &EditorWhiteBoxComponent::m_flipYZForExport);
+                ->Field("FlipYZForExport", &EditorWhiteBoxComponent::m_flipYZForExport)
+                ->Field("DrawSides", &EditorWhiteBoxComponent::m_drawSides)
+                ->Field("DrawShape", &EditorWhiteBoxComponent::m_drawShape);
 
             if (AZ::EditContext* editContext = serializeContext->GetEditContext())
             {
@@ -215,6 +239,19 @@ namespace WhiteBox
                     ->EnumAttribute(DefaultShapeType::Sphere, "Sphere")
                     ->EnumAttribute(DefaultShapeType::Asset, "Mesh Asset")
                     ->Attribute(AZ::Edit::Attributes::ChangeNotify, &EditorWhiteBoxComponent::OnDefaultShapeChange)
+                    ->DataElement(
+                        AZ::Edit::UIHandlers::ComboBox, &EditorWhiteBoxComponent::m_drawShape, "Draw Shape",
+                        "Shape the Draw Shape tool builds. Changing this resets Draw Sides to a sensible default.")
+                    ->EnumAttribute(DrawShapeType::Box, "Box")
+                    ->EnumAttribute(DrawShapeType::Cylinder, "Cylinder")
+                    ->EnumAttribute(DrawShapeType::Pyramid, "Pyramid")
+                    ->EnumAttribute(DrawShapeType::Cone, "Cone")
+                    ->Attribute(AZ::Edit::Attributes::ChangeNotify, &EditorWhiteBoxComponent::OnDrawShapeChange)
+                    ->DataElement(
+                        AZ::Edit::UIHandlers::Slider, &EditorWhiteBoxComponent::m_drawSides, "Draw Sides",
+                        "Number of sides the Draw Shape tool uses for round / N-gon shapes (4 = box / square).")
+                    ->Attribute(AZ::Edit::Attributes::Min, 3)
+                    ->Attribute(AZ::Edit::Attributes::Max, 128)
                     ->DataElement(
                         AZ::Edit::UIHandlers::Default, &EditorWhiteBoxComponent::m_editorMeshAsset, "Editor Mesh Asset",
                         "Editor Mesh Asset")

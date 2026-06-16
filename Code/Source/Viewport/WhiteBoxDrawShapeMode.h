@@ -13,12 +13,16 @@
 #include <AzCore/Math/Vector3.h>
 #include <AzFramework/Entity/EntityDebugDisplayBus.h>
 #include <AzToolsFramework/Viewport/ViewportTypes.h>
+#include <AzToolsFramework/ViewportUi/ViewportUiRequestBus.h>
+#include <AzCore/EBus/Event.h>
 #include <EditorWhiteBoxComponentModeTypes.h>
+#include <WhiteBox/EditorWhiteBoxComponentBus.h>
 #include <SubComponentModes/WhiteBoxNumericInput.h>
 #include <Viewport/WhiteBoxDrawShapeModeBus.h>
 
 namespace WhiteBox
 {
+
     //! DrawShapeMode implements Lumberyard-style click-drag-release-pull shape drawing
     //! inside the White Box component mode.
     //!
@@ -122,6 +126,11 @@ namespace WhiteBox
         //! Cancel draw and return to Idle, discarding any in-progress shape.
         void Cancel();
 
+        //! Current shape and side count, read from the component's "Draw Shape" /
+        //! "Draw Sides" properties (sides clamped to a safe range).
+        DrawShapeType CurrentShape() const;
+        int CurrentSides() const;
+
         //! Begin a numeric depth session if we're in the height-pull phase.
         //! @return true if numeric input is now active (and the key should apply).
         bool BeginNumericIfPulling();
@@ -153,5 +162,6 @@ namespace WhiteBox
 
         //! World-space Y (up) value of the ground plane established on first click.
         float m_groundZ = 0.f;
+
     };
 } // namespace WhiteBox

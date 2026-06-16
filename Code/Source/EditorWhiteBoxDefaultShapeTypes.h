@@ -20,4 +20,13 @@ namespace WhiteBox
         Sphere,
         Asset
     };
+
+    //! Solid the Draw Shape tool builds from the drawn footprint + pull height.
+    enum class DrawShapeType : int
+    {
+        Box,      //!< rectangular prism matching the drawn rectangle (Draw Sides = 4)
+        Cylinder, //!< N-sided prism inscribed in the rectangle
+        Pyramid,  //!< rectangular base + apex
+        Cone,     //!< N-sided base + apex
+    };
 } // namespace WhiteBox

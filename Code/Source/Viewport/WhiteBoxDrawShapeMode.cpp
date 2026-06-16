@@ -34,6 +34,10 @@
 #include <AzToolsFramework/ActionManager/HotKey/HotKeyManagerInterface.h>
 #include <AzToolsFramework/API/ComponentModeCollectionInterface.h>
 #include <AzToolsFramework/Editor/ActionManagerIdentifiers/EditorContextIdentifiers.h>
+#include <AzToolsFramework/ViewportUi/ViewportUiRequestBus.h>
+#include <AzCore/Math/MathUtils.h>
+#include <AzCore/Casting/numeric_cast.h>
+#include <cmath>
 
 
 namespace WhiteBox
@@ -51,6 +55,230 @@ namespace WhiteBox
         right = ref.Cross(up).GetNormalized();
         fwd   = up.Cross(right).GetNormalized();
     }
+
+    static const char* DrawShapeName(DrawShapeType shape)
+    {
+        switch (shape)
+        {
+        case DrawShapeType::Box:      return "Box";
+        case DrawShapeType::Cylinder: return "Cylinder";
+        case DrawShapeType::Pyramid:  return "Pyramid";
+        case DrawShapeType::Cone:     return "Cone";
+        default:                      return "Shape";
+        }
+    }
+
+    // Add one (convex, planar) face from an ordered loop of vertex handles,
+    // fan-triangulated and wound so its normal points AWAY from the solid centre
+    // (outward). Robust for any convex polygon - no manual per-shape winding.
+    static void AddOutwardFace(
+        WhiteBoxMesh& whiteBox,
+        const AZStd::vector<Api::VertexHandle>& handles,
+        const AZStd::vector<AZ::Vector3>& localPositions,
+        const AZStd::vector<AZ::u32>& loop,
+        const AZ::Vector3& solidCentroid)
+    {
+        if (loop.size() < 3)
+        {
+            return;
+        }
+
+        AZ::Vector3 faceCentroid = AZ::Vector3::CreateZero();
+        for (const AZ::u32 idx : loop)
+        {
+            faceCentroid += localPositions[idx];
+        }
+        faceCentroid /= aznumeric_cast<float>(loop.size());
+
+        const AZ::Vector3 a = localPositions[loop[0]];
+        const AZ::Vector3 b = localPositions[loop[1]];
+        const AZ::Vector3 c = localPositions[loop[2]];
+        const AZ::Vector3 normal = (b - a).Cross(c - a);
+        const bool flip = normal.Dot(faceCentroid - solidCentroid) < 0.0f;
+
+        Api::FaceVertHandlesList faces;
+        faces.reserve(loop.size() - 2);
+        for (size_t i = 1; i + 1 < loop.size(); ++i)
+        {
+            Api::VertexHandle v0 = handles[loop[0]];
+            Api::VertexHandle v1 = handles[loop[i]];
+            Api::VertexHandle v2 = handles[loop[i + 1]];
+            if (flip)
+            {
+                AZStd::swap(v1, v2);
+            }
+            faces.push_back(Api::FaceVertHandles{ {v0, v1, v2} });
+        }
+        Api::AddPolygon(whiteBox, faces);
+    }
+
+    // Add a round cap as one polygon, triangulated as an "umbrella" from a centre
+    // vertex (uniform triangles, no slivers - unlike a corner fan). The centre and
+    // the spokes are interior to the polygon, so they don't render as edges; the
+    // cap still reads as a clean disc but has good underlying topology.
+    static void AddOutwardCap(
+        WhiteBoxMesh& whiteBox,
+        const AZStd::vector<Api::VertexHandle>& handles,
+        const AZStd::vector<AZ::Vector3>& localPositions,
+        const AZStd::vector<AZ::u32>& rim,
+        const AZ::u32 centerIdx,
+        const AZ::Vector3& solidCentroid)
+    {
+        const size_t n = rim.size();
+        if (n < 3)
+        {
+            return;
+        }
+
+        const AZ::Vector3 a = localPositions[centerIdx];
+        const AZ::Vector3 b = localPositions[rim[0]];
+        const AZ::Vector3 c = localPositions[rim[1]];
+        const AZ::Vector3 normal = (b - a).Cross(c - a);
+        const bool flip = normal.Dot(localPositions[centerIdx] - solidCentroid) < 0.0f;
+
+        Api::FaceVertHandlesList faces;
+        faces.reserve(n);
+        for (size_t i = 0; i < n; ++i)
+        {
+            Api::VertexHandle v0 = handles[centerIdx];
+            Api::VertexHandle v1 = handles[rim[i]];
+            Api::VertexHandle v2 = handles[rim[(i + 1) % n]];
+            if (flip)
+            {
+                AZStd::swap(v1, v2);
+            }
+            faces.push_back(Api::FaceVertHandles{ {v0, v1, v2} });
+        }
+        Api::AddPolygon(whiteBox, faces);
+    }
+
+    // Generate the N-gon footprint ring (world space) for the current shape:
+    // round shapes inscribe the ellipse; angular shapes fill the rectangle (4 =
+    // exact corners). ru/rv are the half-extent vectors along the two in-plane axes.
+    static AZStd::vector<AZ::Vector3> ComputeFootprintRing(
+        const AZ::Vector3& center, const AZ::Vector3& ru, const AZ::Vector3& rv, const bool round, const int sidesIn)
+    {
+        const int sides = AZ::GetClamp(sidesIn, 3, 256);
+        AZStd::vector<AZ::Vector3> ring;
+        ring.reserve(sides);
+        if (round)
+        {
+            for (int i = 0; i < sides; ++i)
+            {
+                const float t = (AZ::Constants::TwoPi * static_cast<float>(i)) / static_cast<float>(sides);
+                ring.push_back(center + ru * std::cos(t) + rv * std::sin(t));
+            }
+        }
+        else
+        {
+            const float phase = AZ::Constants::Pi / static_cast<float>(sides);
+            float maxX = 0.0f, maxY = 0.0f;
+            for (int i = 0; i < sides; ++i)
+            {
+                const float t = phase + (AZ::Constants::TwoPi * static_cast<float>(i)) / static_cast<float>(sides);
+                maxX = AZ::GetMax(maxX, std::abs(std::cos(t)));
+                maxY = AZ::GetMax(maxY, std::abs(std::sin(t)));
+            }
+            for (int i = 0; i < sides; ++i)
+            {
+                const float t = phase + (AZ::Constants::TwoPi * static_cast<float>(i)) / static_cast<float>(sides);
+                ring.push_back(center + ru * (std::cos(t) / maxX) + rv * (std::sin(t) / maxY));
+            }
+        }
+        return ring;
+    }
+
+    // Build a closed shape solid into @p mesh from a footprint in the surface
+    // plane (centre + in-plane axes uAxis/vAxis) extruded along @p up between the
+    // base plane (centre + up*baseUp) and the top plane / apex (centre + up*topUp).
+    // Shared by the draw-commit (visible shape) and the carve/add cutter so they
+    // always produce the same geometry. All faces are wound outward.
+    static void BuildShapeSolid(
+        WhiteBoxMesh& mesh, const AZ::Transform& localFromWorld,
+        const AZ::Vector3& center, const AZ::Vector3& uAxis, const AZ::Vector3& vAxis, const AZ::Vector3& up,
+        const float baseUp, const float topUp, const DrawShapeType shapeType, const int sidesIn)
+    {
+        const bool pointed = (shapeType == DrawShapeType::Pyramid || shapeType == DrawShapeType::Cone);
+        const bool round   = (shapeType == DrawShapeType::Cylinder || shapeType == DrawShapeType::Cone);
+        const int  sides   = AZ::GetClamp(sidesIn, 3, 256);
+
+        const AZ::Vector3 ru = uAxis * 0.5f;
+        const AZ::Vector3 rv = vAxis * 0.5f;
+        const AZ::Vector3 baseCenter = center + up * baseUp;
+        const AZ::Vector3 topPos     = center + up * topUp;   // top-cap centre OR apex
+        const AZ::Vector3 ext        = up * (topUp - baseUp);
+
+        // footprint ring at the base plane
+        const AZStd::vector<AZ::Vector3> baseWorld = ComputeFootprintRing(baseCenter, ru, rv, round, sides);
+
+        const size_t n = baseWorld.size();
+        const bool centerCap = (n > 4);
+
+        AZStd::vector<AZ::Vector3> localPos;
+        AZStd::vector<Api::VertexHandle> vh;
+        localPos.reserve(n * 2 + 2);
+        vh.reserve(n * 2 + 2);
+
+        const auto addVertex = [&](const AZ::Vector3& world) -> AZ::u32
+        {
+            const AZ::Vector3 local = localFromWorld.TransformPoint(world);
+            localPos.push_back(local);
+            vh.push_back(Api::AddVertex(mesh, local));
+            return aznumeric_cast<AZ::u32>(vh.size() - 1);
+        };
+
+        AZStd::vector<AZ::u32> baseRing;
+        baseRing.reserve(n);
+        for (const AZ::Vector3& w : baseWorld) { baseRing.push_back(addVertex(w)); }
+
+        if (pointed)
+        {
+            const AZ::u32 apex = addVertex(topPos);
+            const AZ::u32 baseCenterIdx = centerCap ? addVertex(baseCenter) : 0u;
+
+            AZ::Vector3 centroid = AZ::Vector3::CreateZero();
+            for (const AZ::Vector3& p : localPos) { centroid += p; }
+            centroid /= aznumeric_cast<float>(localPos.size());
+
+            if (centerCap) { AddOutwardCap(mesh, vh, localPos, baseRing, baseCenterIdx, centroid); }
+            else           { AddOutwardFace(mesh, vh, localPos, baseRing, centroid); }
+            for (size_t i = 0; i < n; ++i)
+            {
+                const AZStd::vector<AZ::u32> tri = { baseRing[i], baseRing[(i + 1) % n], apex };
+                AddOutwardFace(mesh, vh, localPos, tri, centroid);
+            }
+        }
+        else
+        {
+            AZStd::vector<AZ::u32> topRing;
+            topRing.reserve(n);
+            for (const AZ::Vector3& w : baseWorld) { topRing.push_back(addVertex(w + ext)); }
+            const AZ::u32 baseCenterIdx = centerCap ? addVertex(baseCenter)       : 0u;
+            const AZ::u32 topCenterIdx  = centerCap ? addVertex(baseCenter + ext) : 0u;
+
+            AZ::Vector3 centroid = AZ::Vector3::CreateZero();
+            for (const AZ::Vector3& p : localPos) { centroid += p; }
+            centroid /= aznumeric_cast<float>(localPos.size());
+
+            if (centerCap)
+            {
+                AddOutwardCap(mesh, vh, localPos, baseRing, baseCenterIdx, centroid);
+                AddOutwardCap(mesh, vh, localPos, topRing,  topCenterIdx,  centroid);
+            }
+            else
+            {
+                AddOutwardFace(mesh, vh, localPos, baseRing, centroid);
+                AddOutwardFace(mesh, vh, localPos, topRing,  centroid);
+            }
+            for (size_t i = 0; i < n; ++i)
+            {
+                const size_t j = (i + 1) % n;
+                const AZStd::vector<AZ::u32> quad = { baseRing[i], baseRing[j], topRing[j], topRing[i] };
+                AddOutwardFace(mesh, vh, localPos, quad, centroid);
+            }
+        }
+    }
+
     DrawShapeMode::DrawShapeMode(const AZ::EntityComponentIdPair& entityComponentIdPair)
         : m_entityComponentIdPair(entityComponentIdPair)
     {
@@ -342,7 +570,7 @@ namespace WhiteBox
 
         AzToolsFramework::ScopedUndoBatch undoBatch("Draw White Box Shape");
 
-        // Surface basis
+        // Surface basis (up = outward normal of the surface drawn on).
         AZ::Vector3 right, fwd, up;
         BasisFromNormal(m_surfaceNormal, right, fwd, up);
 
@@ -358,63 +586,22 @@ namespace WhiteBox
             return;
         }
 
-        // Force the base rectangle to wind CCW about +up so the in-plane orientation
-        // is consistent no matter which way the drag went.
+        // Force CCW winding about +up so the in-plane orientation is consistent.
         if (uAxis.Cross(vAxis).Dot(up) < 0.f)
         {
             AZStd::swap(uAxis, vAxis);
         }
 
-        const AZ::Vector3 anchor = m_worldP0;
-        const AZ::Vector3 b0 = anchor;                    // base rectangle (on the surface)
-        const AZ::Vector3 b1 = anchor + uAxis;
-        const AZ::Vector3 b2 = anchor + uAxis + vAxis;
-        const AZ::Vector3 b3 = anchor + vAxis;
+        const AZ::Vector3 center = m_worldP0 + (uAxis + vAxis) * 0.5f;
 
-        const AZ::Vector3 ext = up * m_height;            // signed: +out / -into surface
-
-        // The two caps: "plus cap" is whichever cap sits on the +up side.
-        // If height is positive, plus-cap = base+ext (the extruded top) and the base is the minus cap.
-        // If height is negative, base+ext sits on the -up side, so we flip which cap is which
-        // to keep faces wound outward.
-        AZ::Vector3 plus[4];   // corners on +up side  -> indices 0..3
-        AZ::Vector3 minus[4];  // corners on -up side  -> indices 4..7
-
-        if (m_height >= 0.f)
-        {
-            plus[0]  = b0 + ext; plus[1]  = b1 + ext; plus[2]  = b2 + ext; plus[3]  = b3 + ext;
-            minus[0] = b0;       minus[1] = b1;       minus[2] = b2;       minus[3] = b3;
-        }
-        else
-        {
-            // base is now the +up cap; extruded face is the -up cap
-            plus[0]  = b0;       plus[1]  = b1;       plus[2]  = b2;       plus[3]  = b3;
-            minus[0] = b0 + ext; minus[1] = b1 + ext; minus[2] = b2 + ext; minus[3] = b3 + ext;
-        }
-
-        AZ::Vector3 worldCorners[8] = {
-            plus[0],  plus[1],  plus[2],  plus[3],   // 0-3  (+up cap)
-            minus[0], minus[1], minus[2], minus[3]   // 4-7  (-up cap)
-        };
-
-        const AZ::Transform localFromWorld = worldFromLocal.GetInverse();
-        Api::VertexHandle v[8];
-        for (int i = 0; i < 8; ++i)
-        {
-            v[i] = Api::AddVertex(*whiteBox, localFromWorld.TransformPoint(worldCorners[i]));
-        }
-
-        // Winding is now always outward because 0-3 is guaranteed the +up cap.
-        Api::AddQuadPolygon(*whiteBox, v[0], v[1], v[2], v[3]); // +up cap
-        Api::AddQuadPolygon(*whiteBox, v[7], v[6], v[5], v[4]); // -up cap
-        Api::AddQuadPolygon(*whiteBox, v[4], v[5], v[1], v[0]); // sides
-        Api::AddQuadPolygon(*whiteBox, v[5], v[6], v[2], v[1]);
-        Api::AddQuadPolygon(*whiteBox, v[6], v[7], v[3], v[2]);
-        Api::AddQuadPolygon(*whiteBox, v[7], v[4], v[0], v[3]);
+        // Build the chosen shape directly into the mesh: base on the surface
+        // (up offset 0), top/apex at the pull height.
+        BuildShapeSolid(
+            *whiteBox, worldFromLocal.GetInverse(), center, uAxis, vAxis, up,
+            0.0f, m_height, CurrentShape(), CurrentSides());
 
         Api::CalculateNormals(*whiteBox);
         Api::CalculatePlanarUVs(*whiteBox);
-
 
         EditorWhiteBoxComponentRequestBus::Event(
             m_entityComponentIdPair, &EditorWhiteBoxComponentRequests::SerializeWhiteBox);
@@ -474,51 +661,25 @@ namespace WhiteBox
         const Api::BooleanOperation operation =
             carve ? Api::BooleanOperation::Subtraction : Api::BooleanOperation::Union;
 
-        // Either way the cutter must overlap the surface slightly (never sit
-        // exactly coplanar with the target face - coplanar faces make the boolean
-        // fragile) and overshoot the far end so the cut/weld is clean.
-        //   carve: from just OUTSIDE the surface (+eps) inward to -(depth+eps)
-        //   add:   from just INSIDE the surface (-eps) outward to +(depth+eps)
-        // In both cases corners 0-3 stay the +up cap, so the winding (and thus
-        // the outward orientation Manifold needs) matches CommitBox.
+        // The cutter is the SELECTED shape (box/cylinder/pyramid/cone, N sides),
+        // not just a box. It must overlap the surface slightly (never sit exactly
+        // coplanar with the target face - coplanar faces make the boolean fragile)
+        // and overshoot the far end so the cut/weld is clean:
+        //   carve: base just OUTSIDE the surface (+eps), extrude to -(depth+eps)
+        //   add:   base just INSIDE the surface (-eps), extrude to +(depth+eps)
         const float surfaceSpan = AZ::GetMax(uAxis.GetLength(), vAxis.GetLength());
         const float eps = AZ::GetMax(surfaceSpan * 0.02f, 0.001f);
 
-        const AZ::Vector3 baseCorners[4] = {
-            m_worldP0,
-            m_worldP0 + uAxis,
-            m_worldP0 + uAxis + vAxis,
-            m_worldP0 + vAxis
-        };
-        const float topUp = carve ?  eps            : (depth + eps);  // +up cap offset
-        const float botUp = carve ? -(depth + eps)  : -eps;           // -up cap offset
-        const AZ::Vector3 outOff = up * topUp;
-        const AZ::Vector3 inOff  = up * botUp;
-
-        // 8 cutter corners: 0-3 outer (+up) cap, 4-7 inner (-up) cap.
-        AZ::Vector3 worldCorners[8];
-        for (int i = 0; i < 4; ++i)
-        {
-            worldCorners[i]     = baseCorners[i] + outOff;
-            worldCorners[i + 4] = baseCorners[i] + inOff;
-        }
+        const AZ::Vector3 center = m_worldP0 + (uAxis + vAxis) * 0.5f;
+        const float baseUp = carve ?  eps           : -eps;
+        const float topUp  = carve ? -(depth + eps) : (depth + eps);
 
         // Build the cutter as its own watertight white box mesh, expressed in the
-        // TARGET's local space so we can subtract with an identity transform.
+        // TARGET's local space so we can boolean with an identity transform.
         Api::WhiteBoxMeshPtr cutter = Api::CreateWhiteBoxMesh();
-        const AZ::Transform localFromWorld = worldFromLocal.GetInverse();
-        Api::VertexHandle v[8];
-        for (int i = 0; i < 8; ++i)
-        {
-            v[i] = Api::AddVertex(*cutter, localFromWorld.TransformPoint(worldCorners[i]));
-        }
-        // Outward winding (identical ordering to CommitBox: 0-3 is the +up cap).
-        Api::AddQuadPolygon(*cutter, v[0], v[1], v[2], v[3]); // +up cap
-        Api::AddQuadPolygon(*cutter, v[7], v[6], v[5], v[4]); // -up cap
-        Api::AddQuadPolygon(*cutter, v[4], v[5], v[1], v[0]); // sides
-        Api::AddQuadPolygon(*cutter, v[5], v[6], v[2], v[1]);
-        Api::AddQuadPolygon(*cutter, v[6], v[7], v[3], v[2]);
-        Api::AddQuadPolygon(*cutter, v[7], v[4], v[0], v[3]);
+        BuildShapeSolid(
+            *cutter, worldFromLocal.GetInverse(), center, uAxis, vAxis, up,
+            baseUp, topUp, CurrentShape(), CurrentSides());
         Api::CalculateNormals(*cutter);
 
         AzToolsFramework::ScopedUndoBatch undoBatch(carve ? "Carve White Box" : "Add White Box");
@@ -641,16 +802,22 @@ namespace WhiteBox
             AZStd::swap(uAxis, vAxis);
         }
 
-        const AZ::Vector3 anchor  = m_worldP0;
-        const AZ::Vector3 corner0 = anchor;
-        const AZ::Vector3 corner1 = anchor + uAxis;
-        const AZ::Vector3 corner2 = anchor + uAxis + vAxis;
-        const AZ::Vector3 corner3 = anchor + vAxis;
-        const AZ::Vector3 ext     = up * m_height;   // signed — preview follows pull direction
+        const AZ::Vector3 center = m_worldP0 + (uAxis + vAxis) * 0.5f;
+        const AZ::Vector3 ru     = uAxis * 0.5f;
+        const AZ::Vector3 rv     = vAxis * 0.5f;
+        const AZ::Vector3 ext    = up * m_height;   // signed — preview follows pull direction
 
-    
+        const DrawShapeType shape = CurrentShape();
+        const bool pointed = (shape == DrawShapeType::Pyramid || shape == DrawShapeType::Cone);
+        const bool round   = (shape == DrawShapeType::Cylinder || shape == DrawShapeType::Cone);
+
+        // Preview the ACTUAL shape footprint (N-gon), matching what will be built.
+        const int sides = CurrentSides();
+        const AZStd::vector<AZ::Vector3> ring = ComputeFootprintRing(center, ru, rv, round, sides);
+        const size_t n = ring.size();
+
         const bool pullingHeight = (m_state == DrawState::PullingHeight);
-    
+
         const AZ::Color fillColor = pullingHeight
             ? AZ::Color(static_cast<AZ::Color>(ed_whiteBoxPolygonSelection).GetR(),
                         static_cast<AZ::Color>(ed_whiteBoxPolygonSelection).GetG(),
@@ -658,58 +825,78 @@ namespace WhiteBox
             : AZ::Color(static_cast<AZ::Color>(ed_whiteBoxPolygonHover).GetR(),
                         static_cast<AZ::Color>(ed_whiteBoxPolygonHover).GetG(),
                         static_cast<AZ::Color>(ed_whiteBoxPolygonHover).GetB(), 0.25f);
-    
+
         const AZ::Color outlineColor = m_carveMode
         ? AZ::Color(1.0f, 0.25f, 0.25f, 1.0f)   // red = carve
         : (pullingHeight
             ? static_cast<AZ::Color>(ed_whiteBoxOutlineSelection)
             : static_cast<AZ::Color>(ed_whiteBoxOutlineHover));
-    
+
         debugDisplay.DepthTestOff();
-        debugDisplay.SetColor(outlineColor);
         debugDisplay.SetLineWidth(static_cast<float>(cl_whiteBoxEdgeVisualWidth));
-    
-        // --- Base rectangle (always drawn) ---
-        debugDisplay.DrawLine(corner0, corner1);
-        debugDisplay.DrawLine(corner1, corner2);
-        debugDisplay.DrawLine(corner2, corner3);
-        debugDisplay.DrawLine(corner3, corner0);
-    
-        // --- Filled base quad for visibility ---
-        debugDisplay.SetColor(fillColor);
-        debugDisplay.DrawQuad(corner0, corner1, corner2, corner3);
-    
-        // --- During height pull, draw the extruded top + vertical edges ---
+
+        // --- Base footprint outline + fill (always drawn) ---
+        debugDisplay.SetColor(outlineColor);
+        for (size_t i = 0; i < n; ++i)
+        {
+            debugDisplay.DrawLine(ring[i], ring[(i + 1) % n]);
+        }
+        {
+            AZStd::vector<AZ::Vector3> baseTris;
+            baseTris.reserve(n * 3);
+            for (size_t i = 0; i < n; ++i)
+            {
+                baseTris.push_back(center);
+                baseTris.push_back(ring[i]);
+                baseTris.push_back(ring[(i + 1) % n]);
+            }
+            debugDisplay.DrawTriangles(baseTris, fillColor);
+        }
+
+        // --- During height pull, draw the extrusion (prism) or the apex (pointed) ---
         if (pullingHeight)
         {
-            const AZ::Vector3 top0 = corner0 + ext;
-            const AZ::Vector3 top1 = corner1 + ext;
-            const AZ::Vector3 top2 = corner2 + ext;
-            const AZ::Vector3 top3 = corner3 + ext;
-    
             debugDisplay.SetColor(outlineColor);
-    
-            // Top rectangle
-            debugDisplay.DrawLine(top0, top1);
-            debugDisplay.DrawLine(top1, top2);
-            debugDisplay.DrawLine(top2, top3);
-            debugDisplay.DrawLine(top3, top0);
-    
-            // Vertical edges
-            debugDisplay.DrawLine(corner0, top0);
-            debugDisplay.DrawLine(corner1, top1);
-            debugDisplay.DrawLine(corner2, top2);
-            debugDisplay.DrawLine(corner3, top3);
-    
-            // Filled top quad
-            debugDisplay.SetColor(fillColor);
-            debugDisplay.DrawQuad(top0, top1, top2, top3);
+            if (pointed)
+            {
+                const AZ::Vector3 apex = center + ext;
+                for (size_t i = 0; i < n; ++i)
+                {
+                    debugDisplay.DrawLine(ring[i], apex);
+                }
+            }
+            else
+            {
+                for (size_t i = 0; i < n; ++i)
+                {
+                    const size_t j = (i + 1) % n;
+                    debugDisplay.DrawLine(ring[i] + ext, ring[j] + ext); // top outline
+                    debugDisplay.DrawLine(ring[i], ring[i] + ext);       // vertical edge
+                }
+                const AZ::Vector3 topCenter = center + ext;
+                AZStd::vector<AZ::Vector3> topTris;
+                topTris.reserve(n * 3);
+                for (size_t i = 0; i < n; ++i)
+                {
+                    topTris.push_back(topCenter);
+                    topTris.push_back(ring[i] + ext);
+                    topTris.push_back(ring[(i + 1) % n] + ext);
+                }
+                debugDisplay.DrawTriangles(topTris, fillColor);
+            }
+        }
+
+        // --- Live shape + side-count readout (the toolbar can't show text) ---
+        {
+            const AZStd::string shapeLabel = AZStd::string::format("%s  |  %d sides", DrawShapeName(shape), sides);
+            debugDisplay.SetColor(AZ::Color(1.0f, 1.0f, 1.0f, 1.0f));
+            debugDisplay.DrawTextLabel(center, 1.3f, shapeLabel.c_str(), true, 0, 0);
         }
 
         // --- Numeric depth overlay (Blender-style) ---
         if (m_numericInput.IsActive())
         {
-            const AZ::Vector3 labelPos = (corner0 + corner2) * 0.5f + ext;
+            const AZ::Vector3 labelPos = center + ext;
             const AZStd::string status = m_carveMode
                 ? (AZStd::string("[Ctrl] ") + m_numericInput.GetStatusText())
                 : m_numericInput.GetStatusText();
@@ -724,6 +911,25 @@ namespace WhiteBox
         [[maybe_unused]] const AZ::EntityComponentIdPair& entityComponentIdPair)
     {
         return {};
+    }
+
+    // ----------------------------------------------------------------------- //
+    // Shape + side count (sourced from the component's Inspector properties)    //
+    // ----------------------------------------------------------------------- //
+    DrawShapeType DrawShapeMode::CurrentShape() const
+    {
+        DrawShapeType shape = DrawShapeType::Box;
+        EditorWhiteBoxComponentRequestBus::EventResult(
+            shape, m_entityComponentIdPair, &EditorWhiteBoxComponentRequests::GetDrawShape);
+        return shape;
+    }
+
+    int DrawShapeMode::CurrentSides() const
+    {
+        int sides = 4;
+        EditorWhiteBoxComponentRequestBus::EventResult(
+            sides, m_entityComponentIdPair, &EditorWhiteBoxComponentRequests::GetDrawSides);
+        return AZ::GetClamp(sides, 3, 256);
     }
 
     // ----------------------------------------------------------------------- //
