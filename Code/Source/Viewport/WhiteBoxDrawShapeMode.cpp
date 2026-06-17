@@ -37,6 +37,9 @@
 #include <AzToolsFramework/ViewportUi/ViewportUiRequestBus.h>
 #include <AzCore/Math/MathUtils.h>
 #include <AzCore/Casting/numeric_cast.h>
+#include <AzCore/Component/ComponentApplicationBus.h>
+#include <AzCore/Component/TransformBus.h>
+#include "EditorWhiteBoxComponent.h"
 #include <cmath>
 
 
@@ -301,92 +304,183 @@ namespace WhiteBox
     {
         const AZ::Vector3 rayOriginWorld = mouseInteraction.m_mousePick.m_rayOrigin;
         const AZ::Vector3 rayDirWorld    = mouseInteraction.m_mousePick.m_rayDirection;
-    
-        // 1. White Box mesh
+
+        // Track the closest hit across every surface type so white box meshes,
+        // other white box meshes, and ordinary scene geometry are all candidates
+        // and all use a consistent flat (per-triangle) surface normal.
+        float bestDist = AZStd::numeric_limits<float>::max();
+        AZ::Vector3 bestHit = AZ::Vector3::CreateZero();
+        AZ::Vector3 bestNormal = AZ::Vector3::CreateAxisZ();
+        bool found = false;
+
+        const auto consider = [&](const AZ::Vector3& worldHit, AZ::Vector3 worldNormal)
+        {
+            const float d = (worldHit - rayOriginWorld).Dot(rayDirWorld); // distance along the ray
+            if (d < 0.0f || d >= bestDist)
+            {
+                return;
+            }
+            bestDist = d;
+            bestHit = worldHit;
+            worldNormal = worldNormal.GetNormalizedSafe();
+            if (worldNormal.Dot(rayDirWorld) > 0.0f) // face back toward the camera
+            {
+                worldNormal = -worldNormal;
+            }
+            bestNormal = worldNormal;
+            found = true;
+        };
+
+        // Ray-test a white box mesh's local triangles (flat normals) and report hits.
+        const auto raycastWhiteBox = [&](WhiteBoxMesh& mesh, const AZ::Transform& meshWorldFromLocal)
+        {
+            const AZ::Transform localFromWorld = meshWorldFromLocal.GetInverse();
+            const AZ::Vector3 lo = localFromWorld.TransformPoint(rayOriginWorld);
+            const AZ::Vector3 ld = AzToolsFramework::TransformDirectionNoScaling(localFromWorld, rayDirWorld);
+            const float rayLen = 100000.0f;
+            const AZ::Vector3 le = lo + ld * rayLen;
+
+            AZ::Intersect::SegmentTriangleHitTester hitTester(lo, le);
+            for (const Api::Face& f : Api::MeshFaces(mesh))
+            {
+                float t = 0.0f;
+                AZ::Vector3 n;
+                if (hitTester.IntersectSegmentTriangle(f[0], f[1], f[2], n, t))
+                {
+                    const AZ::Vector3 localHit = lo + (le - lo) * t;
+                    consider(
+                        meshWorldFromLocal.TransformPoint(localHit),
+                        AzToolsFramework::TransformDirectionNoScaling(meshWorldFromLocal, n));
+                }
+            }
+        };
+
+        // 1. the current white box mesh (its precomputed intersection data, flat normal)
         {
             const AZ::Transform localFromWorld = worldFromLocal.GetInverse();
-            const AZ::Vector3 localRayOrigin = localFromWorld.TransformPoint(rayOriginWorld);
-            const AZ::Vector3 localRayDir =
-                AzToolsFramework::TransformDirectionNoScaling(localFromWorld, rayDirWorld);
-    
-            float bestDist = AZStd::numeric_limits<float>::max();
-            AZ::Vector3 bestLocalHit = AZ::Vector3::CreateZero();
-            AZ::Vector3 bestLocalNormal = AZ::Vector3::CreateAxisZ();
-            bool hitWhiteBox = false;
-    
+            const AZ::Vector3 lo = localFromWorld.TransformPoint(rayOriginWorld);
+            const AZ::Vector3 ld = AzToolsFramework::TransformDirectionNoScaling(localFromWorld, rayDirWorld);
+
             for (const auto& polyBound : intersectionData.m_whiteBoxIntersectionData.m_polygonBounds)
             {
                 float dist = AZStd::numeric_limits<float>::max();
                 int64_t triIdx = 0;
-                if (IntersectRayPolygon(polyBound.m_bound, localRayOrigin, localRayDir, dist, triIdx))
+                if (IntersectRayPolygon(polyBound.m_bound, lo, ld, dist, triIdx))
                 {
-                    if (dist < bestDist)
+                    const AZ::Vector3 localHit = lo + ld * dist;
+                    AZ::Vector3 localNormal = AZ::Vector3::CreateAxisZ();
+                    const auto& tris = polyBound.m_bound.m_triangles;
+                    const size_t base = static_cast<size_t>(triIdx) * 3;
+                    if (base + 2 < tris.size())
                     {
-                        bestDist = dist;
-                        bestLocalHit = localRayOrigin + localRayDir * dist;
+                        localNormal =
+                            (tris[base + 1] - tris[base + 0]).Cross(tris[base + 2] - tris[base + 0]).GetNormalizedSafe();
+                    }
+                    consider(
+                        worldFromLocal.TransformPoint(localHit),
+                        AzToolsFramework::TransformDirectionNoScaling(worldFromLocal, localNormal));
+                }
+            }
+        }
 
-                        // Compute the normal from the hit triangle's three vertices.
-                        const auto& tris = polyBound.m_bound.m_triangles;
-                        const size_t base = static_cast<size_t>(triIdx) * 3;
-                        if (base + 2 < tris.size())
+        // 2. every OTHER white box mesh in the scene (not in the scene intersector)
+        {
+            const AZ::EntityId selfEntity = m_entityComponentIdPair.GetEntityId();
+            AZ::ComponentApplicationBus::Broadcast(
+                &AZ::ComponentApplicationRequests::EnumerateEntities,
+                [&](AZ::Entity* entity)
+                {
+                    if (entity == nullptr || entity->GetId() == selfEntity)
+                    {
+                        return;
+                    }
+                    for (EditorWhiteBoxComponent* comp : entity->FindComponents<EditorWhiteBoxComponent>())
+                    {
+                        WhiteBoxMesh* mesh = comp->GetWhiteBoxMesh();
+                        if (mesh == nullptr)
                         {
-                            const AZ::Vector3 e1 = tris[base + 1] - tris[base + 0];
-                            const AZ::Vector3 e2 = tris[base + 2] - tris[base + 0];
-                            bestLocalNormal = e1.Cross(e2).GetNormalized();
+                            continue;
                         }
-                        else
-                        {
-                            bestLocalNormal = AZ::Vector3::CreateAxisZ();
-                        }
-                        hitWhiteBox = true;
+                        AZ::Transform worldTM = AZ::Transform::CreateIdentity();
+                        AZ::TransformBus::EventResult(worldTM, entity->GetId(), &AZ::TransformBus::Events::GetWorldTM);
+                        raycastWhiteBox(*mesh, worldTM);
+                    }
+                });
+        }
+
+        // 3. ordinary scene render geometry (non white box)
+        {
+            // Cast a parallel ray offset by `offset`; returns true + the world hit.
+            const auto castScene = [&](const AZ::Vector3& offset, AZ::Vector3& outHit) -> bool
+            {
+                AzFramework::RenderGeometry::RayRequest request;
+                request.m_startWorldPosition = rayOriginWorld + offset;
+                request.m_endWorldPosition   = rayOriginWorld + offset + rayDirWorld * 100000.0f;
+                request.m_onlyVisible        = true;
+
+                AzFramework::RenderGeometry::RayResult rayResult;
+                AzFramework::RenderGeometry::IntersectorBus::EventResult(
+                    rayResult, AzToolsFramework::GetEntityContextId(),
+                    &AzFramework::RenderGeometry::IntersectorInterface::RayIntersect, request);
+                if (rayResult)
+                {
+                    outHit = rayResult.m_worldPosition;
+                    return true;
+                }
+                return false;
+            };
+
+            AZ::Vector3 hit0;
+            if (castScene(AZ::Vector3::CreateZero(), hit0))
+            {
+                // Derive the surface normal from world-space positions of two nearby
+                // parallel rays. This reflects the true surface orientation regardless
+                // of how the intersector reports its normal (which can come back in
+                // model space, so it ignores the entity's rotation).
+                const float dist = (hit0 - rayOriginWorld).GetLength();
+                const float eps = AZ::GetMax(0.01f, dist * 0.004f);
+
+                AZ::Vector3 perpA = rayDirWorld.Cross(AZ::Vector3::CreateAxisX());
+                if (perpA.GetLengthSq() < 1e-6f)
+                {
+                    perpA = rayDirWorld.Cross(AZ::Vector3::CreateAxisY());
+                }
+                perpA.Normalize();
+                const AZ::Vector3 perpB = rayDirWorld.Cross(perpA).GetNormalizedSafe();
+
+                AZ::Vector3 hitA, hitB;
+                AZ::Vector3 sceneNormal = AZ::Vector3::CreateAxisZ();
+                if (castScene(perpA * eps, hitA) && castScene(perpB * eps, hitB))
+                {
+                    const AZ::Vector3 n = (hitA - hit0).Cross(hitB - hit0);
+                    if (n.GetLengthSq() > 1e-10f)
+                    {
+                        sceneNormal = n.GetNormalizedSafe();
+                    }
+                    else
+                    {
+                        sceneNormal = -rayDirWorld; // degenerate (e.g. grazing) - face the camera
                     }
                 }
-            }
-    
-            if (hitWhiteBox)
-            {
-                AZ::Vector3 worldNormal =
-                    AzToolsFramework::TransformDirectionNoScaling(worldFromLocal, bestLocalNormal).GetNormalized();
-
-                // Make the normal face back toward the camera (ray travels camera->surface).
-                if (worldNormal.Dot(rayDirWorld) > 0.f)
+                else
                 {
-                    worldNormal = -worldNormal;
+                    sceneNormal = -rayDirWorld; // offset rays missed (near an edge) - face the camera
                 }
 
-                outWorldNormal = worldNormal;
-                return worldFromLocal.TransformPoint(bestLocalHit);
+                consider(hit0, sceneNormal);
             }
         }
-    
-        // 2. Scene geometry
+
+        if (found)
         {
-            AzFramework::RenderGeometry::RayRequest request;
-            request.m_startWorldPosition = rayOriginWorld;
-            request.m_endWorldPosition   = rayOriginWorld + rayDirWorld * 1000.0f;
-            request.m_onlyVisible        = true;
-    
-            AzFramework::RenderGeometry::RayResult rayResult;
-            AzFramework::RenderGeometry::IntersectorBus::EventResult(
-                rayResult, AzToolsFramework::GetEntityContextId(),
-                &AzFramework::RenderGeometry::IntersectorInterface::RayIntersect, request);
-    
-            if (rayResult)
-            {
-                AZ::Vector3 worldNormal = rayResult.m_worldNormal.GetNormalized();
-                if (worldNormal.Dot(rayDirWorld) > 0.f)
-                {
-                    worldNormal = -worldNormal;
-                }
-                outWorldNormal = worldNormal;
-                return rayResult.m_worldPosition;
-            }
+            outWorldNormal = bestNormal;
+            return bestHit;
         }
-    
-        // 3. Ground plane
+
+        // 4. ground plane fallback
         outWorldNormal = AZ::Vector3::CreateAxisZ();
-        AZ::Vector3 planePos(0.f, 0.f, m_groundZ);
-        AZ::Vector3 planeNormal = AZ::Vector3::CreateAxisZ();
+        const AZ::Vector3 planePos(0.f, 0.f, m_groundZ);
+        const AZ::Vector3 planeNormal = AZ::Vector3::CreateAxisZ();
         float t = 0.f;
         AZ::Intersect::IntersectRayPlane(rayOriginWorld, rayDirWorld, planePos, planeNormal, t);
         if (t < 0.f) { t = 0.f; }
