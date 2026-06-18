@@ -14,6 +14,7 @@
 
 #include <AzCore/Component/TransformBus.h>
 #include <AzCore/Math/Aabb.h>
+#include <AzCore/std/containers/unordered_set.h>
 #include <AzCore/std/optional.h>
 #include <AzFramework/Entity/EntityDebugDisplayBus.h>
 #include <AzFramework/Visibility/VisibleGeometryBus.h>
@@ -65,6 +66,12 @@ namespace WhiteBox
         void SetDefaultShape(DefaultShapeType defaultShape) override;
         int GetDrawSides() override { return m_drawSides; }
         DrawShapeType GetDrawShape() override { return m_drawShape; }
+        int GetDrawStairSteps() override { return m_drawStairSteps; }
+        bool GetDrawStairByHeight() override { return m_drawStairByHeight; }
+        float GetDrawStepHeight() override { return m_drawStepHeight; }
+        int GetDrawStairRotation() override { return m_drawStairRotation; }
+        bool GetDrawUnitCube() override { return m_drawUnitCube; }
+        void SetVoxelCell(const AZ::Vector3& cellMin, bool filled) override;
 
         // EditorComponentSelectionRequestsBus overrides ...
         AZ::Aabb GetEditorSelectionBoundsViewport(const AzFramework::ViewportInfo& viewportInfo) override;
@@ -121,8 +128,21 @@ namespace WhiteBox
         //! When the Draw Shape changes, set a sensible default Draw Sides for it and
         //! refresh the property grid so the Draw Sides field updates.
         AZ::u32 OnDrawShapeChange();
+        //! Draw Sides only matters for round / sphere shapes; hide it otherwise.
+        AZ::Crc32 DrawSidesVisibility() const;
+        //! Staircase-only controls (the shared switch + rotation).
+        AZ::Crc32 StairVisibility() const;
+        //! Draw Steps (count) only shows for a Staircase in step-count mode.
+        AZ::Crc32 DrawStepsVisibility() const;
+        //! Step Height only shows for a Staircase in step-height mode.
+        AZ::Crc32 StepHeightVisibility() const;
         //! Apply a CSG boolean using the White Box mesh on m_booleanSourceEntity.
         void ApplyBoolean();
+        //! Update the voxel-stamped geometry in place: remove the faces belonging to
+        //! the previous voxel surface (@p oldCells) and add the surface for the new
+        //! cell set (@p newCells), leaving all freeform mesh edits intact.
+        void RegenerateVoxelMesh(
+            const AZStd::unordered_set<AZ::u64>& oldCells, const AZStd::unordered_set<AZ::u64>& newCells);
 
         //! The mesh used for RENDER / collision / bounds / selection. In live
         //! (non-destructive) boolean mode this is the evaluated result; otherwise
@@ -160,12 +180,19 @@ namespace WhiteBox
         bool m_flipYZForExport = false; //!< Flips the Y and Z components of white box vertices when exporting for different coordinate systems
         int m_drawSides = 4; //!< Side count the Draw Shape tool uses for round / N-gon shapes (4 = box/square).
         DrawShapeType m_drawShape = DrawShapeType::Box; //!< Shape the Draw Shape tool builds.
+        int m_drawStairSteps = 8; //!< Number of steps the Draw Shape tool uses when building a Staircase (count mode).
+        bool m_drawStairByHeight = false; //!< Staircase divided by a fixed riser height instead of a fixed step count.
+        float m_drawStepHeight = 0.25f; //!< Riser height used when a Staircase is divided by step height.
+        int m_drawStairRotation = 0; //!< Staircase orientation in 90-degree steps (0..3) about the surface normal.
+        bool m_drawUnitCube = false; //!< Draw mode click-stamps grid-snapped unit cubes (CSG) instead of drag-draw.
 
         AZ::EntityId m_booleanSourceEntity; //!< Another entity whose White Box mesh is used as a boolean operand.
         Api::BooleanOperation m_booleanOperation =
             Api::BooleanOperation::Subtraction; //!< How to combine the source mesh with this one.
         bool m_hideSourceAfterApply = false;   //!< Hide the source entity after a successful Apply Boolean.
         bool m_deleteSourceAfterApply = false; //!< Delete the source entity after a successful Apply Boolean.
+
+        AZStd::vector<AZ::u64> m_voxelCells; //!< Packed integer cell coords filled by the Unit Cube Stamp tool.
 
         bool m_liveBoolean = false; //!< Non-destructive: keep the base editable, evaluate the boolean for display only.
         Api::WhiteBoxMeshPtr m_displayMesh; //!< Evaluated (base [op] source) mesh used for display while live.

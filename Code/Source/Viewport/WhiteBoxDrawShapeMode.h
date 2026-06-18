@@ -131,6 +131,30 @@ namespace WhiteBox
         DrawShapeType CurrentShape() const;
         int CurrentSides() const;
 
+        //! Number of steps to build for a Staircase, read from the component's
+        //! "Step Count" property (clamped to a safe range).
+        int CurrentStairSteps() const;
+
+        //! Staircase step-division mode / step height / rotation, from the component.
+        bool CurrentStairByHeight() const;
+        float CurrentStepHeight() const;
+        int CurrentStairRotation() const;
+
+        //! Effective staircase step count for the current pull height: the fixed
+        //! "Step Count" in count mode, or derived from "Step Height" otherwise.
+        int EffectiveStairSteps() const;
+
+        //! Whether the component's "Unit Cube Stamp" mode is active.
+        bool UnitCubeMode() const;
+        //! Snapped local-space min corner of the unit cube targeted by a hit.
+        //! @param carve subtract (true) targets the clicked cell; add (false) the empty cell beyond it.
+        bool UnitCubeCell(
+            const AZ::Transform& worldFromLocal, const AZ::Vector3& hitWorld, const AZ::Vector3& hitNormal, bool carve,
+            AZ::Vector3& outMinLocal) const;
+        //! Stamp (union) or remove (subtract) a grid-snapped 1x1x1 cube at a hit.
+        void StampUnitCube(
+            const AZ::Transform& worldFromLocal, const AZ::Vector3& hitWorld, const AZ::Vector3& hitNormal, bool carve);
+
         //! Begin a numeric depth session if we're in the height-pull phase.
         //! @return true if numeric input is now active (and the key should apply).
         bool BeginNumericIfPulling();
@@ -162,6 +186,11 @@ namespace WhiteBox
 
         //! World-space Y (up) value of the ground plane established on first click.
         float m_groundZ = 0.f;
+
+        //! Unit-cube stamp hover preview (local-space min corner of the target cell).
+        bool m_unitCubeHoverValid = false;
+        bool m_unitCubeCarve = false;
+        AZ::Vector3 m_unitCubeMinLocal = AZ::Vector3::CreateZero();
 
     };
 } // namespace WhiteBox

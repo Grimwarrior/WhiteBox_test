@@ -39,6 +39,7 @@
 #include <AzCore/Casting/numeric_cast.h>
 #include <AzCore/Component/ComponentApplicationBus.h>
 #include <AzCore/Component/TransformBus.h>
+#include <AzCore/std/containers/array.h>
 #include "EditorWhiteBoxComponent.h"
 #include <cmath>
 
@@ -59,15 +60,36 @@ namespace WhiteBox
         fwd   = up.Cross(right).GetNormalized();
     }
 
+    // Re-assign the in-plane axes for a staircase so the SAME drawn footprint is
+    // re-oriented in 90-degree steps: which axis is the run (ascent) and which way
+    // it climbs. The footprint rectangle (and its centre) is unchanged; only the
+    // roles/signs of the axes change, so 1 = swap run/width, 2 = flip the climb to
+    // the first-clicked corner, 3 = swap + flip.
+    static void ApplyStairRotation(AZ::Vector3& uAxis, AZ::Vector3& vAxis, int rotation)
+    {
+        const int k = ((rotation % 4) + 4) % 4;
+        const AZ::Vector3 u = uAxis;
+        const AZ::Vector3 v = vAxis;
+        switch (k)
+        {
+        case 1: uAxis =  v; vAxis =  u; break;
+        case 2: uAxis =  u; vAxis = -v; break;
+        case 3: uAxis =  v; vAxis = -u; break;
+        default: break; // 0
+        }
+    }
+
     static const char* DrawShapeName(DrawShapeType shape)
     {
         switch (shape)
         {
-        case DrawShapeType::Box:      return "Box";
-        case DrawShapeType::Cylinder: return "Cylinder";
-        case DrawShapeType::Pyramid:  return "Pyramid";
-        case DrawShapeType::Cone:     return "Cone";
-        default:                      return "Shape";
+        case DrawShapeType::Box:       return "Box";
+        case DrawShapeType::Cylinder:  return "Cylinder";
+        case DrawShapeType::Pyramid:   return "Pyramid";
+        case DrawShapeType::Cone:      return "Cone";
+        case DrawShapeType::Sphere:    return "Sphere";
+        case DrawShapeType::Staircase: return "Staircase";
+        default:                       return "Shape";
         }
     }
 
@@ -191,6 +213,207 @@ namespace WhiteBox
         return ring;
     }
 
+    // Build a watertight stepped "staircase" solid that rises along +v (the drawn
+    // footprint's second axis) and spans the vertical range [baseUp, topUp].
+    //
+    // Unlike a naive stack of boxes, only the OUTER shell is emitted - bottom, back,
+    // each step's tread + riser, and two stepped side caps - so there are no internal
+    // walls between steps and the result reads as one merged solid. Every vertex lies
+    // on an (N+1) x (N+1) grid and is shared between faces (created on demand), which
+    // also avoids T-junctions, keeping the topology clean and manifold.
+    static void BuildStaircaseSolid(
+        WhiteBoxMesh& mesh, const AZ::Transform& localFromWorld,
+        const AZ::Vector3& center, const AZ::Vector3& uAxis, const AZ::Vector3& vAxis, const AZ::Vector3& up,
+        const float baseUp, const float topUp, const int stepsIn)
+    {
+        const int N = AZ::GetClamp(stepsIn, 1, 256);
+
+        const AZ::Vector3 origin = center - uAxis * 0.5f - vAxis * 0.5f + up * baseUp;
+        const float totalRise = topUp - baseUp;                 // signed: follows the pull direction
+        const float signR = (totalRise >= 0.0f) ? 1.0f : -1.0f; // up/down orientation of the steps
+
+        const AZ::Vector3 uHat  = uAxis.GetNormalizedSafe();
+        const AZ::Vector3 vHat  = vAxis.GetNormalizedSafe();
+        const AZ::Vector3 upHat = up.GetNormalizedSafe();
+
+        // Shared vertex grid, indexed by (uSide, vi, hi) and created on demand.
+        AZStd::vector<AZ::Vector3> localPos;
+        AZStd::vector<Api::VertexHandle> vh;
+        const int stride = N + 1;
+        AZStd::vector<int> vertIndex(static_cast<size_t>(2) * stride * stride, -1);
+
+        const auto worldPos = [&](int uSide, int vi, int hi) -> AZ::Vector3
+        {
+            return origin + uAxis * static_cast<float>(uSide)
+                + vAxis * (static_cast<float>(vi) / static_cast<float>(N))
+                + up * (totalRise * static_cast<float>(hi) / static_cast<float>(N));
+        };
+        const auto getV = [&](int uSide, int vi, int hi) -> AZ::u32
+        {
+            const int key = (uSide * stride + vi) * stride + hi;
+            if (vertIndex[key] < 0)
+            {
+                const AZ::Vector3 local = localFromWorld.TransformPoint(worldPos(uSide, vi, hi));
+                vertIndex[key] = aznumeric_cast<int>(vh.size());
+                localPos.push_back(local);
+                vh.push_back(Api::AddVertex(mesh, local));
+            }
+            return aznumeric_cast<AZ::u32>(vertIndex[key]);
+        };
+
+        // Add one convex polygon (ordered grid points) wound so its outward normal
+        // matches @p outwardWorld. Fan-triangulated, emitted as a single white box
+        // polygon so the internal triangulation edges are not shown.
+        const auto addPoly =
+            [&](const AZStd::vector<AZStd::array<int, 3>>& pts, const AZ::Vector3& outwardWorld)
+        {
+            AZStd::vector<AZ::u32> loop;
+            loop.reserve(pts.size());
+            for (const auto& p : pts)
+            {
+                loop.push_back(getV(p[0], p[1], p[2]));
+            }
+            const AZ::Vector3 a = localPos[loop[0]];
+            const AZ::Vector3 b = localPos[loop[1]];
+            const AZ::Vector3 c = localPos[loop[2]];
+            const AZ::Vector3 nrm = (b - a).Cross(c - a);
+            const AZ::Vector3 outLocal = AzToolsFramework::TransformDirectionNoScaling(localFromWorld, outwardWorld);
+            const bool flip = nrm.Dot(outLocal) < 0.0f;
+
+            Api::FaceVertHandlesList faces;
+            faces.reserve(loop.size() - 2);
+            for (size_t i = 1; i + 1 < loop.size(); ++i)
+            {
+                Api::VertexHandle v0 = vh[loop[0]];
+                Api::VertexHandle v1 = vh[loop[i]];
+                Api::VertexHandle v2 = vh[loop[i + 1]];
+                if (flip)
+                {
+                    AZStd::swap(v1, v2);
+                }
+                faces.push_back(Api::FaceVertHandles{ { v0, v1, v2 } });
+            }
+            Api::AddPolygon(mesh, faces);
+        };
+
+        for (int i = 0; i < N; ++i)
+        {
+            // Stepped side caps. The left edge of each cap (i >= 1) is split at (i,i)
+            // so it matches the neighbouring cap column below + the riser above (no
+            // T-junction). Ordered from the bottom-right corner so the fan never makes
+            // a degenerate (collinear) triangle.
+            AZStd::vector<AZStd::array<int, 3>> capL, capR;
+            if (i == 0)
+            {
+                capL = { {0, 1, 0}, {0, 1, 1}, {0, 0, 1}, {0, 0, 0} };
+                capR = { {1, 1, 0}, {1, 1, 1}, {1, 0, 1}, {1, 0, 0} };
+            }
+            else
+            {
+                capL = { {0, i + 1, 0}, {0, i + 1, i + 1}, {0, i, i + 1}, {0, i, i}, {0, i, 0} };
+                capR = { {1, i + 1, 0}, {1, i + 1, i + 1}, {1, i, i + 1}, {1, i, i}, {1, i, 0} };
+            }
+            addPoly(capL, -uHat);
+            addPoly(capR, uHat);
+
+            // Bottom slab under this column (outward away from the steps).
+            addPoly({ {0, i, 0}, {1, i, 0}, {1, i + 1, 0}, {0, i + 1, 0} }, upHat * (-signR));
+            // Tread (the top surface of this step).
+            addPoly({ {0, i, i + 1}, {1, i, i + 1}, {1, i + 1, i + 1}, {0, i + 1, i + 1} }, upHat * signR);
+            // Riser (the vertical front face of this step).
+            addPoly({ {0, i, i}, {1, i, i}, {1, i, i + 1}, {0, i, i + 1} }, -vHat);
+        }
+
+        // Back face (rear of the tallest step).
+        addPoly({ {0, N, 0}, {1, N, 0}, {1, N, N}, {0, N, N} }, vHat);
+    }
+
+    // Build a UV ellipsoid ("sphere") inscribed in the drawn footprint: in-plane
+    // radii from uAxis/vAxis, vertical radius from the [baseUp, topUp] span. The
+    // resolution is driven by @p segments (longitude); latitude rings derive from it.
+    static void BuildSphereSolid(
+        WhiteBoxMesh& mesh, const AZ::Transform& localFromWorld,
+        const AZ::Vector3& center, const AZ::Vector3& uAxis, const AZ::Vector3& vAxis, const AZ::Vector3& up,
+        const float baseUp, const float topUp, const int segmentsIn)
+    {
+        const int segments = AZ::GetClamp(segmentsIn, 3, 256);          // longitude (around up)
+        const int rings    = AZ::GetClamp(segmentsIn / 2, 2, 128);     // latitude (pole to pole)
+
+        const AZ::Vector3 uHat = uAxis.GetNormalizedSafe();
+        const AZ::Vector3 vHat = vAxis.GetNormalizedSafe();
+        const AZ::Vector3 wHat = up.GetNormalizedSafe();
+
+        const float a = uAxis.GetLength() * 0.5f;            // radius along u
+        const float b = vAxis.GetLength() * 0.5f;            // radius along v
+        const float c = (topUp - baseUp) * 0.5f;             // radius along up (signed span ok)
+        const AZ::Vector3 sphereCenter = center + up * ((baseUp + topUp) * 0.5f);
+
+        // Direction on the unit sphere for ring i (latitude) and segment j (longitude).
+        const auto dirAt = [&](int i, int j) -> AZ::Vector3
+        {
+            const float phi = -AZ::Constants::Pi * 0.5f +
+                AZ::Constants::Pi * (static_cast<float>(i) / static_cast<float>(rings)); // -pi/2 .. +pi/2
+            const float lon = AZ::Constants::TwoPi * (static_cast<float>(j) / static_cast<float>(segments));
+            const float cosPhi = std::cos(phi);
+            return sphereCenter
+                + uHat * (a * std::cos(lon) * cosPhi)
+                + vHat * (b * std::sin(lon) * cosPhi)
+                + wHat * (c * std::sin(phi));
+        };
+
+        // Build a (rings+1) x segments grid of vertices (pole rows duplicated).
+        AZStd::vector<AZ::Vector3> localPos;
+        AZStd::vector<Api::VertexHandle> vh;
+        localPos.reserve(static_cast<size_t>(rings + 1) * segments);
+        vh.reserve(static_cast<size_t>(rings + 1) * segments);
+
+        const auto addVertex = [&](const AZ::Vector3& world) -> AZ::u32
+        {
+            const AZ::Vector3 local = localFromWorld.TransformPoint(world);
+            localPos.push_back(local);
+            vh.push_back(Api::AddVertex(mesh, local));
+            return aznumeric_cast<AZ::u32>(vh.size() - 1);
+        };
+
+        AZStd::vector<AZStd::vector<AZ::u32>> grid;
+        grid.resize(rings + 1);
+        for (int i = 0; i <= rings; ++i)
+        {
+            grid[i].resize(segments);
+            for (int j = 0; j < segments; ++j)
+            {
+                grid[i][j] = addVertex(dirAt(i, j));
+            }
+        }
+
+        const AZ::Vector3 localCenter = localFromWorld.TransformPoint(sphereCenter);
+
+        for (int i = 0; i < rings; ++i)
+        {
+            for (int j = 0; j < segments; ++j)
+            {
+                const int jn = (j + 1) % segments;
+                if (i == 0)
+                {
+                    // South pole cap -> triangle.
+                    const AZStd::vector<AZ::u32> tri = { grid[0][j], grid[1][jn], grid[1][j] };
+                    AddOutwardFace(mesh, vh, localPos, tri, localCenter);
+                }
+                else if (i == rings - 1)
+                {
+                    // North pole cap -> triangle.
+                    const AZStd::vector<AZ::u32> tri = { grid[i][j], grid[i][jn], grid[i + 1][j] };
+                    AddOutwardFace(mesh, vh, localPos, tri, localCenter);
+                }
+                else
+                {
+                    const AZStd::vector<AZ::u32> quad = { grid[i][j], grid[i][jn], grid[i + 1][jn], grid[i + 1][j] };
+                    AddOutwardFace(mesh, vh, localPos, quad, localCenter);
+                }
+            }
+        }
+    }
+
     // Build a closed shape solid into @p mesh from a footprint in the surface
     // plane (centre + in-plane axes uAxis/vAxis) extruded along @p up between the
     // base plane (centre + up*baseUp) and the top plane / apex (centre + up*topUp).
@@ -199,8 +422,20 @@ namespace WhiteBox
     static void BuildShapeSolid(
         WhiteBoxMesh& mesh, const AZ::Transform& localFromWorld,
         const AZ::Vector3& center, const AZ::Vector3& uAxis, const AZ::Vector3& vAxis, const AZ::Vector3& up,
-        const float baseUp, const float topUp, const DrawShapeType shapeType, const int sidesIn)
+        const float baseUp, const float topUp, const DrawShapeType shapeType, const int sidesIn, const int steps = 8)
     {
+        // Sphere and Staircase have dedicated builders (not prism/pyramid based).
+        if (shapeType == DrawShapeType::Sphere)
+        {
+            BuildSphereSolid(mesh, localFromWorld, center, uAxis, vAxis, up, baseUp, topUp, sidesIn);
+            return;
+        }
+        if (shapeType == DrawShapeType::Staircase)
+        {
+            BuildStaircaseSolid(mesh, localFromWorld, center, uAxis, vAxis, up, baseUp, topUp, steps);
+            return;
+        }
+
         const bool pointed = (shapeType == DrawShapeType::Pyramid || shapeType == DrawShapeType::Cone);
         const bool round   = (shapeType == DrawShapeType::Cylinder || shapeType == DrawShapeType::Cone);
         const int  sides   = AZ::GetClamp(sidesIn, 3, 256);
@@ -543,6 +778,28 @@ namespace WhiteBox
         const bool  rightDown = mi.m_mouseButtons.Right() && mouseInteraction.m_mouseEvent == MouseEvent::Down;
         const bool  moved     = mouseInteraction.m_mouseEvent == MouseEvent::Move;
 
+        // Unit-cube stamp mode: single click places/removes a grid-snapped cube;
+        // no click-drag-pull state machine.
+        if (UnitCubeMode())
+        {
+            const bool carve = mi.m_keyboardModifiers.Ctrl();
+            m_unitCubeCarve = carve;
+            if (moved || leftDown)
+            {
+                AZ::Vector3 hitNormal;
+                const AZ::Vector3 hitWorld = RaycastToSurface(mi, worldFromLocal, intersectionData, hitNormal);
+                m_unitCubeHoverValid = UnitCubeCell(worldFromLocal, hitWorld, hitNormal, carve, m_unitCubeMinLocal);
+
+                if (leftDown)
+                {
+                    StampUnitCube(worldFromLocal, hitWorld, hitNormal, carve);
+                    return true;
+                }
+            }
+            return false; // let moves/other buttons pass through (camera etc.)
+        }
+        m_unitCubeHoverValid = false;
+
         if (rightDown)
         {
             Cancel();
@@ -686,13 +943,20 @@ namespace WhiteBox
             AZStd::swap(uAxis, vAxis);
         }
 
+        // Footprint centre from the original (un-rotated) drag.
         const AZ::Vector3 center = m_worldP0 + (uAxis + vAxis) * 0.5f;
+
+        // Staircase: re-orient the run/width axes within the same footprint.
+        if (CurrentShape() == DrawShapeType::Staircase)
+        {
+            ApplyStairRotation(uAxis, vAxis, CurrentStairRotation());
+        }
 
         // Build the chosen shape directly into the mesh: base on the surface
         // (up offset 0), top/apex at the pull height.
         BuildShapeSolid(
             *whiteBox, worldFromLocal.GetInverse(), center, uAxis, vAxis, up,
-            0.0f, m_height, CurrentShape(), CurrentSides());
+            0.0f, m_height, CurrentShape(), CurrentSides(), EffectiveStairSteps());
 
         Api::CalculateNormals(*whiteBox);
         Api::CalculatePlanarUVs(*whiteBox);
@@ -768,12 +1032,18 @@ namespace WhiteBox
         const float baseUp = carve ?  eps           : -eps;
         const float topUp  = carve ? -(depth + eps) : (depth + eps);
 
+        // Staircase: re-orient the run/width axes within the same footprint.
+        if (CurrentShape() == DrawShapeType::Staircase)
+        {
+            ApplyStairRotation(uAxis, vAxis, CurrentStairRotation());
+        }
+
         // Build the cutter as its own watertight white box mesh, expressed in the
         // TARGET's local space so we can boolean with an identity transform.
         Api::WhiteBoxMeshPtr cutter = Api::CreateWhiteBoxMesh();
         BuildShapeSolid(
             *cutter, worldFromLocal.GetInverse(), center, uAxis, vAxis, up,
-            baseUp, topUp, CurrentShape(), CurrentSides());
+            baseUp, topUp, CurrentShape(), CurrentSides(), EffectiveStairSteps());
         Api::CalculateNormals(*cutter);
 
         AzToolsFramework::ScopedUndoBatch undoBatch(carve ? "Carve White Box" : "Add White Box");
@@ -879,11 +1149,34 @@ namespace WhiteBox
         [[maybe_unused]] const AzFramework::ViewportInfo& viewportInfo,
         AzFramework::DebugDisplayRequests& debugDisplay)
     {
+        // Unit-cube stamp hover ghost (drawn even when the draw state is Idle).
+        if (m_unitCubeHoverValid)
+        {
+            AZ::Vector3 c[8];
+            for (int i = 0; i < 8; ++i)
+            {
+                const AZ::Vector3 localCorner = m_unitCubeMinLocal +
+                    AZ::Vector3(static_cast<float>(i & 1), static_cast<float>((i >> 1) & 1), static_cast<float>((i >> 2) & 1));
+                c[i] = m_worldFromLocal.TransformPoint(localCorner);
+            }
+            const AZ::Color color = m_unitCubeCarve ? AZ::Color(1.0f, 0.25f, 0.25f, 1.0f) : AZ::Color(0.3f, 1.0f, 0.3f, 1.0f);
+            debugDisplay.DepthTestOff();
+            debugDisplay.SetColor(color);
+            debugDisplay.SetLineWidth(static_cast<float>(cl_whiteBoxEdgeVisualWidth));
+            // 12 edges of the cube (corner index bits = x,y,z)
+            const int edges[12][2] = {
+                {0,1},{2,3},{4,5},{6,7}, {0,2},{1,3},{4,6},{5,7}, {0,4},{1,5},{2,6},{3,7} };
+            for (const auto& e : edges)
+            {
+                debugDisplay.DrawLine(c[e[0]], c[e[1]]);
+            }
+        }
+
         if (m_state == DrawState::Idle)
         {
             return;
         }
-    
+
         // Build the surface-aligned frame from the normal captured at the anchor.
         AZ::Vector3 right, fwd, up;
         BasisFromNormal(m_surfaceNormal, right, fwd, up);
@@ -897,17 +1190,29 @@ namespace WhiteBox
         }
 
         const AZ::Vector3 center = m_worldP0 + (uAxis + vAxis) * 0.5f;
+
+        const DrawShapeType shape = CurrentShape();
+        // Staircase: re-orient run/width within the same footprint for the preview.
+        if (shape == DrawShapeType::Staircase)
+        {
+            ApplyStairRotation(uAxis, vAxis, CurrentStairRotation());
+        }
+
         const AZ::Vector3 ru     = uAxis * 0.5f;
         const AZ::Vector3 rv     = vAxis * 0.5f;
         const AZ::Vector3 ext    = up * m_height;   // signed — preview follows pull direction
 
-        const DrawShapeType shape = CurrentShape();
-        const bool pointed = (shape == DrawShapeType::Pyramid || shape == DrawShapeType::Cone);
-        const bool round   = (shape == DrawShapeType::Cylinder || shape == DrawShapeType::Cone);
+        const bool isSphere = (shape == DrawShapeType::Sphere);
+        const bool isStair  = (shape == DrawShapeType::Staircase);
+        const bool pointed  = (shape == DrawShapeType::Pyramid || shape == DrawShapeType::Cone);
+        const bool round    = (shape == DrawShapeType::Cylinder || shape == DrawShapeType::Cone || isSphere);
 
-        // Preview the ACTUAL shape footprint (N-gon), matching what will be built.
+        // Preview the ACTUAL shape footprint, matching what will be built. The
+        // staircase footprint is the drawn rectangle (4 corners).
         const int sides = CurrentSides();
-        const AZStd::vector<AZ::Vector3> ring = ComputeFootprintRing(center, ru, rv, round, sides);
+        const int steps = EffectiveStairSteps();
+        const int footprintSides = isStair ? 4 : sides;
+        const AZStd::vector<AZ::Vector3> ring = ComputeFootprintRing(center, ru, rv, round, footprintSides);
         const size_t n = ring.size();
 
         const bool pullingHeight = (m_state == DrawState::PullingHeight);
@@ -947,11 +1252,60 @@ namespace WhiteBox
             debugDisplay.DrawTriangles(baseTris, fillColor);
         }
 
-        // --- During height pull, draw the extrusion (prism) or the apex (pointed) ---
+        // --- During height pull, draw the extrusion / apex / sphere / staircase ---
         if (pullingHeight)
         {
             debugDisplay.SetColor(outlineColor);
-            if (pointed)
+            if (isStair)
+            {
+                // Wireframe of every step box, matching BuildStaircaseSolid.
+                const AZ::Vector3 origin = center - ru - rv; // base-plane min corner
+                const int stepCount = AZ::GetClamp(steps, 1, 256);
+                const int edges[12][2] = {
+                    {0,1},{2,3},{4,5},{6,7}, {0,2},{1,3},{4,6},{5,7}, {0,4},{1,5},{2,6},{3,7} };
+                for (int s = 0; s < stepCount; ++s)
+                {
+                    const float v0 = static_cast<float>(s) / static_cast<float>(stepCount);
+                    const float v1 = static_cast<float>(s + 1) / static_cast<float>(stepCount);
+                    const float h1 = v1 * m_height;
+                    AZ::Vector3 c[8];
+                    for (int k = 0; k < 8; ++k)
+                    {
+                        const float fu = static_cast<float>(k & 1);
+                        const float fv = ((k >> 1) & 1) ? v1 : v0;
+                        const float fh = ((k >> 2) & 1) ? h1 : 0.0f;
+                        c[k] = origin + uAxis * fu + vAxis * fv + up * fh;
+                    }
+                    for (const auto& e : edges)
+                    {
+                        debugDisplay.DrawLine(c[e[0]], c[e[1]]);
+                    }
+                }
+            }
+            else if (isSphere)
+            {
+                // Three great-circle ellipses give a clear sphere gizmo.
+                const AZ::Vector3 sc = center + ext * 0.5f; // sphere centre (mid-height)
+                const AZ::Vector3 au = ru;                  // half-extent along u
+                const AZ::Vector3 av = rv;                  // half-extent along v
+                const AZ::Vector3 aw = ext * 0.5f;          // half-extent along up
+                const int segs = AZ::GetClamp(sides, 8, 64);
+                const auto drawEllipse = [&](const AZ::Vector3& ea, const AZ::Vector3& eb)
+                {
+                    AZ::Vector3 prev = sc + ea;
+                    for (int i = 1; i <= segs; ++i)
+                    {
+                        const float t = AZ::Constants::TwoPi * static_cast<float>(i) / static_cast<float>(segs);
+                        const AZ::Vector3 cur = sc + ea * std::cos(t) + eb * std::sin(t);
+                        debugDisplay.DrawLine(prev, cur);
+                        prev = cur;
+                    }
+                };
+                drawEllipse(au, av); // equator
+                drawEllipse(au, aw); // u-up meridian
+                drawEllipse(av, aw); // v-up meridian
+            }
+            else if (pointed)
             {
                 const AZ::Vector3 apex = center + ext;
                 for (size_t i = 0; i < n; ++i)
@@ -980,9 +1334,56 @@ namespace WhiteBox
             }
         }
 
-        // --- Live shape + side-count readout (the toolbar can't show text) ---
+        // --- Dimension cues: width / length / height on the matching edges ---
+        // (axis-coloured, like a Lumberyard-style measuring overlay).
         {
-            const AZStd::string shapeLabel = AZStd::string::format("%s  |  %d sides", DrawShapeName(shape), sides);
+            const float width  = uAxis.GetLength();    // along u (red)
+            const float length = vAxis.GetLength();    // along v (green)
+            const float height = AZStd::abs(m_height); // along up (blue)
+
+            const AZ::Color widthColor (1.0f, 0.30f, 0.30f, 1.0f);
+            const AZ::Color lengthColor(0.35f, 1.0f, 0.35f, 1.0f);
+            const AZ::Color heightColor(0.45f, 0.60f, 1.0f, 1.0f);
+
+            // Highlight the measured edges in their axis colour.
+            debugDisplay.SetLineWidth(static_cast<float>(cl_whiteBoxEdgeVisualWidth) + 1.0f);
+            const AZ::Vector3 cu0 = center - ru - rv;          // origin corner
+            debugDisplay.SetColor(widthColor);
+            debugDisplay.DrawLine(cu0, cu0 + uAxis);           // width edge (v-)
+            debugDisplay.SetColor(lengthColor);
+            debugDisplay.DrawLine(cu0, cu0 + vAxis);           // length edge (u-)
+
+            // Labels at the edge midpoints.
+            debugDisplay.SetColor(widthColor);
+            debugDisplay.DrawTextLabel(center - rv, 1.1f, AZStd::string::format("%.3f", width).c_str(), true, 0, 0);
+            debugDisplay.SetColor(lengthColor);
+            debugDisplay.DrawTextLabel(center - ru, 1.1f, AZStd::string::format("%.3f", length).c_str(), true, 0, 0);
+
+            if (pullingHeight)
+            {
+                const AZ::Vector3 hBase = center + ru + rv;    // far corner rises with the pull
+                debugDisplay.SetColor(heightColor);
+                debugDisplay.DrawLine(hBase, hBase + ext);     // height edge
+                debugDisplay.DrawTextLabel(hBase + ext * 0.5f, 1.1f, AZStd::string::format("%.3f", height).c_str(), true, 0, 0);
+            }
+            debugDisplay.SetLineWidth(static_cast<float>(cl_whiteBoxEdgeVisualWidth));
+        }
+
+        // --- Live shape readout (the toolbar can't show text) ---
+        {
+            AZStd::string shapeLabel;
+            if (isStair)
+            {
+                shapeLabel = AZStd::string::format("%s  |  %d steps", DrawShapeName(shape), steps);
+            }
+            else if (isSphere)
+            {
+                shapeLabel = AZStd::string::format("%s  |  %d subdiv", DrawShapeName(shape), sides);
+            }
+            else
+            {
+                shapeLabel = AZStd::string::format("%s  |  %d sides", DrawShapeName(shape), sides);
+            }
             debugDisplay.SetColor(AZ::Color(1.0f, 1.0f, 1.0f, 1.0f));
             debugDisplay.DrawTextLabel(center, 1.3f, shapeLabel.c_str(), true, 0, 0);
         }
@@ -1024,6 +1425,91 @@ namespace WhiteBox
         EditorWhiteBoxComponentRequestBus::EventResult(
             sides, m_entityComponentIdPair, &EditorWhiteBoxComponentRequests::GetDrawSides);
         return AZ::GetClamp(sides, 3, 256);
+    }
+
+    int DrawShapeMode::CurrentStairSteps() const
+    {
+        int steps = 8;
+        EditorWhiteBoxComponentRequestBus::EventResult(
+            steps, m_entityComponentIdPair, &EditorWhiteBoxComponentRequests::GetDrawStairSteps);
+        return AZ::GetClamp(steps, 1, 256);
+    }
+
+    bool DrawShapeMode::CurrentStairByHeight() const
+    {
+        bool byHeight = false;
+        EditorWhiteBoxComponentRequestBus::EventResult(
+            byHeight, m_entityComponentIdPair, &EditorWhiteBoxComponentRequests::GetDrawStairByHeight);
+        return byHeight;
+    }
+
+    float DrawShapeMode::CurrentStepHeight() const
+    {
+        float stepHeight = 0.25f;
+        EditorWhiteBoxComponentRequestBus::EventResult(
+            stepHeight, m_entityComponentIdPair, &EditorWhiteBoxComponentRequests::GetDrawStepHeight);
+        return AZ::GetMax(stepHeight, 0.0001f);
+    }
+
+    int DrawShapeMode::CurrentStairRotation() const
+    {
+        int rotation = 0;
+        EditorWhiteBoxComponentRequestBus::EventResult(
+            rotation, m_entityComponentIdPair, &EditorWhiteBoxComponentRequests::GetDrawStairRotation);
+        return ((rotation % 4) + 4) % 4; // normalise to 0..3
+    }
+
+    int DrawShapeMode::EffectiveStairSteps() const
+    {
+        if (!CurrentStairByHeight())
+        {
+            return CurrentStairSteps();
+        }
+        // Derive the count from the pull height so the riser stays a fixed size.
+        const float rise = AZStd::abs(m_height);
+        const int derived = aznumeric_cast<int>(std::lround(rise / CurrentStepHeight()));
+        return AZ::GetClamp(derived, 1, 256);
+    }
+
+    bool DrawShapeMode::UnitCubeMode() const
+    {
+        bool unitCube = false;
+        EditorWhiteBoxComponentRequestBus::EventResult(
+            unitCube, m_entityComponentIdPair, &EditorWhiteBoxComponentRequests::GetDrawUnitCube);
+        return unitCube;
+    }
+
+    bool DrawShapeMode::UnitCubeCell(
+        const AZ::Transform& worldFromLocal, const AZ::Vector3& hitWorld, const AZ::Vector3& hitNormal, const bool carve,
+        AZ::Vector3& outMinLocal) const
+    {
+        const AZ::Transform localFromWorld = worldFromLocal.GetInverse();
+        const AZ::Vector3 localHit = localFromWorld.TransformPoint(hitWorld);
+        const AZ::Vector3 localNormal =
+            AzToolsFramework::TransformDirectionNoScaling(localFromWorld, hitNormal).GetNormalizedSafe();
+
+        // Nudge half a unit off the surface to pick a cell unambiguously:
+        //   add   -> the empty cell on the +normal side (where the new cube appears)
+        //   carve -> the solid cell on the -normal side (the block you clicked)
+        const AZ::Vector3 sample = localHit + localNormal * (carve ? -0.5f : 0.5f);
+        outMinLocal = AZ::Vector3(std::floor(sample.GetX()), std::floor(sample.GetY()), std::floor(sample.GetZ()));
+        return true;
+    }
+
+    void DrawShapeMode::StampUnitCube(
+        const AZ::Transform& worldFromLocal, const AZ::Vector3& hitWorld, const AZ::Vector3& hitNormal, const bool carve)
+    {
+        AZ::Vector3 minLocal;
+        if (!UnitCubeCell(worldFromLocal, hitWorld, hitNormal, carve, minLocal))
+        {
+            return;
+        }
+
+        // Fill (add) or clear (carve) the targeted voxel cell. The component
+        // regenerates a clean, watertight, merged surface from its voxel set - no
+        // CSG round-trip, so no slivers/cracks/non-manifolds from grid geometry.
+        EditorWhiteBoxComponentRequestBus::Event(
+            m_entityComponentIdPair, &EditorWhiteBoxComponentRequests::SetVoxelCell, minLocal, !carve);
     }
 
     // ----------------------------------------------------------------------- //

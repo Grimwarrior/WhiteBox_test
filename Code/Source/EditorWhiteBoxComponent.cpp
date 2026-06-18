@@ -18,6 +18,12 @@
 #include "WhiteBoxComponent.h"
 
 #include <AzCore/Asset/AssetSerializer.h>
+#include <AzCore/std/containers/array.h>
+#include <AzCore/std/containers/set.h>
+#include <AzCore/std/containers/unordered_map.h>
+#include <AzCore/std/containers/unordered_set.h>
+#include <AzCore/std/sort.h>
+#include <cmath>
 #include <AzCore/Component/TransformBus.h>
 #include <AzCore/Console/Console.h>
 #include <AzCore/Math/IntersectSegment.h>
@@ -156,12 +162,16 @@ namespace WhiteBox
         case DrawShapeType::Cone:
             m_drawSides = 24;
             break;
+        case DrawShapeType::Sphere:
+            m_drawSides = 16; // longitude segments; latitude rings derived from this
+            break;
         default:
             break;
         }
 
-        // refresh so the Draw Sides field shows the new value
-        return AZ::Edit::PropertyRefreshLevels::ValuesOnly;
+        // refresh so the Draw Sides / Draw Steps fields show the new value (and
+        // toggle visibility of the Sphere-only / Staircase-only controls)
+        return AZ::Edit::PropertyRefreshLevels::EntireTree;
     }
 
     void EditorWhiteBoxComponent::ApplyBoolean()
@@ -236,6 +246,216 @@ namespace WhiteBox
         {
             AzToolsFramework::SetEntityVisibility(m_booleanSourceEntity, false);
         }
+    }
+
+    namespace VoxelDetail
+    {
+        // Pack/unpack integer cell coordinates into a single key (21 bits per axis,
+        // biased so negatives work; range ~ +/-1,000,000 cells per axis).
+        constexpr AZ::s64 CellBias = 1 << 20;
+        constexpr AZ::u64 CellMask = (AZ::u64(1) << 21) - 1;
+
+        AZ::u64 PackCell(int x, int y, int z)
+        {
+            return ((AZ::u64(x + CellBias) & CellMask) << 42) | ((AZ::u64(y + CellBias) & CellMask) << 21) |
+                (AZ::u64(z + CellBias) & CellMask);
+        }
+        void UnpackCell(AZ::u64 key, int& x, int& y, int& z)
+        {
+            x = static_cast<int>((key >> 42) & CellMask) - CellBias;
+            y = static_cast<int>((key >> 21) & CellMask) - CellBias;
+            z = static_cast<int>(key & CellMask) - CellBias;
+        }
+
+        // Build a watertight, vertex-shared surface for a set of filled unit cells:
+        // for every cell, emit only the faces whose neighbour cell is empty.
+        void GenerateSurface(WhiteBoxMesh& mesh, const AZStd::unordered_set<AZ::u64>& cells)
+        {
+            AZStd::unordered_map<AZ::u64, Api::VertexHandle> verts;
+            const auto vert = [&](int x, int y, int z) -> Api::VertexHandle
+            {
+                const AZ::u64 key = PackCell(x, y, z);
+                const auto it = verts.find(key);
+                if (it != verts.end())
+                {
+                    return it->second;
+                }
+                const Api::VertexHandle h = Api::AddVertex(
+                    mesh, AZ::Vector3(static_cast<float>(x), static_cast<float>(y), static_cast<float>(z)));
+                verts.emplace(key, h);
+                return h;
+            };
+            const auto filled = [&](int x, int y, int z) { return cells.count(PackCell(x, y, z)) != 0; };
+
+            for (const AZ::u64 cellKey : cells)
+            {
+                int x, y, z;
+                UnpackCell(cellKey, x, y, z);
+                const auto corner = [&](int a, int b, int c) { return vert(x + a, y + b, z + c); };
+
+                // each quad wound CCW as seen from outside (so its normal points out)
+                if (!filled(x + 1, y, z)) // +X
+                    Api::AddQuadPolygon(mesh, corner(1, 0, 0), corner(1, 1, 0), corner(1, 1, 1), corner(1, 0, 1));
+                if (!filled(x - 1, y, z)) // -X
+                    Api::AddQuadPolygon(mesh, corner(0, 1, 0), corner(0, 0, 0), corner(0, 0, 1), corner(0, 1, 1));
+                if (!filled(x, y + 1, z)) // +Y
+                    Api::AddQuadPolygon(mesh, corner(1, 1, 0), corner(0, 1, 0), corner(0, 1, 1), corner(1, 1, 1));
+                if (!filled(x, y - 1, z)) // -Y
+                    Api::AddQuadPolygon(mesh, corner(0, 0, 0), corner(1, 0, 0), corner(1, 0, 1), corner(0, 0, 1));
+                if (!filled(x, y, z + 1)) // +Z
+                    Api::AddQuadPolygon(mesh, corner(0, 0, 1), corner(1, 0, 1), corner(1, 1, 1), corner(0, 1, 1));
+                if (!filled(x, y, z - 1)) // -Z
+                    Api::AddQuadPolygon(mesh, corner(0, 1, 0), corner(1, 1, 0), corner(1, 0, 0), corner(0, 0, 0));
+            }
+        }
+
+        // Quantize a vertex position to an integer lattice corner. Returns false if
+        // the position is not (near) an integer point - such a vertex cannot belong
+        // to the voxel surface, so its owning face is treated as freeform geometry.
+        bool QuantizeCorner(const AZ::Vector3& p, int& x, int& y, int& z)
+        {
+            constexpr float eps = 1e-3f;
+            const float rx = std::round(p.GetX());
+            const float ry = std::round(p.GetY());
+            const float rz = std::round(p.GetZ());
+            if (std::abs(p.GetX() - rx) > eps || std::abs(p.GetY() - ry) > eps || std::abs(p.GetZ() - rz) > eps)
+            {
+                return false;
+            }
+            x = static_cast<int>(rx);
+            y = static_cast<int>(ry);
+            z = static_cast<int>(rz);
+            return true;
+        }
+
+        // Order-independent identity of a voxel-surface triangle: the sorted packed
+        // keys of its three integer corners. Two triangles with the same three
+        // lattice corners (regardless of winding) compare equal.
+        using FaceSignature = AZStd::array<AZ::u64, 3>;
+
+        // AZStd::array provides no operator< in this engine version, so order the
+        // set explicitly (lexicographically over the three packed corner keys).
+        struct FaceSignatureLess
+        {
+            bool operator()(const FaceSignature& a, const FaceSignature& b) const
+            {
+                for (size_t i = 0; i < 3; ++i)
+                {
+                    if (a[i] != b[i])
+                    {
+                        return a[i] < b[i];
+                    }
+                }
+                return false;
+            }
+        };
+        using FaceSignatureSet = AZStd::set<FaceSignature, FaceSignatureLess>;
+
+        bool FaceSignatureFromPositions(const AZStd::vector<AZ::Vector3>& positions, FaceSignature& outSig)
+        {
+            if (positions.size() != 3)
+            {
+                return false;
+            }
+            for (size_t i = 0; i < 3; ++i)
+            {
+                int x, y, z;
+                if (!QuantizeCorner(positions[i], x, y, z))
+                {
+                    return false;
+                }
+                outSig[i] = PackCell(x, y, z);
+            }
+            AZStd::sort(outSig.begin(), outSig.end());
+            return true;
+        }
+
+        // The set of triangle signatures that make up the voxel surface for `cells`.
+        // Generated through the exact same path as the live mesh, so the signatures
+        // match the faces actually present after a stamp/load.
+        FaceSignatureSet SurfaceFaceSignatures(const AZStd::unordered_set<AZ::u64>& cells)
+        {
+            FaceSignatureSet sigs;
+            if (cells.empty())
+            {
+                return sigs;
+            }
+            Api::WhiteBoxMeshPtr temp = Api::CreateWhiteBoxMesh();
+            GenerateSurface(*temp, cells);
+            for (const Api::FaceHandle& fh : Api::MeshFaceHandles(*temp))
+            {
+                FaceSignature sig;
+                if (FaceSignatureFromPositions(Api::FaceVertexPositions(*temp, fh), sig))
+                {
+                    sigs.insert(sig);
+                }
+            }
+            return sigs;
+        }
+    } // namespace VoxelDetail
+
+    void EditorWhiteBoxComponent::RegenerateVoxelMesh(
+        const AZStd::unordered_set<AZ::u64>& oldCells, const AZStd::unordered_set<AZ::u64>& newCells)
+    {
+        WhiteBoxMesh* mesh = GetWhiteBoxMesh();
+        if (mesh == nullptr)
+        {
+            return;
+        }
+
+        // Remove ONLY the faces that belong to the previous voxel surface, leaving
+        // every freeform face (and any voxel face the user has since hand-edited off
+        // the integer lattice) untouched. Identifying the old faces by signature -
+        // rather than clearing the whole mesh - is what preserves manual edits.
+        const VoxelDetail::FaceSignatureSet oldSigs = VoxelDetail::SurfaceFaceSignatures(oldCells);
+        if (!oldSigs.empty())
+        {
+            Api::FaceHandles toRemove;
+            for (const Api::FaceHandle& fh : Api::MeshFaceHandles(*mesh))
+            {
+                VoxelDetail::FaceSignature sig;
+                if (VoxelDetail::FaceSignatureFromPositions(Api::FaceVertexPositions(*mesh, fh), sig) &&
+                    oldSigs.find(sig) != oldSigs.end())
+                {
+                    toRemove.push_back(fh);
+                }
+            }
+            if (!toRemove.empty())
+            {
+                // Single batched removal - handles are invalidated by garbage_collect.
+                Api::RemoveFaces(*mesh, toRemove);
+            }
+        }
+
+        // Add the new voxel surface (a self-welded, watertight shell).
+        VoxelDetail::GenerateSurface(*mesh, newCells);
+
+        Api::CalculateNormals(*mesh);
+        Api::CalculatePlanarUVs(*mesh);
+
+        SerializeWhiteBox();
+        RebuildWhiteBox();
+    }
+
+    void EditorWhiteBoxComponent::SetVoxelCell(const AZ::Vector3& cellMin, const bool filled)
+    {
+        const AZ::u64 key = VoxelDetail::PackCell(
+            static_cast<int>(std::floor(cellMin.GetX())), static_cast<int>(std::floor(cellMin.GetY())),
+            static_cast<int>(std::floor(cellMin.GetZ())));
+
+        // rebuild the set from the serialized vector each time (keeps in sync with undo)
+        const AZStd::unordered_set<AZ::u64> oldCells(m_voxelCells.begin(), m_voxelCells.end());
+        AZStd::unordered_set<AZ::u64> newCells = oldCells;
+        const bool changed = filled ? newCells.insert(key).second : (newCells.erase(key) > 0);
+        if (!changed)
+        {
+            return; // already in the requested state
+        }
+
+        AzToolsFramework::ScopedUndoBatch undoBatch(filled ? "Stamp Voxel" : "Remove Voxel");
+        m_voxelCells.assign(newCells.begin(), newCells.end());
+        RegenerateVoxelMesh(oldCells, newCells);
+        undoBatch.MarkEntityDirty(GetEntityId());
     }
 
     WhiteBoxMesh* EditorWhiteBoxComponent::EvaluatedMesh()
@@ -383,6 +603,12 @@ namespace WhiteBox
                 ->Field("FlipYZForExport", &EditorWhiteBoxComponent::m_flipYZForExport)
                 ->Field("DrawSides", &EditorWhiteBoxComponent::m_drawSides)
                 ->Field("DrawShape", &EditorWhiteBoxComponent::m_drawShape)
+                ->Field("DrawStairSteps", &EditorWhiteBoxComponent::m_drawStairSteps)
+                ->Field("DrawStairByHeight", &EditorWhiteBoxComponent::m_drawStairByHeight)
+                ->Field("DrawStepHeight", &EditorWhiteBoxComponent::m_drawStepHeight)
+                ->Field("DrawStairRotation", &EditorWhiteBoxComponent::m_drawStairRotation)
+                ->Field("DrawUnitCube", &EditorWhiteBoxComponent::m_drawUnitCube)
+                ->Field("VoxelCells", &EditorWhiteBoxComponent::m_voxelCells)
                 ->Field("BooleanSource", &EditorWhiteBoxComponent::m_booleanSourceEntity)
                 ->Field("BooleanOp", &EditorWhiteBoxComponent::m_booleanOperation)
                 ->Field("BooleanHideSource", &EditorWhiteBoxComponent::m_hideSourceAfterApply)
@@ -417,12 +643,44 @@ namespace WhiteBox
                     ->EnumAttribute(DrawShapeType::Cylinder, "Cylinder")
                     ->EnumAttribute(DrawShapeType::Pyramid, "Pyramid")
                     ->EnumAttribute(DrawShapeType::Cone, "Cone")
+                    ->EnumAttribute(DrawShapeType::Sphere, "Sphere")
+                    ->EnumAttribute(DrawShapeType::Staircase, "Staircase")
                     ->Attribute(AZ::Edit::Attributes::ChangeNotify, &EditorWhiteBoxComponent::OnDrawShapeChange)
                     ->DataElement(
                         AZ::Edit::UIHandlers::Slider, &EditorWhiteBoxComponent::m_drawSides, "Draw Sides",
-                        "Number of sides the Draw Shape tool uses for round / N-gon shapes (4 = box / square).")
+                        "Number of sides for round / N-gon shapes (4 = box / square), or the subdivision of the Sphere.")
                     ->Attribute(AZ::Edit::Attributes::Min, 3)
                     ->Attribute(AZ::Edit::Attributes::Max, 128)
+                    ->Attribute(AZ::Edit::Attributes::Visibility, &EditorWhiteBoxComponent::DrawSidesVisibility)
+                    ->DataElement(
+                        AZ::Edit::UIHandlers::Default, &EditorWhiteBoxComponent::m_drawStairByHeight, "Stair By Step Height",
+                        "When on, the Staircase is divided by a fixed step (riser) height; the step count is derived "
+                        "from the pull height. When off, a fixed step count is used.")
+                    ->Attribute(AZ::Edit::Attributes::Visibility, &EditorWhiteBoxComponent::StairVisibility)
+                    ->Attribute(AZ::Edit::Attributes::ChangeNotify, AZ::Edit::PropertyRefreshLevels::EntireTree)
+                    ->DataElement(
+                        AZ::Edit::UIHandlers::Slider, &EditorWhiteBoxComponent::m_drawStairSteps, "Step Count",
+                        "Number of steps the Draw Shape tool builds when the shape is a Staircase.")
+                    ->Attribute(AZ::Edit::Attributes::Min, 1)
+                    ->Attribute(AZ::Edit::Attributes::Max, 128)
+                    ->Attribute(AZ::Edit::Attributes::Visibility, &EditorWhiteBoxComponent::DrawStepsVisibility)
+                    ->DataElement(
+                        AZ::Edit::UIHandlers::Default, &EditorWhiteBoxComponent::m_drawStepHeight, "Step Height",
+                        "Riser height of each step; the step count is derived from the pull height.")
+                    ->Attribute(AZ::Edit::Attributes::Min, 0.01f)
+                    ->Attribute(AZ::Edit::Attributes::Max, 1000.0f)
+                    ->Attribute(AZ::Edit::Attributes::Visibility, &EditorWhiteBoxComponent::StepHeightVisibility)
+                    ->DataElement(
+                        AZ::Edit::UIHandlers::Slider, &EditorWhiteBoxComponent::m_drawStairRotation, "Stair Rotation (x90)",
+                        "Orientation of the Staircase in 90-degree steps about the drawn surface. 2 (180 degrees) puts "
+                        "the tall end at the corner you first clicked.")
+                    ->Attribute(AZ::Edit::Attributes::Min, 0)
+                    ->Attribute(AZ::Edit::Attributes::Max, 3)
+                    ->Attribute(AZ::Edit::Attributes::Visibility, &EditorWhiteBoxComponent::StairVisibility)
+                    ->DataElement(
+                        AZ::Edit::UIHandlers::Default, &EditorWhiteBoxComponent::m_drawUnitCube, "Unit Cube Stamp",
+                        "In draw mode, click to stamp a grid-snapped 1x1x1 cube (CSG union; hold Ctrl to subtract) "
+                        "instead of click-drag-pull.")
                     ->DataElement(
                         AZ::Edit::UIHandlers::Default, &EditorWhiteBoxComponent::m_editorMeshAsset, "Editor Mesh Asset",
                         "Editor Mesh Asset")
@@ -495,6 +753,35 @@ namespace WhiteBox
                                                : AZ::Edit::PropertyVisibility::Hide;
     }
 
+    AZ::Crc32 EditorWhiteBoxComponent::DrawSidesVisibility() const
+    {
+        // Sides drives the resolution of round shapes (Cylinder/Cone) and the
+        // subdivision of the Sphere; it is meaningless for Box/Pyramid/Staircase.
+        const bool usesSides = m_drawShape == DrawShapeType::Cylinder || m_drawShape == DrawShapeType::Cone ||
+            m_drawShape == DrawShapeType::Sphere;
+        return usesSides ? AZ::Edit::PropertyVisibility::Show : AZ::Edit::PropertyVisibility::Hide;
+    }
+
+    AZ::Crc32 EditorWhiteBoxComponent::StairVisibility() const
+    {
+        return m_drawShape == DrawShapeType::Staircase ? AZ::Edit::PropertyVisibility::Show
+                                                       : AZ::Edit::PropertyVisibility::Hide;
+    }
+
+    AZ::Crc32 EditorWhiteBoxComponent::DrawStepsVisibility() const
+    {
+        // Step count only applies to a Staircase in step-count mode.
+        const bool show = m_drawShape == DrawShapeType::Staircase && !m_drawStairByHeight;
+        return show ? AZ::Edit::PropertyVisibility::Show : AZ::Edit::PropertyVisibility::Hide;
+    }
+
+    AZ::Crc32 EditorWhiteBoxComponent::StepHeightVisibility() const
+    {
+        // Step height only applies to a Staircase in step-height mode.
+        const bool show = m_drawShape == DrawShapeType::Staircase && m_drawStairByHeight;
+        return show ? AZ::Edit::PropertyVisibility::Show : AZ::Edit::PropertyVisibility::Hide;
+    }
+
     void EditorWhiteBoxComponent::GetRequiredServices(AZ::ComponentDescriptor::DependencyArrayType& required)
     {
         required.push_back(AZ_CRC_CE("TransformService"));
@@ -558,6 +845,9 @@ namespace WhiteBox
         m_editorMeshAsset->Associate(entityComponentIdPair);
 
         // deserialize the white box data into a mesh object or load the serialized asset ref
+        // (the serialized stream already contains the full combined geometry - freeform
+        // faces plus any voxel-stamped surface - so no voxel regeneration is needed here;
+        // regenerating would discard freeform edits made before the level was saved).
         DeserializeWhiteBox();
 
         // re-evaluate the live boolean and listen for the source entity moving
