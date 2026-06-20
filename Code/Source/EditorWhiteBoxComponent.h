@@ -70,6 +70,7 @@ namespace WhiteBox
         bool GetDrawStairByHeight() override { return m_drawStairByHeight; }
         float GetDrawStepHeight() override { return m_drawStepHeight; }
         int GetDrawStairRotation() override { return m_drawStairRotation; }
+        bool GetDrawCarve() override { return m_drawCarve; }
         bool GetDrawUnitCube() override { return m_drawUnitCube; }
         void SetVoxelCell(const AZ::Vector3& cellMin, bool filled) override;
 
@@ -184,6 +185,7 @@ namespace WhiteBox
         bool m_drawStairByHeight = false; //!< Staircase divided by a fixed riser height instead of a fixed step count.
         float m_drawStepHeight = 0.25f; //!< Riser height used when a Staircase is divided by step height.
         int m_drawStairRotation = 0; //!< Staircase orientation in 90-degree steps (0..3) about the surface normal.
+        bool m_drawCarve = false; //!< When set, draw acts as a CSG boolean (same as holding Ctrl).
         bool m_drawUnitCube = false; //!< Draw mode click-stamps grid-snapped unit cubes (CSG) instead of drag-draw.
 
         AZ::EntityId m_booleanSourceEntity; //!< Another entity whose White Box mesh is used as a boolean operand.

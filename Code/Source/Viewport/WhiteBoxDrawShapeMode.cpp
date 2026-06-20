@@ -79,7 +79,7 @@ namespace WhiteBox
         }
     }
 
-    static const char* DrawShapeName(DrawShapeType shape)
+    [[maybe_unused]] static const char* DrawShapeName(DrawShapeType shape)
     {
         switch (shape)
         {
@@ -782,7 +782,7 @@ namespace WhiteBox
         // no click-drag-pull state machine.
         if (UnitCubeMode())
         {
-            const bool carve = mi.m_keyboardModifiers.Ctrl();
+            const bool carve = mi.m_keyboardModifiers.Ctrl() || CurrentCarve();
             m_unitCubeCarve = carve;
             if (moved || leftDown)
             {
@@ -813,7 +813,7 @@ namespace WhiteBox
             if (leftDown)
             {
                 // Ctrl+click = carve a hole through the polygon under the cursor.
-                m_carveMode = mi.m_keyboardModifiers.Ctrl();   // Ctrl = carve, plain = draw
+                m_carveMode = mi.m_keyboardModifiers.Ctrl() || CurrentCarve();   // Ctrl OR the Carve toggle
                 AZ::Vector3 hitNormal;
                 const AZ::Vector3 hitWorld = RaycastToSurface(mi, worldFromLocal, intersectionData, hitNormal);
                 m_surfaceNormal = hitNormal;            // remember the surface orientation
@@ -1353,53 +1353,43 @@ namespace WhiteBox
             debugDisplay.SetColor(lengthColor);
             debugDisplay.DrawLine(cu0, cu0 + vAxis);           // length edge (u-)
 
-            // Labels at the edge midpoints.
+            // Push each number OUTSIDE its edge (along the outward in-plane
+            // direction) so the dimensions never sit on the geometry or each other.
+            const AZ::Vector3 uHat = uAxis.GetNormalizedSafe();
+            const AZ::Vector3 vHat = vAxis.GetNormalizedSafe();
+            const float gap = 0.4f + 0.06f * AZ::GetMax(width, AZ::GetMax(length, height));
+
             debugDisplay.SetColor(widthColor);
-            debugDisplay.DrawTextLabel(center - rv, 1.1f, AZStd::string::format("%.3f", width).c_str(), true, 0, 0);
+            debugDisplay.DrawTextLabel(center - rv - vHat * gap, 1.1f, AZStd::string::format("%.3f", width).c_str(), true, 0, 0);
             debugDisplay.SetColor(lengthColor);
-            debugDisplay.DrawTextLabel(center - ru, 1.1f, AZStd::string::format("%.3f", length).c_str(), true, 0, 0);
+            debugDisplay.DrawTextLabel(center - ru - uHat * gap, 1.1f, AZStd::string::format("%.3f", length).c_str(), true, 0, 0);
 
             if (pullingHeight)
             {
                 const AZ::Vector3 hBase = center + ru + rv;    // far corner rises with the pull
                 debugDisplay.SetColor(heightColor);
                 debugDisplay.DrawLine(hBase, hBase + ext);     // height edge
-                debugDisplay.DrawTextLabel(hBase + ext * 0.5f, 1.1f, AZStd::string::format("%.3f", height).c_str(), true, 0, 0);
+                debugDisplay.DrawTextLabel(
+                    hBase + ext * 0.5f + (uHat + vHat) * (gap * 0.5f), 1.1f,
+                    AZStd::string::format("%.3f", height).c_str(), true, 0, 0);
             }
             debugDisplay.SetLineWidth(static_cast<float>(cl_whiteBoxEdgeVisualWidth));
         }
 
-        // --- Live shape readout (the toolbar can't show text) ---
-        {
-            AZStd::string shapeLabel;
-            if (isStair)
-            {
-                shapeLabel = AZStd::string::format("%s  |  %d steps", DrawShapeName(shape), steps);
-            }
-            else if (isSphere)
-            {
-                shapeLabel = AZStd::string::format("%s  |  %d subdiv", DrawShapeName(shape), sides);
-            }
-            else
-            {
-                shapeLabel = AZStd::string::format("%s  |  %d sides", DrawShapeName(shape), sides);
-            }
-            debugDisplay.SetColor(AZ::Color(1.0f, 1.0f, 1.0f, 1.0f));
-            debugDisplay.DrawTextLabel(center, 1.3f, shapeLabel.c_str(), true, 0, 0);
-        }
-
-        // --- Numeric depth overlay (Blender-style) ---
+        // --- Numeric depth entry (Blender-style), lifted above the shape ---
         if (m_numericInput.IsActive())
         {
-            const AZ::Vector3 labelPos = center + ext;
+            const float sizeRef = AZ::GetMax(uAxis.GetLength(), AZ::GetMax(vAxis.GetLength(), AZStd::abs(m_height)));
+            const float lift = AZ::GetMax(sizeRef * 0.4f, 1.0f);
+            const AZ::Vector3 labelPos = center + ext + up * (lift * 1.5f);
             const AZStd::string status = m_carveMode
                 ? (AZStd::string("[Ctrl] ") + m_numericInput.GetStatusText())
                 : m_numericInput.GetStatusText();
             debugDisplay.SetColor(AZ::Color(1.0f, 1.0f, 1.0f, 1.0f));
-            debugDisplay.DrawTextLabel(labelPos, 1.5f, status.c_str(), true, 0, 0);
+            debugDisplay.DrawTextLabel(labelPos, 1.3f, status.c_str(), true, 0, 0);
         }
     }
-    
+
 
 
     AZStd::vector<AzToolsFramework::ActionOverride> DrawShapeMode::PopulateActions(
@@ -1469,6 +1459,14 @@ namespace WhiteBox
         const float rise = AZStd::abs(m_height);
         const int derived = aznumeric_cast<int>(std::lround(rise / CurrentStepHeight()));
         return AZ::GetClamp(derived, 1, 256);
+    }
+
+    bool DrawShapeMode::CurrentCarve() const
+    {
+        bool carve = false;
+        EditorWhiteBoxComponentRequestBus::EventResult(
+            carve, m_entityComponentIdPair, &EditorWhiteBoxComponentRequests::GetDrawCarve);
+        return carve;
     }
 
     bool DrawShapeMode::UnitCubeMode() const

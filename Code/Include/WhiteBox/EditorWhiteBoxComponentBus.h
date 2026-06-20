@@ -80,6 +80,10 @@ namespace WhiteBox
         //! 2 (180 degrees) puts the tall end at the first-clicked corner.
         virtual int GetDrawStairRotation() { return 0; }
 
+        //! When true, draw acts as a CSG boolean (same as holding Ctrl): pulling in
+        //! carves/subtracts, pulling out adds/unions.
+        virtual bool GetDrawCarve() { return false; }
+
         //! When true, draw mode click-stamps grid-snapped 1x1x1 cubes (CSG union, or
         //! subtract with Ctrl) instead of the click-drag-pull workflow.
         virtual bool GetDrawUnitCube() { return false; }

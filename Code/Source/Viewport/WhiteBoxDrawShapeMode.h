@@ -144,6 +144,10 @@ namespace WhiteBox
         //! "Step Count" in count mode, or derived from "Step Height" otherwise.
         int EffectiveStairSteps() const;
 
+        //! Whether the component's "Carve (Boolean)" toggle is active (a persistent
+        //! alternative to holding Ctrl).
+        bool CurrentCarve() const;
+
         //! Whether the component's "Unit Cube Stamp" mode is active.
         bool UnitCubeMode() const;
         //! Snapped local-space min corner of the unit cube targeted by a hit.

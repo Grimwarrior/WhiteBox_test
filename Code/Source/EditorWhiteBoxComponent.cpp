@@ -607,6 +607,7 @@ namespace WhiteBox
                 ->Field("DrawStairByHeight", &EditorWhiteBoxComponent::m_drawStairByHeight)
                 ->Field("DrawStepHeight", &EditorWhiteBoxComponent::m_drawStepHeight)
                 ->Field("DrawStairRotation", &EditorWhiteBoxComponent::m_drawStairRotation)
+                ->Field("DrawCarve", &EditorWhiteBoxComponent::m_drawCarve)
                 ->Field("DrawUnitCube", &EditorWhiteBoxComponent::m_drawUnitCube)
                 ->Field("VoxelCells", &EditorWhiteBoxComponent::m_voxelCells)
                 ->Field("BooleanSource", &EditorWhiteBoxComponent::m_booleanSourceEntity)
@@ -677,6 +678,10 @@ namespace WhiteBox
                     ->Attribute(AZ::Edit::Attributes::Min, 0)
                     ->Attribute(AZ::Edit::Attributes::Max, 3)
                     ->Attribute(AZ::Edit::Attributes::Visibility, &EditorWhiteBoxComponent::StairVisibility)
+                    ->DataElement(
+                        AZ::Edit::UIHandlers::CheckBox, &EditorWhiteBoxComponent::m_drawCarve, "Carve (Boolean)",
+                        "When on, drawing performs a CSG boolean (same as holding Ctrl): pull into the surface to "
+                        "carve/subtract, pull out to add/union.")
                     ->DataElement(
                         AZ::Edit::UIHandlers::Default, &EditorWhiteBoxComponent::m_drawUnitCube, "Unit Cube Stamp",
                         "In draw mode, click to stamp a grid-snapped 1x1x1 cube (CSG union; hold Ctrl to subtract) "
@@ -755,11 +760,12 @@ namespace WhiteBox
 
     AZ::Crc32 EditorWhiteBoxComponent::DrawSidesVisibility() const
     {
-        // Sides drives the resolution of round shapes (Cylinder/Cone) and the
-        // subdivision of the Sphere; it is meaningless for Box/Pyramid/Staircase.
-        const bool usesSides = m_drawShape == DrawShapeType::Cylinder || m_drawShape == DrawShapeType::Cone ||
-            m_drawShape == DrawShapeType::Sphere;
-        return usesSides ? AZ::Edit::PropertyVisibility::Show : AZ::Edit::PropertyVisibility::Hide;
+        // Sides applies to every solid shape: it sets the footprint resolution for
+        // round shapes (Cylinder/Cone), the subdivision for the Sphere, and the
+        // N-gon footprint for Box/Pyramid (3 = triangular prism, 4 = box, etc.).
+        // Only the Staircase ignores it.
+        return m_drawShape == DrawShapeType::Staircase ? AZ::Edit::PropertyVisibility::Hide
+                                                       : AZ::Edit::PropertyVisibility::Show;
     }
 
     AZ::Crc32 EditorWhiteBoxComponent::StairVisibility() const
