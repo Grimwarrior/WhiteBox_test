@@ -635,7 +635,6 @@ namespace WhiteBox
         m_defaultModeButtonId = RegisterClusterButton(m_modeSelectionClusterId, "SketchMode");
         m_edgeRestoreModeButtonId = RegisterClusterButton(m_modeSelectionClusterId, "RestoreMode");
         m_drawShapeModeButtonId = RegisterClusterButton(m_modeSelectionClusterId, "AddComponent");
-        // ^ swap "AddComponent" for whatever SVG icon you prefer
 
         // temporary setting to disable this feature
         if (AZ::SettingsRegistryInterface* settingsRegistry = AZ::SettingsRegistry::Get())
