@@ -797,7 +797,7 @@ namespace WhiteBox
             }
         } // namespace Detail
 
-        bool MeshBoolean(
+        bool ApplyMeshBoolean(
             WhiteBoxMesh& whiteBox, const WhiteBoxMesh& operand, const AZ::Transform& operandTransform,
             const BooleanOperation operation)
         {

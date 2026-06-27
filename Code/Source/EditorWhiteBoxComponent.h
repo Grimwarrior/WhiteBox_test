@@ -66,10 +66,11 @@ namespace WhiteBox
         void SetDefaultShape(DefaultShapeType defaultShape) override;
         int GetDrawSides() override { return m_drawShapeData.m_sides; }
         DrawShapeType GetDrawShape() override { return m_drawShapeData.m_shape; }
-        int GetDrawStairSteps() override { return m_drawShapeData.m_stair.m_steps; }
-        bool GetDrawStairByHeight() override { return m_drawShapeData.m_stair.m_byHeight; }
-        float GetDrawStepHeight() override { return m_drawShapeData.m_stair.m_stepHeight; }
-        int GetDrawStairRotation() override { return m_drawShapeData.m_stair.m_rotation; }
+        DrawStairInfo GetDrawStairInfo() override
+        {
+            const DrawStairData& stair = m_drawShapeData.m_stair;
+            return DrawStairInfo{stair.m_steps, stair.m_byHeight, stair.m_stepHeight, stair.m_rotation};
+        }
         bool GetDrawCarve() override { return m_drawCarve; }
         bool GetDrawUnitCube() override { return m_drawUnitCube; }
         void SetVoxelCell(const AZ::Vector3& cellMin, bool filled) override;

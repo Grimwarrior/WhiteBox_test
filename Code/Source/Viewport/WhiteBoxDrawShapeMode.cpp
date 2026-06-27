@@ -952,7 +952,7 @@ namespace WhiteBox
         // Staircase: re-orient the run/width axes within the same footprint.
         if (CurrentShape() == DrawShapeType::Staircase)
         {
-            Detail::ApplyStairRotation(uAxis, vAxis, CurrentStairRotation());
+            Detail::ApplyStairRotation(uAxis, vAxis, CurrentStairInfo().m_rotation);
         }
 
         // Build the chosen shape directly into the mesh: base on the surface
@@ -1038,7 +1038,7 @@ namespace WhiteBox
         // Staircase: re-orient the run/width axes within the same footprint.
         if (CurrentShape() == DrawShapeType::Staircase)
         {
-            Detail::ApplyStairRotation(uAxis, vAxis, CurrentStairRotation());
+            Detail::ApplyStairRotation(uAxis, vAxis, CurrentStairInfo().m_rotation);
         }
 
         // Build the cutter as its own watertight white box mesh, expressed in the
@@ -1053,7 +1053,7 @@ namespace WhiteBox
 
         // Apply the boolean (identity transform: the cutter is already built in
         // the target's local space).
-        if (!Api::MeshBoolean(*whiteBox, *cutter, AZ::Transform::CreateIdentity(), operation))
+        if (!Api::ApplyMeshBoolean(*whiteBox, *cutter, AZ::Transform::CreateIdentity(), operation))
         {
             // No intersection / empty result - nothing to do.
             return;
@@ -1198,7 +1198,7 @@ namespace WhiteBox
         // Staircase: re-orient run/width within the same footprint for the preview.
         if (shape == DrawShapeType::Staircase)
         {
-            Detail::ApplyStairRotation(uAxis, vAxis, CurrentStairRotation());
+            Detail::ApplyStairRotation(uAxis, vAxis, CurrentStairInfo().m_rotation);
         }
 
         const AZ::Vector3 ru     = uAxis * 0.5f;
@@ -1420,47 +1420,29 @@ namespace WhiteBox
         return AZ::GetClamp(sides, 3, 256);
     }
 
-    int DrawShapeMode::CurrentStairSteps() const
+    DrawStairInfo DrawShapeMode::CurrentStairInfo() const
     {
-        int steps = 8;
+        DrawStairInfo stair;
         EditorWhiteBoxComponentRequestBus::EventResult(
-            steps, m_entityComponentIdPair, &EditorWhiteBoxComponentRequests::GetDrawStairSteps);
-        return AZ::GetClamp(steps, 1, 256);
-    }
+            stair, m_entityComponentIdPair, &EditorWhiteBoxComponentRequests::GetDrawStairInfo);
 
-    bool DrawShapeMode::CurrentStairByHeight() const
-    {
-        bool byHeight = false;
-        EditorWhiteBoxComponentRequestBus::EventResult(
-            byHeight, m_entityComponentIdPair, &EditorWhiteBoxComponentRequests::GetDrawStairByHeight);
-        return byHeight;
-    }
-
-    float DrawShapeMode::CurrentStepHeight() const
-    {
-        float stepHeight = 0.25f;
-        EditorWhiteBoxComponentRequestBus::EventResult(
-            stepHeight, m_entityComponentIdPair, &EditorWhiteBoxComponentRequests::GetDrawStepHeight);
-        return AZ::GetMax(stepHeight, 0.0001f);
-    }
-
-    int DrawShapeMode::CurrentStairRotation() const
-    {
-        int rotation = 0;
-        EditorWhiteBoxComponentRequestBus::EventResult(
-            rotation, m_entityComponentIdPair, &EditorWhiteBoxComponentRequests::GetDrawStairRotation);
-        return ((rotation % 4) + 4) % 4; // normalise to 0..3
+        // sanitise to safe ranges before use
+        stair.m_steps = AZ::GetClamp(stair.m_steps, 1, 256);
+        stair.m_stepHeight = AZ::GetMax(stair.m_stepHeight, 0.0001f);
+        stair.m_rotation = ((stair.m_rotation % 4) + 4) % 4; // normalise to 0..3
+        return stair;
     }
 
     int DrawShapeMode::EffectiveStairSteps() const
     {
-        if (!CurrentStairByHeight())
+        const DrawStairInfo stair = CurrentStairInfo();
+        if (!stair.m_byHeight)
         {
-            return CurrentStairSteps();
+            return stair.m_steps;
         }
         // Derive the count from the pull height so the riser stays a fixed size.
         const float rise = AZStd::abs(m_height);
-        const int derived = aznumeric_cast<int>(std::lround(rise / CurrentStepHeight()));
+        const int derived = aznumeric_cast<int>(std::lround(rise / stair.m_stepHeight));
         return AZ::GetClamp(derived, 1, 256);
     }
 

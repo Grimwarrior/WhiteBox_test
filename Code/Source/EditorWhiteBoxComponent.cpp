@@ -219,7 +219,7 @@ namespace WhiteBox
 
         AzToolsFramework::ScopedUndoBatch undoBatch("White Box Boolean");
 
-        if (!Api::MeshBoolean(*targetMesh, *sourceMesh, operandTransform, m_booleanOperation))
+        if (!Api::ApplyMeshBoolean(*targetMesh, *sourceMesh, operandTransform, m_booleanOperation))
         {
             AZ_Warning(
                 "EditorWhiteBoxComponent", false,
@@ -514,7 +514,7 @@ namespace WhiteBox
         {
             return;
         }
-        if (Api::MeshBoolean(*evaluated, *sourceMesh, operandTransform, m_booleanOperation))
+        if (Api::ApplyMeshBoolean(*evaluated, *sourceMesh, operandTransform, m_booleanOperation))
         {
             Api::CalculateNormals(*evaluated);
             Api::CalculatePlanarUVs(*evaluated);

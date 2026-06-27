@@ -132,14 +132,9 @@ namespace WhiteBox
         DrawShapeType CurrentShape() const;
         int CurrentSides() const;
 
-        //! Number of steps to build for a Staircase, read from the component's
-        //! "Step Count" property (clamped to a safe range).
-        int CurrentStairSteps() const;
-
-        //! Staircase step-division mode / step height / rotation, from the component.
-        bool CurrentStairByHeight() const;
-        float CurrentStepHeight() const;
-        int CurrentStairRotation() const;
+        //! Staircase build parameters (step count, step-division mode, step height and rotation),
+        //! read from the component in one request and sanitised to safe ranges.
+        DrawStairInfo CurrentStairInfo() const;
 
         //! Effective staircase step count for the current pull height: the fixed
         //! "Step Count" in count mode, or derived from "Step Height" otherwise.
