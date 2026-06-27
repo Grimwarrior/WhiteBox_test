@@ -66,15 +66,16 @@ namespace WhiteBox
 
         //! Forward a raw mouse interaction event.
         //! @return true if the event was consumed (prevents other handlers from seeing it).
-        bool HandleMouseInteraction(
-            const AzToolsFramework::ViewportInteraction::MouseInteractionEvent& mouseInteraction,
-            const AZ::Transform& worldFromLocal,
-            const IntersectionAndRenderData& intersectionData);
+        bool HandleMouseInteraction(const ModeMouseInteraction& mouse);
 
-        //! Draw the ghost preview into the viewport.
-        // void Display(
-        //     const AzFramework::ViewportInfo& viewportInfo,
-        //     AzFramework::DebugDisplayRequests& debugDisplay) const;
+        //! Required by EditorWhiteBoxComponentMode variant dispatch. DrawShapeMode draws its
+        //! own ghost preview through DisplayViewport (ViewportDebugDisplayEventBus), so the
+        //! shared per-mode Display path is intentionally a no-op here.
+        void Display(
+            const AZ::EntityComponentIdPair&, const AZ::Transform&, const IntersectionAndRenderData&,
+            const AzFramework::ViewportInfo&, AzFramework::DebugDisplayRequests&)
+        {
+        }
 
         //! Required by EditorWhiteBoxComponentMode variant dispatch.
         void Refresh() {}

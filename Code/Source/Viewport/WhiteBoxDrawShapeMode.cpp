@@ -763,12 +763,13 @@ namespace WhiteBox
         return heightDelta;
     }
 
-    bool DrawShapeMode::HandleMouseInteraction(
-        const AzToolsFramework::ViewportInteraction::MouseInteractionEvent& mouseInteraction,
-        const AZ::Transform& worldFromLocal,
-        const IntersectionAndRenderData& intersectionData)
+    bool DrawShapeMode::HandleMouseInteraction(const ModeMouseInteraction& mouse)
     {
         using MouseEvent = AzToolsFramework::ViewportInteraction::MouseEvent;
+
+        const auto& mouseInteraction = mouse.m_mouseInteraction;
+        const AZ::Transform& worldFromLocal = mouse.m_worldFromLocal;
+        const IntersectionAndRenderData& intersectionData = mouse.m_intersectionData;
 
         // Cache so a keyboard-driven numeric confirm (which carries no transform)
         // can commit using the current frame's transform.
