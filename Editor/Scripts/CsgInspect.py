@@ -1,3 +1,11 @@
+#
+# Copyright (c) Contributors to the Open 3D Engine Project.
+# For complete copyright and license terms please see the LICENSE at the root of this distribution.
+#
+# SPDX-License-Identifier: Apache-2.0 OR MIT
+#
+#
+
 """
 Diagnostic: build the chamfer boolean (reusing CsgDemo's fixed helpers) and
 report the resulting mesh's vertex/face counts.
@@ -39,7 +47,7 @@ print('--- source cube ---')
 print('  verts/faces:', counts(wb), '(expect 8 / 12)')
 
 transform = CsgDemo.compose(translation=V3(0.7745, -0.7745, 0.0), scale=1.2, rot_z=-math.pi / 4)
-ok = wb.MeshBoolean(wb_cut, transform, 1)   # 1 == SUBTRACTION
+ok = wb.ApplyMeshBoolean(wb_cut, transform, 1)   # 1 == SUBTRACTION
 print('--- boolean returned:', ok, '---')
 
 if ok:
