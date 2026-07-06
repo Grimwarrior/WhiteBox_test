@@ -73,11 +73,13 @@ namespace WhiteBox
         }
         bool GetDrawCarve() override { return m_drawCarve; }
         bool GetDrawUnitCube() override { return m_drawUnitCube; }
-        //! The effective cube/cell world size: while cubes already exist, the size baked
-        //! into that voxel data (so existing cubes stay put); otherwise the desired size.
+        //! The world size used for the NEXT stamp and the stamp ghost grid. This is always
+        //! the desired "Cube Size", independent of any cubes already placed: each stamped
+        //! cube keeps its own size, so the size can be changed at any time and new cubes of
+        //! the new size coexist with the existing ones (no need to clear the stamp first).
         float GetDrawUnitCubeSize() override
         {
-            const float s = m_voxelCells.empty() ? m_drawUnitCubeSize : m_voxelCellSize;
+            const float s = m_drawUnitCubeSize;
             return s < 0.05f ? 0.05f : s;
         }
         bool GetDrawUnitCubeShowGrid() override { return m_drawUnitCubeShowGrid; }
@@ -199,11 +201,18 @@ namespace WhiteBox
         AZ::Crc32 OnDefaultShapeChange();
         //! Apply a CSG boolean using the White Box mesh on m_booleanSourceEntity.
         void ApplyBoolean();
-        //! Update the voxel-stamped geometry in place: remove the faces belonging to
-        //! the previous voxel surface (@p oldCells) and add the surface for the new
-        //! cell set (@p newCells), leaving all freeform mesh edits intact.
+        //! Update the voxel-stamped geometry in place: remove the faces belonging to the
+        //! previous voxel surface (@p oldCells at @p oldSizes) and add the surface for the
+        //! new cell set (@p newCells at @p newSizes), leaving all freeform mesh edits
+        //! intact. Each cell carries its own cube size (parallel arrays), so cubes of
+        //! different sizes are meshed on their own grids and can coexist. Also purges any
+        //! vertices orphaned by the removal.
         void RegenerateVoxelMesh(
-            const AZStd::unordered_set<AZ::u64>& oldCells, const AZStd::unordered_set<AZ::u64>& newCells);
+            const AZStd::vector<AZ::u64>& oldCells, const AZStd::vector<float>& oldSizes,
+            const AZStd::vector<AZ::u64>& newCells, const AZStd::vector<float>& newSizes);
+        //! Ensure the per-cell size array (m_voxelCellSizes) is consistent with m_voxelCells,
+        //! migrating legacy data that only stored a single baked size (m_voxelCellSize).
+        void NormalizeVoxelData();
 
         //! The mesh used for RENDER / collision / bounds / selection. In live
         //! (non-destructive) boolean mode this is the evaluated result; otherwise
@@ -249,8 +258,8 @@ namespace WhiteBox
         DrawShapeData m_drawShapeData; //!< Draw Shape tool settings (shape, sides and staircase options).
         bool m_drawCarve = false; //!< When set, draw acts as a CSG boolean (same as holding Ctrl).
         bool m_drawUnitCube = false; //!< Draw mode click-stamps grid-snapped unit cubes (CSG) instead of drag-draw.
-        float m_drawUnitCubeSize = 1.0f; //!< World-space size of one stamped cube (grid cell size for new builds).
-        float m_voxelCellSize = 1.0f; //!< Cell size baked into the current voxel data (set on first stamp).
+        float m_drawUnitCubeSize = 1.0f; //!< Desired world-space size of the next stamped cube.
+        float m_voxelCellSize = 1.0f; //!< Legacy single baked cell size; only used to migrate old scenes.
         bool m_drawUnitCubeShowGrid = true; //!< Show the individual cubes (grid) in the stamp ghost preview.
 
         AZ::EntityId m_booleanSourceEntity; //!< Another entity whose White Box mesh is used as a boolean operand.
@@ -260,6 +269,7 @@ namespace WhiteBox
         bool m_deleteSourceAfterApply = false; //!< Delete the source entity after a successful Apply Boolean.
 
         AZStd::vector<AZ::u64> m_voxelCells; //!< Packed integer cell coords filled by the Unit Cube Stamp tool.
+        AZStd::vector<float> m_voxelCellSizes; //!< Per-cell world cube size (parallel to m_voxelCells) so mixed sizes coexist.
 
         bool m_liveBoolean = false; //!< Non-destructive: keep the base editable, evaluate the boolean for display only.
         Api::WhiteBoxMeshPtr m_displayMesh; //!< Evaluated (base [op] source) mesh used for display while live.
