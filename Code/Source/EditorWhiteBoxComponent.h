@@ -73,7 +73,17 @@ namespace WhiteBox
         }
         bool GetDrawCarve() override { return m_drawCarve; }
         bool GetDrawUnitCube() override { return m_drawUnitCube; }
+        //! The effective cube/cell world size: while cubes already exist, the size baked
+        //! into that voxel data (so existing cubes stay put); otherwise the desired size.
+        float GetDrawUnitCubeSize() override
+        {
+            const float s = m_voxelCells.empty() ? m_drawUnitCubeSize : m_voxelCellSize;
+            return s < 0.05f ? 0.05f : s;
+        }
+        bool GetDrawUnitCubeShowGrid() override { return m_drawUnitCubeShowGrid; }
         void SetVoxelCell(const AZ::Vector3& cellMin, bool filled) override;
+        void SetVoxelCells(const AZStd::vector<AZ::Vector3>& cellMins, bool filled) override;
+        bool BuildColliderMesh(AZStd::vector<AZ::Vector3>& vertices, AZStd::vector<AZ::u32>& indices) override;
 
         // EditorComponentSelectionRequestsBus overrides ...
         AZ::Aabb GetEditorSelectionBoundsViewport(const AzFramework::ViewportInfo& viewportInfo) override;
@@ -97,6 +107,24 @@ namespace WhiteBox
         //! Override the internal EditorWhiteBoxMeshAsset with an external instance.
         //! @note EditorWhiteBoxComponent takes ownership of the editorMeshAsset and will handle deleting it
         void OverrideEditorWhiteBoxMeshAsset(EditorWhiteBoxMeshAsset* editorMeshAsset);
+
+        //! Returns the mesh used for render / collision / selection: the live-boolean
+        //! evaluated result when active, otherwise the editable base mesh.
+        //! Public so the collider component can bake physics from the same mesh the
+        //! render path uses.
+        WhiteBoxMesh* GetEvaluatedWhiteBoxMesh();
+        //! Evaluate (base [op] source) into a new mesh, regardless of the live-boolean
+        //! flag, and return it (or nullptr if no boolean source is set or evaluation
+        //! fails). Used to bake the "with boolean" variant when building the game entity.
+        //! @note Uses the CSG API which is only available in the Editor.
+        Api::WhiteBoxMeshPtr EvaluateBooleanMesh();
+        //! The cached live-boolean result evaluated during editing (nullptr if the live
+        //! boolean is off or no result). Unlike EvaluateBooleanMesh this does not touch the
+        //! boolean source entity, so it is safe to read during the game-mode / spawnable
+        //! build where the source entity id is not resolvable.
+        WhiteBoxMesh* GetLiveBooleanDisplayMesh();
+        //! Whether the live (non-destructive) boolean is currently enabled.
+        bool GetLiveBoolean() const { return m_liveBoolean; }
 
     private:
         //! Staircase-specific settings for the Draw Shape tool (only relevant when the
@@ -165,6 +193,9 @@ namespace WhiteBox
         void ExportToFile();
         void ExportDescendantsToFile();
         AZ::Crc32 SaveAsAsset();
+        //! Remove every cube placed by the Unit Cube Stamp tool (clears the voxel set and
+        //! regenerates the surface, leaving any hand-edited freeform geometry intact).
+        AZ::Crc32 ClearVoxelCubes();
         AZ::Crc32 OnDefaultShapeChange();
         //! Apply a CSG boolean using the White Box mesh on m_booleanSourceEntity.
         void ApplyBoolean();
@@ -192,6 +223,8 @@ namespace WhiteBox
 
         void OnMaterialChange();
         AZ::Crc32 AssetVisibility() const;
+        //! The Unit Cube "Cube Size" spin box only shows while the Unit Cube Stamp tool is on.
+        AZ::Crc32 DrawUnitCubeSizeVisibility() const;
 
         using ComponentModeDelegate = AzToolsFramework::ComponentModeFramework::ComponentModeDelegate;
         ComponentModeDelegate m_componentModeDelegate; //!< Responsible for detecting ComponentMode activation
@@ -216,6 +249,9 @@ namespace WhiteBox
         DrawShapeData m_drawShapeData; //!< Draw Shape tool settings (shape, sides and staircase options).
         bool m_drawCarve = false; //!< When set, draw acts as a CSG boolean (same as holding Ctrl).
         bool m_drawUnitCube = false; //!< Draw mode click-stamps grid-snapped unit cubes (CSG) instead of drag-draw.
+        float m_drawUnitCubeSize = 1.0f; //!< World-space size of one stamped cube (grid cell size for new builds).
+        float m_voxelCellSize = 1.0f; //!< Cell size baked into the current voxel data (set on first stamp).
+        bool m_drawUnitCubeShowGrid = true; //!< Show the individual cubes (grid) in the stamp ghost preview.
 
         AZ::EntityId m_booleanSourceEntity; //!< Another entity whose White Box mesh is used as a boolean operand.
         Api::BooleanOperation m_booleanOperation =
@@ -227,6 +263,14 @@ namespace WhiteBox
 
         bool m_liveBoolean = false; //!< Non-destructive: keep the base editable, evaluate the boolean for display only.
         Api::WhiteBoxMeshPtr m_displayMesh; //!< Evaluated (base [op] source) mesh used for display while live.
+        //! Serialized boolean-evaluated render data. Persisted so the game-mode bake can supply
+        //! the boolean render variant even when BuildGameEntity runs on a cloned entity (where
+        //! the non-serialized m_displayMesh is null). Empty (no faces) when there is no boolean.
+        WhiteBoxRenderData m_bakedBooleanRenderData;
+        //! Serialized copy of the true (uncut) base render data. Persisted so the game-mode bake
+        //! always has the base variant even on a clone where GetWhiteBoxMesh() is null - otherwise
+        //! the base would wrongly fall back to the evaluated (possibly cut) m_renderData.
+        WhiteBoxRenderData m_bakedBaseRenderData;
 
         //! Re-evaluates this component's live boolean when the source entity moves.
         struct BooleanSourceListener : public AZ::TransformNotificationBus::Handler

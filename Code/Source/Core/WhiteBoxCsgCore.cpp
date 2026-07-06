@@ -105,10 +105,6 @@ namespace WhiteBox
                 return false;
             }
 
-            AZ_Warning("WhiteBox", false,
-                "MeshBoolean: meshA verts=%zu tris=%zu | meshB verts=%zu tris=%zu",
-                meshA.VertexCount(), meshA.TriangleCount(),
-                meshB.VertexCount(), meshB.TriangleCount());
 
             const manifold::Manifold manifoldA = ToManifold(meshA);
             if (manifoldA.Status() != manifold::Manifold::Error::NoError)
