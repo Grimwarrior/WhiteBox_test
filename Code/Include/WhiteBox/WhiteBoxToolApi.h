@@ -688,6 +688,15 @@ namespace WhiteBox
             WhiteBoxMesh& whiteBox, const WhiteBoxMesh& operand, const AZ::Transform& operandTransform,
             BooleanOperation operation);
 
+        //! Repair a mesh so it becomes a clean, weldable manifold: coincident vertices are
+        //! welded and coplanar triangles are regrouped into single polygons (the exact
+        //! conversion the CSG boolean runs on its inputs). This removes the duplicate /
+        //! near-coincident vertices and stray faces that make a mesh non-manifold. A single
+        //! non-manifold region otherwise blocks EVERY boolean, because the CSG library
+        //! rejects the whole mesh if any part of it is non-manifold.
+        //! @return True if the mesh had geometry to repair, false if it was empty.
+        bool RepairMesh(WhiteBoxMesh& whiteBox);
+
         //! Recalculate all normals of each face in the mesh.
         void CalculateNormals(WhiteBoxMesh& whiteBox);
 

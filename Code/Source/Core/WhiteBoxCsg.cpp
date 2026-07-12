@@ -828,5 +828,20 @@ namespace WhiteBox
 
             return true;
         }
+
+        bool RepairMesh(WhiteBoxMesh& whiteBox)
+        {
+            // Convert to a triangle soup (which welds coincident vertices at WeldTolerance)
+            // and rebuild the white box from it (regrouping coplanar triangles into clean
+            // polygons and recomputing normals/UVs). This is exactly what the boolean does
+            // to its inputs, so a mesh that survives this will be accepted by the boolean.
+            const Csg::TriangleMesh soup = Detail::ToTriangleMesh(whiteBox, AZ::Transform::CreateIdentity());
+            if (soup.m_indices.empty())
+            {
+                return false;
+            }
+            Detail::RebuildFromTriangleMesh(whiteBox, soup);
+            return true;
+        }
     } // namespace Api
 } // namespace WhiteBox

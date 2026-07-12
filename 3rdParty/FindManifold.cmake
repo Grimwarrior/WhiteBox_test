@@ -7,21 +7,50 @@
 #
 
 include(FetchContent)
+# Always start by checking if the target already exists.
+# This prevents repeated calls but also allows the user to substitute their own 3rd party library
+# if they wish to do so.
 
 if (TARGET 3rdParty::Manifold)
     return()
 endif()
 
+# Variables inside a local function are scoped to the function body.
+# Putting all of this inside a function lets us basically ensure that any variables set by the 
+# external 3rdParty CMake file do not have any effect on the outside world.
+# and allows us not to have to save and restore anything.
+
 function(GetManifold)
+    # Part 1:  Where do you get the library from?  Make sure to inform the user of the source of the library and any patches applied.
     set(MANIFOLD_GIT_REPO "https://github.com/elalish/manifold.git")
-    set(MANIFOLD_GIT_TAG "v3.5.1")
+    set(MANIFOLD_GIT_TAG "cc8a7f66d7d5a560da94346258c5b546af27811e")
+    # Keep the human-readable tag to show the user in the console
+    set(MANIFOLD_DISPLAY_VERSION "v3.5.1")
 
-    message(STATUS "WhiteBox Gem uses Manifold (Apache-2.0) ${MANIFOLD_GIT_REPO}")
+    FetchContent_Declare(
+            OpenMesh
+            GIT_REPOSITORY ${OPENMESH_GIT_REPO}
+            GIT_TAG ${OPENMESH_GIT_TAG}
+            GIT_SHALLOW
+            EXCLUDE_FROM_ALL # Prevent it from executing 'install' ops, it doesn't need to be included in installer
+    )
+
+    # please always be really clear about what third parties your gem uses.
+    message(STATUS "WhiteBox Gem uses Manifold ${MANIFOLD_DISPLAY_VERSION} (Apache-2.0) ${MANIFOLD_GIT_REPO}")
     message(STATUS "    - Manifold provides the CSG boolean operations (Api::MeshBoolean).")
+    
+    # Part 2: Set the build settings and trigger the actual execution of the downloaded CMakeLists.txt file
 
-    set(OLD_LOG_LEVEL ${CMAKE_MESSAGE_LOG_LEVEL})
+    # Note that CMAKE_ARGS does NOT WORK for FetchContent_*, only ExternalProject.
+    # Thus, you must set any configuration settings here, in the scope in which you call FetchContent_MakeAvailable.
+
+    # These settings will be applied only to the current CMake scope - so it is only worth saving and restoring values from settings
+    # that may affect other targets in the same CMake scope, most likely anything "CMAKE_xxxxxxxx".
+    set(OLD_LOG_LEVEL ${CMAKE_MESSAGE_LOG_LEVEL}) # save the old CMAKE_MESSAGE_LOG_LEVEL
     set(CMAKE_MESSAGE_LOG_LEVEL ${O3DE_FETCHCONTENT_MESSAGE_LEVEL})
     set(CMAKE_WARN_DEPRECATED OFF CACHE BOOL "" FORCE)
+
+    # Backup and set the developer warning suppression for OpenMesh to suppress a expected warning
     set(ORIGINAL_CMAKE_SUPPRESS_DEVELOPER_WARNINGS ${CMAKE_SUPPRESS_DEVELOPER_WARNINGS})
     set(CMAKE_SUPPRESS_DEVELOPER_WARNINGS ON CACHE BOOL "" FORCE)
 
