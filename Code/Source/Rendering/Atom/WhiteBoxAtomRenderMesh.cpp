@@ -294,7 +294,13 @@ namespace WhiteBox
 
     void AtomRenderMesh::UpdateTransform(const AZ::Transform& worldFromLocal)
     {
-        m_meshFeatureProcessor->SetTransform(m_meshHandle, worldFromLocal);
+        // An empty white box (zero faces - e.g. a component with no layers yet) never creates a
+        // model, so the feature processor is never acquired. Guard every use of it: an empty
+        // mesh simply has nothing to transform/show.
+        if (m_meshFeatureProcessor)
+        {
+            m_meshFeatureProcessor->SetTransform(m_meshHandle, worldFromLocal);
+        }
     }
 
     void AtomRenderMesh::UpdateMaterial(const WhiteBoxMaterial& material)
@@ -369,7 +375,11 @@ namespace WhiteBox
     void AtomRenderMesh::SetVisiblity(bool visibility)
     {
         m_visible = visibility;
-        m_meshFeatureProcessor->SetVisible(m_meshHandle, m_visible);
+        // No feature processor means no model was ever built (empty white box) - nothing to show.
+        if (m_meshFeatureProcessor)
+        {
+            m_meshFeatureProcessor->SetVisible(m_meshHandle, m_visible);
+        }
     }
 
     bool AtomRenderMesh::IsVisible() const

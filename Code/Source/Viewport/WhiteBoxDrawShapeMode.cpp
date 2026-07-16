@@ -10,6 +10,7 @@
 
 #include "WhiteBoxShapeBuilders.h"
 
+#include "EditorWhiteBoxComponentModeBus.h"
 #include "EditorWhiteBoxComponentModeTypes.h"
 #include "Viewport/WhiteBoxManipulatorBounds.h"
 #include "Viewport/WhiteBoxViewportConstants.h"
@@ -1135,9 +1136,17 @@ namespace WhiteBox
 
         // Build the chosen shape directly into the mesh: base on the surface
         // (up offset 0), top/apex at the pull height.
+        const size_t vertsBeforeCommit = Api::MeshVertexHandles(*whiteBox).size();
         Detail::BuildShapeSolid(
             *whiteBox, worldFromLocal.GetInverse(), center, uAxis, vAxis, up,
             0.0f, m_height, CurrentShape(), CurrentSides(), EffectiveStairSteps());
+
+        // Drawing happens in entity-local space, but the active layer may carry a
+        // non-destructive transform applied at display time - map the NEW geometry into
+        // layer space so the shape shows up exactly where it was drawn.
+        EditorWhiteBoxComponentRequestBus::Event(
+            m_entityComponentIdPair, &EditorWhiteBoxComponentRequests::MapMeshToActiveLayerSpace, *whiteBox,
+            vertsBeforeCommit);
 
         Api::CalculateNormals(*whiteBox);
         Api::CalculatePlanarUVs(*whiteBox);
@@ -1226,6 +1235,10 @@ namespace WhiteBox
         Detail::BuildShapeSolid(
             *cutter, worldFromLocal.GetInverse(), center, uAxis, vAxis, up,
             baseUp, topUp, CurrentShape(), CurrentSides(), EffectiveStairSteps());
+        // Map into the active layer's storage space (it may display transformed) so the
+        // carve/boss lands exactly where it was drawn.
+        EditorWhiteBoxComponentRequestBus::Event(
+            m_entityComponentIdPair, &EditorWhiteBoxComponentRequests::MapMeshToActiveLayerSpace, *cutter, size_t{ 0 });
         Api::CalculateNormals(*cutter);
 
         AzToolsFramework::ScopedUndoBatch undoBatch(carve ? "Carve White Box" : "Add White Box");

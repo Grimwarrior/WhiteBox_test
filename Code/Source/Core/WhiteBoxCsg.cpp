@@ -18,6 +18,7 @@
 #include <AzCore/std/containers/unordered_set.h>
 #include <AzCore/std/containers/vector.h>
 #include <AzCore/std/hash.h>
+#include <AzCore/std/sort.h>
 #include <AzCore/std/utils.h>
 #include <WhiteBox/WhiteBoxToolApi.h>
 
@@ -842,6 +843,72 @@ namespace WhiteBox
             }
             Detail::RebuildFromTriangleMesh(whiteBox, soup);
             return true;
+        }
+
+        bool BuildColliderTriangles(
+            const WhiteBoxMesh& whiteBox, AZStd::vector<AZ::Vector3>& vertices, AZStd::vector<AZ::u32>& indices)
+        {
+            vertices.clear();
+            indices.clear();
+
+            // Weld into an indexed triangle soup, then group coplanar-adjacent triangles into regions.
+            const Csg::TriangleMesh triangleMesh = Detail::ToTriangleMesh(whiteBox, AZ::Transform::CreateIdentity());
+            if (triangleMesh.m_indices.empty())
+            {
+                return false;
+            }
+            const AZStd::vector<AZStd::vector<size_t>> groups = Detail::GroupCoplanarTriangles(triangleMesh);
+            const AZStd::unordered_set<uint32_t> removable = Detail::ComputeRemovableVertices(triangleMesh, groups);
+
+            // Emit vertices lazily so the collider buffer only holds the vertices actually used.
+            AZStd::unordered_map<uint32_t, AZ::u32> remap;
+            const auto emitVertex = [&](uint32_t globalIndex) -> AZ::u32
+            {
+                const auto it = remap.find(globalIndex);
+                if (it != remap.end())
+                {
+                    return it->second;
+                }
+                const AZ::u32 index = static_cast<AZ::u32>(vertices.size());
+                vertices.push_back(Detail::TriangleMeshPosition(triangleMesh, globalIndex));
+                remap.emplace(globalIndex, index);
+                return index;
+            };
+
+            for (const AZStd::vector<size_t>& group : groups)
+            {
+                // Re-triangulate the coplanar region with collinear edge vertices removed; on any
+                // failure keep the region's original triangles (never worse than a per-face cook).
+                AZStd::vector<AZStd::array<uint32_t, 3>> tris;
+                if (!Detail::CleanCoplanarGroup(
+                        triangleMesh, group, Detail::GroupNormal(triangleMesh, group), removable, tris))
+                {
+                    tris.clear();
+                    tris.reserve(group.size());
+                    for (const size_t t : group)
+                    {
+                        tris.push_back(
+                            { triangleMesh.m_indices[t * 3 + 0], triangleMesh.m_indices[t * 3 + 1],
+                              triangleMesh.m_indices[t * 3 + 2] });
+                    }
+                }
+
+                for (const AZStd::array<uint32_t, 3>& t : tris)
+                {
+                    const AZ::u32 a = emitVertex(t[0]);
+                    const AZ::u32 b = emitVertex(t[1]);
+                    const AZ::u32 c = emitVertex(t[2]);
+                    if (a == b || b == c || a == c)
+                    {
+                        continue; // drop degenerate triangles
+                    }
+                    indices.push_back(a);
+                    indices.push_back(b);
+                    indices.push_back(c);
+                }
+            }
+
+            return !indices.empty();
         }
     } // namespace Api
 } // namespace WhiteBox

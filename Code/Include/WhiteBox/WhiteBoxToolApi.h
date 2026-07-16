@@ -697,6 +697,17 @@ namespace WhiteBox
         //! @return True if the mesh had geometry to repair, false if it was empty.
         bool RepairMesh(WhiteBoxMesh& whiteBox);
 
+        //! Build a coplanar-merged triangle list suitable for a physics collider. Coplanar-adjacent
+        //! faces are grouped and re-triangulated with redundant collinear edge vertices removed, so a
+        //! flat region (e.g. the merged top of a stamped-cube block) collapses to a handful of
+        //! triangles instead of one pair per cell - dramatically lighter than a raw per-face cook,
+        //! while always reflecting the actual geometry (carves, multiple layers, transforms). Any
+        //! region that cannot be safely simplified falls back to its original triangles, so the result
+        //! is never worse than the raw triangulation.
+        //! @return True if any triangles were produced, false if the mesh was empty.
+        bool BuildColliderTriangles(
+            const WhiteBoxMesh& whiteBox, AZStd::vector<AZ::Vector3>& vertices, AZStd::vector<AZ::u32>& indices);
+
         //! Recalculate all normals of each face in the mesh.
         void CalculateNormals(WhiteBoxMesh& whiteBox);
 

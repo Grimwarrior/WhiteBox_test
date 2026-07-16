@@ -10,8 +10,10 @@
 
 #include <algorithm>
 #include <cmath>
-#include <AzCore/std/containers/map.h>
+#include <cstdint>
+#include <map>
 #include <tuple>
+#include <AzCore/std/containers/map.h>
 
 #include <AzCore/Debug/Trace.h>
 

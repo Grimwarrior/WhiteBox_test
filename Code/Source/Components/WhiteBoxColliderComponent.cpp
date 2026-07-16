@@ -30,12 +30,14 @@ namespace WhiteBox
         if (auto serializeContext = azrtti_cast<AZ::SerializeContext*>(context))
         {
             serializeContext->Class<WhiteBoxColliderComponent, AZ::Component>()
-                ->Version(3)
+                ->Version(4)
                 ->Field("MeshData", &WhiteBoxColliderComponent::m_shapeConfiguration)
                 ->Field("BooleanMeshData", &WhiteBoxColliderComponent::m_booleanShapeConfiguration)
                 ->Field("HasBooleanMesh", &WhiteBoxColliderComponent::m_hasBooleanMesh)
                 ->Field("UseBooleanMesh", &WhiteBoxColliderComponent::m_useBooleanMesh)
                 ->Field("DrawCollider", &WhiteBoxColliderComponent::m_drawCollider)
+                ->Field("DebugVertices", &WhiteBoxColliderComponent::m_debugVertices)
+                ->Field("DebugIndices", &WhiteBoxColliderComponent::m_debugIndices)
                 ->Field("Configuration", &WhiteBoxColliderComponent::m_physicsColliderConfiguration)
                 ->Field("WhiteBoxConfiguration", &WhiteBoxColliderComponent::m_whiteBoxColliderConfiguration);
         }
@@ -223,26 +225,35 @@ namespace WhiteBox
             return;
         }
 
-        // The collider is cooked from the same mesh the render component draws, so use the
-        // render component's currently active faces (base or boolean) as the wireframe. This
-        // shows what the physics shape actually is at runtime.
-        const auto* whiteBoxComponent = GetEntity()->FindComponent<WhiteBoxComponent>();
-        if (whiteBoxComponent == nullptr)
-        {
-            return;
-        }
-        const WhiteBoxRenderData& renderData = whiteBoxComponent->GetActiveRenderData();
-        if (renderData.m_faces.empty())
-        {
-            return;
-        }
-
         AZ::Transform worldTransform = AZ::Transform::CreateIdentity();
         AZ::TransformBus::EventResult(worldTransform, GetEntityId(), &AZ::TransformBus::Events::GetWorldTM);
 
         debugDisplay.DepthTestOn();
         debugDisplay.SetColor(AZ::Color(1.0f, 0.25f, 0.1f, 1.0f)); // orange wireframe (game mode)
 
+        // Prefer the actual cooked collider geometry (e.g. the greedy-merged voxel collider) baked in
+        // from the editor - this is what physics really uses. Only fall back to the render mesh faces
+        // when no collider geometry was supplied (older data).
+        if (m_debugVertices.size() >= 3 && m_debugIndices.size() >= 3)
+        {
+            for (size_t i = 0; i + 2 < m_debugIndices.size(); i += 3)
+            {
+                const AZ::Vector3 a = worldTransform.TransformPoint(m_debugVertices[m_debugIndices[i]]);
+                const AZ::Vector3 b = worldTransform.TransformPoint(m_debugVertices[m_debugIndices[i + 1]]);
+                const AZ::Vector3 c = worldTransform.TransformPoint(m_debugVertices[m_debugIndices[i + 2]]);
+                debugDisplay.DrawLine(a, b);
+                debugDisplay.DrawLine(b, c);
+                debugDisplay.DrawLine(c, a);
+            }
+            return;
+        }
+
+        const auto* whiteBoxComponent = GetEntity()->FindComponent<WhiteBoxComponent>();
+        if (whiteBoxComponent == nullptr)
+        {
+            return;
+        }
+        const WhiteBoxRenderData& renderData = whiteBoxComponent->GetActiveRenderData();
         for (const WhiteBoxFace& face : renderData.m_faces)
         {
             const AZ::Vector3 a = worldTransform.TransformPoint(face.m_v1.m_position);

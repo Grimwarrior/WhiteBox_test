@@ -14,6 +14,12 @@ set(FILES
     Source/EditorWhiteBoxComponent.h
     Source/Tools/WhiteBoxLayerUtil.cpp
     Source/Tools/WhiteBoxLayerUtil.h
+    Source/Tools/WhiteBoxPaneWidget.cpp
+    Source/Tools/WhiteBoxPaneWidget.h
+    Source/Tools/WhiteBoxLayerGizmo.cpp
+    Source/Tools/WhiteBoxLayerGizmo.h
+    Source/Tools/WhiteBoxEntityGizmo.cpp
+    Source/Tools/WhiteBoxEntityGizmo.h
     Source/EditorWhiteBoxComponentMode.cpp
     Source/EditorWhiteBoxComponentMode.h
     Source/EditorWhiteBoxComponentModeBus.h

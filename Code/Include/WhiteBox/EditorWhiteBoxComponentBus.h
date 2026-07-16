@@ -51,6 +51,17 @@ namespace WhiteBox
             return false;
         }
 
+        //! Map geometry expressed in entity-local (viewport) space into the ACTIVE layer's
+        //! storage space by applying the inverse of the layer's non-destructive transform.
+        //! Only vertices whose handle index is >= @p firstVertexIndex are affected (pass 0 for
+        //! the whole mesh). No-op when the active layer's transform is identity. Editing tools
+        //! interact in entity-local space while the layer displays transformed, so committed
+        //! geometry must be mapped back or it appears shifted by the layer transform.
+        virtual void MapMeshToActiveLayerSpace(
+            [[maybe_unused]] WhiteBoxMesh& mesh, [[maybe_unused]] size_t firstVertexIndex)
+        {
+        }
+
         //! Return a handle wrapping the raw address of the WhiteBoxMesh pointer.
         //! @note This is currently used to address the WhiteBoxMesh via script.
         virtual WhiteBoxMeshHandle GetWhiteBoxMeshHandle();
@@ -162,6 +173,10 @@ namespace WhiteBox
 
         //! Notify listeners when the default shape of the white box mesh changes.
         virtual void OnDefaultShapeTypeChanged([[maybe_unused]] DefaultShapeType defaultShape) {}
+
+        //! Notify listeners when the LAYER STRUCTURE changed (layer added / removed / reordered /
+        //! auto-created by drawing into an empty white box) so any layer UI can resync.
+        virtual void OnLayerStructureChanged() {}
 
     protected:
         ~EditorWhiteBoxComponentNotifications() = default;
