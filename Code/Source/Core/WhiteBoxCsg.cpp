@@ -739,22 +739,49 @@ namespace WhiteBox
                 };
 
                 const AZStd::vector<AZStd::vector<size_t>> groups = GroupCoplanarTriangles(triangleMesh);
-                const AZStd::unordered_set<uint32_t> removable = ComputeRemovableVertices(triangleMesh, groups);
 
-                for (const AZStd::vector<size_t>& group : groups)
+                // Coplanar-face cleanup (vertex removal + re-triangulation of merged
+                // faces) proved fragile under heavy CSG - it can mis-triangulate the
+                // faces a boolean exposes, giving inverted/diagonal geometry and the
+                // odd non-manifold. It is disabled until hardened; the rebuild just
+                // uses Manifold's (correct) triangulation grouped into faces. Flip the
+                // flag to re-enable. The 'if' (not 'if constexpr') keeps the cleanup
+                // code compiled/referenced.
+                constexpr bool EnableCoplanarCleanup = false;
+
+                AZStd::vector<AZStd::vector<AZStd::array<uint32_t, 3>>> cleaned(groups.size());
+                bool allClean = false;
+                if (EnableCoplanarCleanup)
                 {
-                    AZStd::vector<AZStd::array<uint32_t, 3>> tris;
-                    if (!CleanCoplanarGroup(triangleMesh, group, GroupNormal(triangleMesh, group), removable, tris))
+                    // All-or-nothing: a vertex removed on one face but kept on a
+                    // fallback neighbour would open a crack, so either every group
+                    // cleans or none do.
+                    const AZStd::unordered_set<uint32_t> removable = ComputeRemovableVertices(triangleMesh, groups);
+                    allClean = true;
+                    for (size_t gi = 0; gi < groups.size(); ++gi)
                     {
-                        // fall back to the original triangulation for this region
-                        tris.clear();
-                        tris.reserve(group.size());
-                        for (const size_t t : group)
+                        if (!CleanCoplanarGroup(
+                                triangleMesh, groups[gi], GroupNormal(triangleMesh, groups[gi]), removable, cleaned[gi]))
                         {
-                            tris.push_back({ triangleMesh.m_indices[t * 3 + 0], triangleMesh.m_indices[t * 3 + 1],
-                                             triangleMesh.m_indices[t * 3 + 2] });
+                            allClean = false;
+                            break;
                         }
                     }
+                }
+
+                for (size_t gi = 0; gi < groups.size(); ++gi)
+                {
+                    AZStd::vector<AZStd::array<uint32_t, 3>> originalTris;
+                    if (!allClean)
+                    {
+                        originalTris.reserve(groups[gi].size());
+                        for (const size_t t : groups[gi])
+                        {
+                            originalTris.push_back({ triangleMesh.m_indices[t * 3 + 0], triangleMesh.m_indices[t * 3 + 1],
+                                                     triangleMesh.m_indices[t * 3 + 2] });
+                        }
+                    }
+                    const AZStd::vector<AZStd::array<uint32_t, 3>>& tris = allClean ? cleaned[gi] : originalTris;
 
                     FaceVertHandlesList faceVertHandlesList;
                     faceVertHandlesList.reserve(tris.size());

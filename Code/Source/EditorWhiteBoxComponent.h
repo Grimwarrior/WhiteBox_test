@@ -65,6 +65,7 @@ namespace WhiteBox
         void SetDefaultShape(DefaultShapeType defaultShape) override;
         int GetDrawSides() override { return m_drawSides; }
         DrawShapeType GetDrawShape() override { return m_drawShape; }
+        bool GetDrawUnitCube() override { return m_drawUnitCube; }
 
         // EditorComponentSelectionRequestsBus overrides ...
         AZ::Aabb GetEditorSelectionBoundsViewport(const AzFramework::ViewportInfo& viewportInfo) override;
@@ -160,6 +161,7 @@ namespace WhiteBox
         bool m_flipYZForExport = false; //!< Flips the Y and Z components of white box vertices when exporting for different coordinate systems
         int m_drawSides = 4; //!< Side count the Draw Shape tool uses for round / N-gon shapes (4 = box/square).
         DrawShapeType m_drawShape = DrawShapeType::Box; //!< Shape the Draw Shape tool builds.
+        bool m_drawUnitCube = false; //!< Draw mode click-stamps grid-snapped unit cubes (CSG) instead of drag-draw.
 
         AZ::EntityId m_booleanSourceEntity; //!< Another entity whose White Box mesh is used as a boolean operand.
         Api::BooleanOperation m_booleanOperation =

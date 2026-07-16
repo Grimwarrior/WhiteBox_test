@@ -543,6 +543,28 @@ namespace WhiteBox
         const bool  rightDown = mi.m_mouseButtons.Right() && mouseInteraction.m_mouseEvent == MouseEvent::Down;
         const bool  moved     = mouseInteraction.m_mouseEvent == MouseEvent::Move;
 
+        // Unit-cube stamp mode: single click places/removes a grid-snapped cube;
+        // no click-drag-pull state machine.
+        if (UnitCubeMode())
+        {
+            const bool carve = mi.m_keyboardModifiers.Ctrl();
+            m_unitCubeCarve = carve;
+            if (moved || leftDown)
+            {
+                AZ::Vector3 hitNormal;
+                const AZ::Vector3 hitWorld = RaycastToSurface(mi, worldFromLocal, intersectionData, hitNormal);
+                m_unitCubeHoverValid = UnitCubeCell(worldFromLocal, hitWorld, hitNormal, carve, m_unitCubeMinLocal);
+
+                if (leftDown)
+                {
+                    StampUnitCube(worldFromLocal, hitWorld, hitNormal, carve);
+                    return true;
+                }
+            }
+            return false; // let moves/other buttons pass through (camera etc.)
+        }
+        m_unitCubeHoverValid = false;
+
         if (rightDown)
         {
             Cancel();
@@ -879,11 +901,34 @@ namespace WhiteBox
         [[maybe_unused]] const AzFramework::ViewportInfo& viewportInfo,
         AzFramework::DebugDisplayRequests& debugDisplay)
     {
+        // Unit-cube stamp hover ghost (drawn even when the draw state is Idle).
+        if (m_unitCubeHoverValid)
+        {
+            AZ::Vector3 c[8];
+            for (int i = 0; i < 8; ++i)
+            {
+                const AZ::Vector3 localCorner = m_unitCubeMinLocal +
+                    AZ::Vector3(static_cast<float>(i & 1), static_cast<float>((i >> 1) & 1), static_cast<float>((i >> 2) & 1));
+                c[i] = m_worldFromLocal.TransformPoint(localCorner);
+            }
+            const AZ::Color color = m_unitCubeCarve ? AZ::Color(1.0f, 0.25f, 0.25f, 1.0f) : AZ::Color(0.3f, 1.0f, 0.3f, 1.0f);
+            debugDisplay.DepthTestOff();
+            debugDisplay.SetColor(color);
+            debugDisplay.SetLineWidth(static_cast<float>(cl_whiteBoxEdgeVisualWidth));
+            // 12 edges of the cube (corner index bits = x,y,z)
+            const int edges[12][2] = {
+                {0,1},{2,3},{4,5},{6,7}, {0,2},{1,3},{4,6},{5,7}, {0,4},{1,5},{2,6},{3,7} };
+            for (const auto& e : edges)
+            {
+                debugDisplay.DrawLine(c[e[0]], c[e[1]]);
+            }
+        }
+
         if (m_state == DrawState::Idle)
         {
             return;
         }
-    
+
         // Build the surface-aligned frame from the normal captured at the anchor.
         AZ::Vector3 right, fwd, up;
         BasisFromNormal(m_surfaceNormal, right, fwd, up);
@@ -1024,6 +1069,83 @@ namespace WhiteBox
         EditorWhiteBoxComponentRequestBus::EventResult(
             sides, m_entityComponentIdPair, &EditorWhiteBoxComponentRequests::GetDrawSides);
         return AZ::GetClamp(sides, 3, 256);
+    }
+
+    bool DrawShapeMode::UnitCubeMode() const
+    {
+        bool unitCube = false;
+        EditorWhiteBoxComponentRequestBus::EventResult(
+            unitCube, m_entityComponentIdPair, &EditorWhiteBoxComponentRequests::GetDrawUnitCube);
+        return unitCube;
+    }
+
+    bool DrawShapeMode::UnitCubeCell(
+        const AZ::Transform& worldFromLocal, const AZ::Vector3& hitWorld, const AZ::Vector3& hitNormal, const bool carve,
+        AZ::Vector3& outMinLocal) const
+    {
+        const AZ::Transform localFromWorld = worldFromLocal.GetInverse();
+        const AZ::Vector3 localHit = localFromWorld.TransformPoint(hitWorld);
+        const AZ::Vector3 localNormal =
+            AzToolsFramework::TransformDirectionNoScaling(localFromWorld, hitNormal).GetNormalizedSafe();
+
+        // Nudge half a unit off the surface to pick a cell unambiguously:
+        //   add   -> the empty cell on the +normal side (where the new cube appears)
+        //   carve -> the solid cell on the -normal side (the block you clicked)
+        const AZ::Vector3 sample = localHit + localNormal * (carve ? -0.5f : 0.5f);
+        outMinLocal = AZ::Vector3(std::floor(sample.GetX()), std::floor(sample.GetY()), std::floor(sample.GetZ()));
+        return true;
+    }
+
+    void DrawShapeMode::StampUnitCube(
+        const AZ::Transform& worldFromLocal, const AZ::Vector3& hitWorld, const AZ::Vector3& hitNormal, const bool carve)
+    {
+        WhiteBoxMesh* whiteBox = nullptr;
+        EditorWhiteBoxComponentRequestBus::EventResult(
+            whiteBox, m_entityComponentIdPair, &EditorWhiteBoxComponentRequests::GetWhiteBoxMesh);
+        if (!whiteBox)
+        {
+            return;
+        }
+
+        AZ::Vector3 minLocal;
+        if (!UnitCubeCell(worldFromLocal, hitWorld, hitNormal, carve, minLocal))
+        {
+            return;
+        }
+
+        // Build an exact 1x1x1 cube (already in the target's local space) and boolean
+        // it in. Exact cubes keep face-adjacent unions/carves perfectly planar so the
+        // exposed faces stay flat and merge cleanly.
+        const AZ::Vector3 center = minLocal + AZ::Vector3(0.5f, 0.5f, 0.5f);
+        Api::WhiteBoxMeshPtr cutter = Api::CreateWhiteBoxMesh();
+        BuildShapeSolid(
+            *cutter, AZ::Transform::CreateIdentity(), center, AZ::Vector3::CreateAxisX(), AZ::Vector3::CreateAxisY(),
+            AZ::Vector3::CreateAxisZ(), -0.5f, 0.5f, DrawShapeType::Box, 4);
+        Api::CalculateNormals(*cutter);
+
+        const Api::BooleanOperation op =
+            carve ? Api::BooleanOperation::Subtraction : Api::BooleanOperation::Union;
+
+        AzToolsFramework::ScopedUndoBatch undoBatch(carve ? "Remove Unit Cube" : "Stamp Unit Cube");
+
+        if (!Api::MeshBoolean(*whiteBox, *cutter, AZ::Transform::CreateIdentity(), op))
+        {
+            return; // no change (e.g. removing where nothing exists)
+        }
+
+        Api::CalculateNormals(*whiteBox);
+        Api::CalculatePlanarUVs(*whiteBox);
+
+        EditorWhiteBoxComponentRequestBus::Event(
+            m_entityComponentIdPair, &EditorWhiteBoxComponentRequests::SerializeWhiteBox);
+        EditorWhiteBoxComponentRequestBus::Event(
+            m_entityComponentIdPair, &EditorWhiteBoxComponentRequests::RebuildWhiteBox);
+        EditorWhiteBoxComponentModeRequestBus::Event(
+            m_entityComponentIdPair,
+            &EditorWhiteBoxComponentModeRequestBus::Events::MarkWhiteBoxIntersectionDataDirty);
+        AzToolsFramework::ToolsApplicationRequests::Bus::Broadcast(
+            &AzToolsFramework::ToolsApplicationRequests::AddDirtyEntity,
+            m_entityComponentIdPair.GetEntityId());
     }
 
     // ----------------------------------------------------------------------- //

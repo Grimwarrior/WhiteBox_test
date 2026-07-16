@@ -65,6 +65,10 @@ namespace WhiteBox
         //! Shape the draw-shape tool builds, from the component's "Draw Shape" property.
         virtual DrawShapeType GetDrawShape() { return DrawShapeType::Box; }
 
+        //! When true, draw mode click-stamps grid-snapped 1x1x1 cubes (CSG union, or
+        //! subtract with Ctrl) instead of the click-drag-pull workflow.
+        virtual bool GetDrawUnitCube() { return false; }
+
     protected:
         ~EditorWhiteBoxComponentRequests() = default;
     };

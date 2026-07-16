@@ -133,7 +133,7 @@ namespace WhiteBox
 
         AzToolsFramework::EditorPythonRunnerRequestBus::Broadcast(
             &AzToolsFramework::EditorPythonRunnerRequestBus::Events::ExecuteByFilenameWithArgs,
-            "@gemroot:WhiteBox_test@/Editor/Scripts/default_shapes.py", scriptArgs);
+            "@gemroot:WhiteBoxt@/Editor/Scripts/default_shapes.py", scriptArgs);
 
         EditorWhiteBoxComponentNotificationBus::Event(
             AZ::EntityComponentIdPair(GetEntityId(), GetId()),
@@ -383,6 +383,7 @@ namespace WhiteBox
                 ->Field("FlipYZForExport", &EditorWhiteBoxComponent::m_flipYZForExport)
                 ->Field("DrawSides", &EditorWhiteBoxComponent::m_drawSides)
                 ->Field("DrawShape", &EditorWhiteBoxComponent::m_drawShape)
+                ->Field("DrawUnitCube", &EditorWhiteBoxComponent::m_drawUnitCube)
                 ->Field("BooleanSource", &EditorWhiteBoxComponent::m_booleanSourceEntity)
                 ->Field("BooleanOp", &EditorWhiteBoxComponent::m_booleanOperation)
                 ->Field("BooleanHideSource", &EditorWhiteBoxComponent::m_hideSourceAfterApply)
@@ -423,6 +424,10 @@ namespace WhiteBox
                         "Number of sides the Draw Shape tool uses for round / N-gon shapes (4 = box / square).")
                     ->Attribute(AZ::Edit::Attributes::Min, 3)
                     ->Attribute(AZ::Edit::Attributes::Max, 128)
+                    ->DataElement(
+                        AZ::Edit::UIHandlers::Default, &EditorWhiteBoxComponent::m_drawUnitCube, "Unit Cube Stamp",
+                        "In draw mode, click to stamp a grid-snapped 1x1x1 cube (CSG union; hold Ctrl to subtract) "
+                        "instead of click-drag-pull.")
                     ->DataElement(
                         AZ::Edit::UIHandlers::Default, &EditorWhiteBoxComponent::m_editorMeshAsset, "Editor Mesh Asset",
                         "Editor Mesh Asset")

@@ -100,7 +100,6 @@ if(PAL_TRAIT_BUILD_HOST_TOOLS)
                 Legacy::EditorCommon
                 Legacy::Editor.Headers
                 Gem::${gem_name}.Static
-                Gem::WhiteBox.Editor.Static
                 3rdParty::OpenMesh # Needs to be public, so that the below .Editor gem module includes the lib.
                 3rdParty::Manifold # CSG boolean operations (Api::MeshBoolean). Public for the same reason as OpenMesh.
     )
@@ -121,7 +120,6 @@ if(PAL_TRAIT_BUILD_HOST_TOOLS)
         BUILD_DEPENDENCIES
             PRIVATE
                 Gem::${gem_name}.Editor.Static
-                Gem::WhiteBox.Editor
     )
 
     # Inject the gem name into the Module source file
