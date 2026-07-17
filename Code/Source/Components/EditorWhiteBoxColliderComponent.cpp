@@ -167,6 +167,22 @@ namespace WhiteBox
         if (collider != nullptr)
         {
             collider->SetDrawCollider(m_drawCollider);
+
+            // Bake the actual cooked collider geometry so the runtime "Draw Collider" wireframe shows
+            // the real physics shape (the coplanar-merged mesh) instead of the per-cube render mesh.
+            if (auto* whiteBoxComponent = GetEntity()->FindComponent<WhiteBox::EditorWhiteBoxComponent>())
+            {
+                if (auto* mesh = whiteBoxComponent->GetEvaluatedWhiteBoxMesh())
+                {
+                    AZStd::vector<AZ::Vector3> debugVertices;
+                    AZStd::vector<AZ::u32> debugIndices;
+                    if (!Api::BuildColliderTriangles(*mesh, debugVertices, debugIndices))
+                    {
+                        ConvertToTriangles(*mesh, debugVertices, debugIndices);
+                    }
+                    collider->SetDebugMesh(debugVertices, debugIndices);
+                }
+            }
         }
     }
 
@@ -233,8 +249,14 @@ namespace WhiteBox
             return;
         }
 
-        // base mesh (used when the live-boolean is off)
-        if (auto* baseMesh = whiteBoxComponent->GetWhiteBoxMesh())
+        // Base mesh (used when the live-boolean is off). Cook the EVALUATED mesh, not the raw
+        // freeform: the stamped cubes live in the grid meshes that are folded into the evaluated
+        // result (and it reflects carves and every visible layer), so the freeform alone omits them.
+        // CookToConfiguration coplanar-merges whatever mesh it is given. When the live-boolean is on
+        // the evaluated mesh is the cut result, so fall back to the freeform for the true base there.
+        WhiteBoxMesh* baseMesh = whiteBoxComponent->GetLiveBoolean() ? whiteBoxComponent->GetWhiteBoxMesh()
+                                                                     : whiteBoxComponent->GetEvaluatedWhiteBoxMesh();
+        if (baseMesh != nullptr)
         {
             CookToConfiguration(*baseMesh, m_meshShapeConfiguration, whiteBoxComponent);
         }
@@ -245,7 +267,11 @@ namespace WhiteBox
         // source lookup (which is what fails during the game-mode build).
         if (auto* displayMesh = whiteBoxComponent->GetLiveBooleanDisplayMesh())
         {
-            m_hasBooleanMesh = CookToConfiguration(*displayMesh, m_booleanMeshShapeConfiguration);
+            // Pass the White Box component so the boolean variant also uses the greedy (merged) voxel
+            // collider for any stamped cubes, instead of a heavy per-cube triangulation. The live
+            // boolean only cuts the freeform mesh, so the cubes are unaffected and cook identically to
+            // the base variant.
+            m_hasBooleanMesh = CookToConfiguration(*displayMesh, m_booleanMeshShapeConfiguration, whiteBoxComponent);
         }
     }
 
@@ -260,15 +286,16 @@ namespace WhiteBox
         // which cannot cook a CSG result itself.
         CookColliderVariants();
 
-        // Capture a wireframe of the mesh actually being used as the collider (this is the
-        // evaluated mesh: base when the live-boolean is off, the boolean result when on) so
-        // the viewport shows exactly what the game body will be.
+        // Capture a wireframe of the mesh actually being used as the collider (the evaluated mesh:
+        // base when the live-boolean is off, the boolean result when on) so the viewport shows exactly
+        // what the physics body is - the same coplanar-merged geometry the cook produces.
         m_debugVertices.clear();
         m_debugIndices.clear();
-        ConvertToTriangles(whiteBox, m_debugVertices, m_debugIndices);
+        if (!Api::BuildColliderTriangles(whiteBox, m_debugVertices, m_debugIndices))
+        {
+            ConvertToTriangles(whiteBox, m_debugVertices, m_debugIndices);
+        }
 
-        // The editor viewport body reflects the current (evaluated) mesh: pick the matching
-        // pre-cooked variant based on whether the live-boolean is active.
         bool live = false;
         if (auto* whiteBoxComponent = GetEntity()->FindComponent<EditorWhiteBoxComponent>())
         {
@@ -389,36 +416,57 @@ namespace WhiteBox
         AZStd::vector<AZ::Vector3> vertices;
         AZStd::vector<AZ::u32> indices;
 
-        // Per-face triangulation. (A greedy-meshed voxel collider is available via
-        // EditorWhiteBoxComponent::BuildColliderMesh, but its T-junctions are rejected by
-        // PhysX cooking, so we use the reliable per-face path for correct collision.)
-        if (!ConvertToTriangles(whiteBox, vertices, indices))
+        // Coplanar-merge the ACTUAL mesh into a light collider (a flat stamped-cube region collapses to
+        // a few triangles, not two per cell). This always matches what is on screen - carves, multiple
+        // layers and layer transforms all come through because we cook the evaluated geometry itself,
+        // not a separate voxel-occupancy representation. Fall back to the raw per-face triangulation if
+        // merging produced nothing.
+        const bool merged = Api::BuildColliderTriangles(whiteBox, vertices, indices);
+        if (!merged && !ConvertToTriangles(whiteBox, vertices, indices))
         {
             // if there are no valid triangles then do not attempt to create a physics mesh
             return false;
         }
 
-        if (auto* physicsSystem = AZ::Interface<Physics::System>::Get())
-        {
-            AZStd::vector<AZ::u8> bytes;
-            const bool result = physicsSystem->CookTriangleMeshToMemory(
-                vertices.data(), (AZ::u32)vertices.size(), indices.data(), (AZ::u32)indices.size(), bytes);
-
-            AZ_Warning(
-                "EditorWhiteBoxColliderComponent", result, "Failed to cook mesh data (verts=%zu, indices=%zu)",
-                vertices.size(), indices.size());
-
-            if (result)
-            {
-                outConfiguration.SetCookedMeshData(
-                    bytes.data(), bytes.size(), Physics::CookedMeshShapeConfiguration::MeshType::TriangleMesh);
-                return true;
-            }
-        }
-        else
+        auto* physicsSystem = AZ::Interface<Physics::System>::Get();
+        if (physicsSystem == nullptr)
         {
             AZ_Warning(
                 "EditorWhiteBoxColliderComponent", false, "No physics backend enabled - please ensure one is provided");
+            return false;
+        }
+
+        const auto cook = [&](AZStd::vector<AZ::u8>& bytes)
+        {
+            return physicsSystem->CookTriangleMeshToMemory(
+                vertices.data(), (AZ::u32)vertices.size(), indices.data(), (AZ::u32)indices.size(), bytes);
+        };
+
+        AZStd::vector<AZ::u8> bytes;
+        bool result = cook(bytes);
+
+        // If the merged mesh was rejected by the cooker, fall back to the always-valid per-face
+        // triangulation so the collider is not silently dropped.
+        if (!result && merged)
+        {
+            vertices.clear();
+            indices.clear();
+            bytes.clear();
+            if (ConvertToTriangles(whiteBox, vertices, indices))
+            {
+                result = cook(bytes);
+            }
+        }
+
+        AZ_Warning(
+            "EditorWhiteBoxColliderComponent", result, "Failed to cook mesh data (verts=%zu, indices=%zu)",
+            vertices.size(), indices.size());
+
+        if (result)
+        {
+            outConfiguration.SetCookedMeshData(
+                bytes.data(), bytes.size(), Physics::CookedMeshShapeConfiguration::MeshType::TriangleMesh);
+            return true;
         }
 
         return false;

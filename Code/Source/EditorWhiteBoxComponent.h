@@ -282,7 +282,22 @@ namespace WhiteBox
         int IndexOfLayerId(AZ::u64 id) const;   //!< Index of the layer with @p id, or -1.
         AZ::u64 LayerSignature() const;         //!< Hash of the current layer id order + count.
         void SyncLayerStructure();              //!< Reconcile working state after the list is reordered / added to / removed from.
-        WhiteBoxRenderData BuildColoredRenderData(); //!< Per-layer-tinted render faces (used when Use Global Tint is off).
+        //! Per-layer render faces honouring each layer's tint and Invert Normals flag (used when Use
+        //! Global Tint is off or any visible layer inverts). Pass @p freeformOverride to build from a
+        //! specific active-layer mesh (e.g. the base or boolean variant during the game-mode bake);
+        //! null selects the live freeform (boolean display mesh when the live boolean is on).
+        WhiteBoxRenderData BuildColoredRenderData(WhiteBoxMesh* freeformOverride = nullptr);
+        //! Build render faces for the visible layers with inter-layer booleans applied, re-colouring
+        //! every merged face with the tint of the source layer its surface came from (Subtract cut
+        //! walls take the cutting layer's tint). Used whenever a visible layer has a boolean combine
+        //! mode so the coloured render matches the boolean geometry.
+        WhiteBoxRenderData BuildColoredBooleanRenderData(WhiteBoxMesh* freeformOverride);
+        //! True when at least one visible non-base layer uses a boolean (Union/Subtract/Intersect)
+        //! combine mode, so the merged surface must be re-coloured per source layer.
+        bool AnyVisibleLayerBoolean() const;
+        //! True when the render/bake path must build per-layer faces: per-layer tint is on, or any
+        //! visible layer inverts its normals. Both need per-layer geometry (winding flip / vertex colour).
+        bool PerLayerRenderActive() const;
         void BuildLayerRenderMeshes(); //!< Build one tinted render mesh per visible layer (per-layer tint mode).
         AZ::u32 OnGlobalTintChange();           //!< Use Global Tint toggled: rebuild render + show/hide the global tint.
         AZ::Crc32 OnAddCollision();             //!< Add a White Box collider component to this entity.

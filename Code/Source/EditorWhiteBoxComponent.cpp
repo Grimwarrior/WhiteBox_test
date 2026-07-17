@@ -154,6 +154,41 @@ namespace WhiteBox
         return combined;
     }
 
+    // Build a single render face from a white box face handle, optionally reversing the winding
+    // (and flipping the normal) so the face renders inside-out. Shared by the plain and the
+    // per-layer coloured render paths.
+    static WhiteBoxFace BuildWhiteBoxFace(
+        const WhiteBoxMesh& whiteBox, const Api::FaceHandle& faceHandle, const bool flipWinding)
+    {
+        const auto copyVertex = [&whiteBox](const Api::HalfedgeHandle& in, WhiteBoxVertex& out)
+        {
+            const auto vh = Api::HalfedgeVertexHandleAtTip(whiteBox, in);
+            out.m_position = Api::VertexPosition(whiteBox, vh);
+            out.m_uv = Api::HalfedgeUV(whiteBox, in);
+        };
+
+        WhiteBoxFace face;
+        face.m_normal = Api::FaceNormal(whiteBox, faceHandle);
+        const auto faceHalfedgeHandles = Api::FaceHalfedgeHandles(whiteBox, faceHandle);
+
+        if (flipWinding)
+        {
+            // Reverse winding (swap v1/v3) and flip the face normal so the layer renders inside-out.
+            copyVertex(faceHalfedgeHandles[0], face.m_v3);
+            copyVertex(faceHalfedgeHandles[1], face.m_v2);
+            copyVertex(faceHalfedgeHandles[2], face.m_v1);
+            face.m_normal = -face.m_normal;
+        }
+        else
+        {
+            copyVertex(faceHalfedgeHandles[0], face.m_v1);
+            copyVertex(faceHalfedgeHandles[1], face.m_v2);
+            copyVertex(faceHalfedgeHandles[2], face.m_v3);
+        }
+
+        return face;
+    }
+
     // build intermediate data to be passed to WhiteBoxRenderMeshInterface
     // to be used to generate concrete render mesh
     static WhiteBoxRenderData CreateWhiteBoxRenderData(
@@ -167,47 +202,181 @@ namespace WhiteBox
         const auto faceCount = Api::MeshFaceCount(whiteBox);
         faceData.reserve(faceCount);
 
-        const auto createWhiteBoxFaceFromHandle = [&whiteBox, flipWinding](const Api::FaceHandle& faceHandle) -> WhiteBoxFace
-        {
-            const auto copyVertex = [&whiteBox](const Api::HalfedgeHandle& in, WhiteBoxVertex& out)
-            {
-                const auto vh = Api::HalfedgeVertexHandleAtTip(whiteBox, in);
-                out.m_position = Api::VertexPosition(whiteBox, vh);
-                out.m_uv = Api::HalfedgeUV(whiteBox, in);
-            };
-
-            WhiteBoxFace face;
-            face.m_normal = Api::FaceNormal(whiteBox, faceHandle);
-            const auto faceHalfedgeHandles = Api::FaceHalfedgeHandles(whiteBox, faceHandle);
-
-            if (flipWinding)
-            {
-                // Reverse winding (swap v1/v3) and flip the face normal so the layer renders inside-out.
-                copyVertex(faceHalfedgeHandles[0], face.m_v3);
-                copyVertex(faceHalfedgeHandles[1], face.m_v2);
-                copyVertex(faceHalfedgeHandles[2], face.m_v1);
-                face.m_normal = -face.m_normal;
-            }
-            else
-            {
-                copyVertex(faceHalfedgeHandles[0], face.m_v1);
-                copyVertex(faceHalfedgeHandles[1], face.m_v2);
-                copyVertex(faceHalfedgeHandles[2], face.m_v3);
-            }
-
-            return face;
-        };
-
         const auto faceHandles = Api::MeshFaceHandles(whiteBox);
         for (const auto& faceHandle : faceHandles)
         {
-            faceData.push_back(createWhiteBoxFaceFromHandle(faceHandle));
+            faceData.push_back(BuildWhiteBoxFace(whiteBox, faceHandle, flipWinding));
         }
 
         renderData.m_material = material;
 
         return renderData;
     }
+
+    namespace
+    {
+    // Maps each face of a merged CSG result back to the source layer whose surface it lies on, so a
+    // boolean run under per-layer tint can re-colour every output face with its originating layer's
+    // tint. Every contributing layer's (transformed) triangles are recorded, bucketed by supporting
+    // plane. A query face is matched to a coplanar source triangle that contains its centroid; new
+    // faces a Subtract carves lie on the cutting layer's plane and inside its polygon, so they too
+    // resolve to that layer. Falls back to the nearest on-plane (then global) source, so a match is
+    // always returned.
+    class LayerColorSource
+    {
+    public:
+        void AddMesh(const WhiteBoxMesh& mesh, const int layerIndex)
+        {
+            const Api::Faces faces = Api::MeshFaces(mesh); // each Api::Face is a triangle
+            for (const Api::Face& f : faces)
+            {
+                const AZ::Vector3 cross = (f[1] - f[0]).Cross(f[2] - f[0]);
+                if (cross.GetLengthSq() < 1e-12f)
+                {
+                    continue; // degenerate triangle - contributes no surface
+                }
+                Tri tri;
+                tri.m_a = f[0];
+                tri.m_b = f[1];
+                tri.m_c = f[2];
+                tri.m_normal = cross.GetNormalized();
+                tri.m_layer = layerIndex;
+                m_planes[PlaneKey(tri.m_normal, f[0])].push_back(tri);
+            }
+        }
+
+        bool Empty() const
+        {
+            return m_planes.empty();
+        }
+
+        int Match(const AZ::Vector3& centroid, const AZ::Vector3& normal, const int fallbackLayer) const
+        {
+            // When several coplanar source layers overlap a point (e.g. a Subtract carves a wall that
+            // lies on the cutting layer's plane, itself overlapping the base layer's plane), the
+            // highest layer index wins - it is the layer drawn on top / the operand that produced the
+            // cut - so the merged surface takes that layer's tint.
+            int bestContainLayer = -1;
+            int nearestLayer = fallbackLayer;
+            float nearestDistSq = 1e30f;
+
+            const auto scanBucket = [&](const AZStd::vector<Tri>& tris, const bool requireContain)
+            {
+                for (const Tri& tri : tris)
+                {
+                    if (requireContain && tri.m_layer > bestContainLayer && PointInTriangle(centroid, tri))
+                    {
+                        bestContainLayer = tri.m_layer;
+                    }
+                    const AZ::Vector3 c = (tri.m_a + tri.m_b + tri.m_c) / 3.0f;
+                    const float d = (c - centroid).GetLengthSq();
+                    if (d < nearestDistSq)
+                    {
+                        nearestDistSq = d;
+                        nearestLayer = tri.m_layer;
+                    }
+                }
+            };
+
+            const auto it = m_planes.find(PlaneKey(normal, centroid));
+            if (it != m_planes.end())
+            {
+                scanBucket(it->second, true);
+                return bestContainLayer >= 0 ? bestContainLayer : nearestLayer; // contained, else nearest on-plane
+            }
+
+            // No coplanar bucket (e.g. a stray reoriented face): fall back to the globally nearest source.
+            for (const auto& kv : m_planes)
+            {
+                scanBucket(kv.second, false);
+            }
+            return nearestLayer;
+        }
+
+    private:
+        struct Tri
+        {
+            AZ::Vector3 m_a;
+            AZ::Vector3 m_b;
+            AZ::Vector3 m_c;
+            AZ::Vector3 m_normal;
+            int m_layer;
+        };
+
+        static constexpr float PlaneQuant = 1e-3f;
+
+        // Canonical (sign-independent) plane key so a face and its Subtract-flipped counterpart bucket
+        // together: flip the normal to make its dominant component positive, then quantize (n, d).
+        static AZ::u64 PlaneKey(const AZ::Vector3& normal, const AZ::Vector3& pointOnPlane)
+        {
+            AZ::Vector3 n = normal;
+            const float ax = std::abs(n.GetX());
+            const float ay = std::abs(n.GetY());
+            const float az = std::abs(n.GetZ());
+            const float dom = (ax >= ay && ax >= az) ? n.GetX() : (ay >= az ? n.GetY() : n.GetZ());
+            if (dom < 0.0f)
+            {
+                n = -n;
+            }
+            const float d = n.Dot(pointOnPlane);
+            const auto q = [](const float v)
+            {
+                return static_cast<AZ::s64>(std::llround(v / PlaneQuant));
+            };
+            AZ::u64 h = 1469598103934665603ull; // FNV-1a style fold of the four quantized values
+            for (const AZ::s64 value : { q(n.GetX()), q(n.GetY()), q(n.GetZ()), q(d) })
+            {
+                h = (h ^ static_cast<AZ::u64>(value)) * 1099511628211ull;
+            }
+            return h;
+        }
+
+        static bool PointInTriangle(const AZ::Vector3& p, const Tri& tri)
+        {
+            // Project to 2D by dropping the axis most aligned with the normal, then a tolerant
+            // same-side test (the centroid of a sub-face lies strictly inside its source triangle).
+            const float ax = std::abs(tri.m_normal.GetX());
+            const float ay = std::abs(tri.m_normal.GetY());
+            const float az = std::abs(tri.m_normal.GetZ());
+            const auto to2 = [ax, ay, az](const AZ::Vector3& v, float& x, float& y)
+            {
+                if (ax >= ay && ax >= az)
+                {
+                    x = v.GetY();
+                    y = v.GetZ();
+                }
+                else if (ay >= az)
+                {
+                    x = v.GetX();
+                    y = v.GetZ();
+                }
+                else
+                {
+                    x = v.GetX();
+                    y = v.GetY();
+                }
+            };
+            float axx, axy, bxx, bxy, cxx, cxy, pxx, pxy;
+            to2(tri.m_a, axx, axy);
+            to2(tri.m_b, bxx, bxy);
+            to2(tri.m_c, cxx, cxy);
+            to2(p, pxx, pxy);
+            const auto cross2 = [](float ox, float oy, float ux, float uy, float vx, float vy)
+            {
+                return (ux - ox) * (vy - oy) - (uy - oy) * (vx - ox);
+            };
+            const float d1 = cross2(axx, axy, bxx, bxy, pxx, pxy);
+            const float d2 = cross2(bxx, bxy, cxx, cxy, pxx, pxy);
+            const float d3 = cross2(cxx, cxy, axx, axy, pxx, pxy);
+            constexpr float Eps = 1e-4f;
+            const bool hasNeg = (d1 < -Eps) || (d2 < -Eps) || (d3 < -Eps);
+            const bool hasPos = (d1 > Eps) || (d2 > Eps) || (d3 > Eps);
+            return !(hasNeg && hasPos);
+        }
+
+        AZStd::unordered_map<AZ::u64, AZStd::vector<Tri>> m_planes;
+    };
+    } // namespace
 
     static bool IsWhiteBoxNullRenderMesh(const AZStd::optional<AZStd::unique_ptr<RenderMeshInterface>>& m_renderMesh)
     {
@@ -280,8 +449,8 @@ namespace WhiteBox
             return;
         }
 
-        WhiteBoxMesh* targetMesh = GetWhiteBoxMesh();
-        if (targetMesh == nullptr)
+        WhiteBoxMesh* freeform = GetWhiteBoxMesh();
+        if (freeform == nullptr)
         {
             return;
         }
@@ -301,9 +470,22 @@ namespace WhiteBox
             AZ_Warning("EditorWhiteBoxComponent", false, "Boolean Source entity has no White Box component.");
             return;
         }
-        WhiteBoxMesh* sourceMesh = sourceComponents[0]->GetWhiteBoxMesh();
-        if (sourceMesh == nullptr)
+        // Use the source's EVALUATED mesh so its stamped cubes participate too, not just its freeform.
+        WhiteBoxMesh* sourceMesh = sourceComponents[0]->GetEvaluatedWhiteBoxMesh();
+        if (sourceMesh == nullptr || Api::MeshFaceHandles(*sourceMesh).empty())
         {
+            AZ_Warning("EditorWhiteBoxComponent", false, "Boolean Source mesh is empty.");
+            return;
+        }
+
+        // Operate on the COMBINED mesh (freeform + stamped-cube grids) so the boolean affects the whole
+        // visible solid. For a pure stamped-cube entity the freeform is empty and the cubes live in the
+        // (manifold, CSG-merged) grid meshes, so booleaning the freeform alone did nothing.
+        Api::WhiteBoxMeshPtr combined = CombinedWithGrid(freeform);
+        WhiteBoxMesh* targetMesh = combined ? combined.get() : freeform;
+        if (Api::MeshFaceHandles(*targetMesh).empty())
+        {
+            AZ_Warning("EditorWhiteBoxComponent", false, "This White Box mesh is empty (nothing to boolean).");
             return;
         }
 
@@ -327,6 +509,23 @@ namespace WhiteBox
 
         Api::CalculateNormals(*targetMesh);
         Api::CalculatePlanarUVs(*targetMesh);
+
+        // If we booleaned the combined solid, bake the result back into the freeform mesh and clear the
+        // now-consumed stamp/grid layers (their geometry is folded into the boolean result).
+        if (combined)
+        {
+            Api::WhiteBoxMeshStream stream;
+            Api::WriteMesh(*targetMesh, stream);
+            Api::ReadMesh(*freeform, stream);
+
+            m_gridMesh = Api::CreateWhiteBoxMesh();
+            m_gridMergedMesh = Api::CreateWhiteBoxMesh();
+            Api::WriteMesh(*m_gridMesh, m_gridMeshData);
+            Api::WriteMesh(*m_gridMergedMesh, m_gridMergedData);
+            m_voxelCells.clear();
+            m_voxelCellSizes.clear();
+            m_voxelMerged.clear();
+        }
 
         SerializeWhiteBox();
         RebuildWhiteBox();
@@ -984,6 +1183,253 @@ namespace WhiteBox
                 { quad(vert(x0, y1 + 1, pz), vert(x1 + 1, y1 + 1, pz), vert(x1 + 1, y0, pz), vert(x0, y0, pz)); });
         }
     } // namespace VoxelDetail
+
+    namespace
+    {
+        // Greedy-merge the 2D cells in 'mask' (each packed as VoxelDetail::PackCell(a,b,0)) into
+        // maximal rectangles [a0..a1] x [b0..b1]. Consumes 'mask'. Emits into 'rects' as {a0,a1,b0,b1}.
+        void GreedyRects2D(AZStd::unordered_set<AZ::u64>& mask, AZStd::vector<AZStd::array<int, 4>>& rects)
+        {
+            AZStd::vector<AZStd::pair<int, int>> list;
+            list.reserve(mask.size());
+            for (const AZ::u64 k : mask)
+            {
+                int a, b, unused;
+                VoxelDetail::UnpackCell(k, a, b, unused);
+                list.push_back({ a, b });
+            }
+            AZStd::sort(list.begin(), list.end());
+            const auto at = [](int a, int b) { return VoxelDetail::PackCell(a, b, 0); };
+            for (const auto& ab : list)
+            {
+                const int a = ab.first;
+                const int b = ab.second;
+                if (mask.count(at(a, b)) == 0)
+                {
+                    continue;
+                }
+                int b1 = b;
+                while (mask.count(at(a, b1 + 1)) != 0)
+                {
+                    ++b1;
+                }
+                int a1 = a;
+                for (bool grow = true; grow;)
+                {
+                    const int na = a1 + 1;
+                    for (int bb = b; bb <= b1; ++bb)
+                    {
+                        if (mask.count(at(na, bb)) == 0)
+                        {
+                            grow = false;
+                            break;
+                        }
+                    }
+                    if (grow)
+                    {
+                        a1 = na;
+                    }
+                }
+                for (int aa = a; aa <= a1; ++aa)
+                {
+                    for (int bb = b; bb <= b1; ++bb)
+                    {
+                        mask.erase(at(aa, bb));
+                    }
+                }
+                rects.push_back({ a, a1, b, b1 });
+            }
+        }
+
+        // Greedy-mesh a set of unit voxel cells into a minimal collider triangle soup: exposed cell
+        // faces coplanar on a plane merge into maximal rectangles (2 triangles each), so N adjacent
+        // cubes cook as one merged box. This is a rewrite of VoxelDetail::GreedyColliderTriangles that
+        // avoids passing generic (auto-typed) lambdas as arguments - that pattern was silently
+        // miscompiled by MSVC, yielding zero triangles for perfectly valid voxel data.
+        void AppendGreedyVoxelColliderTriangles(
+            const AZStd::unordered_set<AZ::u64>& cells, const float cellSize, AZStd::vector<AZ::Vector3>& verts,
+            AZStd::vector<AZ::u32>& indices)
+        {
+            AZStd::unordered_map<AZ::u64, AZ::u32> vmap;
+            const auto vert = [&](int x, int y, int z) -> AZ::u32
+            {
+                const AZ::u64 k = VoxelDetail::PackCell(x, y, z);
+                const auto it = vmap.find(k);
+                if (it != vmap.end())
+                {
+                    return it->second;
+                }
+                const AZ::u32 idx = static_cast<AZ::u32>(verts.size());
+                verts.push_back(
+                    AZ::Vector3(static_cast<float>(x), static_cast<float>(y), static_cast<float>(z)) * cellSize);
+                vmap.emplace(k, idx);
+                return idx;
+            };
+            const auto has = [&](int x, int y, int z) { return cells.count(VoxelDetail::PackCell(x, y, z)) != 0; };
+            const auto quad = [&](AZ::u32 a, AZ::u32 b, AZ::u32 c, AZ::u32 d)
+            {
+                indices.push_back(a);
+                indices.push_back(b);
+                indices.push_back(c);
+                indices.push_back(a);
+                indices.push_back(c);
+                indices.push_back(d);
+            };
+            const auto p2 = [](int a, int b) { return VoxelDetail::PackCell(a, b, 0); };
+            AZStd::vector<AZStd::array<int, 4>> rects;
+
+            // +X faces (plane at x, 2D = (y,z); face sits at x = plane+1)
+            {
+                AZStd::unordered_map<int, AZStd::unordered_set<AZ::u64>> planes;
+                for (const AZ::u64 key : cells)
+                {
+                    int x, y, z;
+                    VoxelDetail::UnpackCell(key, x, y, z);
+                    if (!has(x + 1, y, z))
+                    {
+                        planes[x].insert(p2(y, z));
+                    }
+                }
+                for (auto& pl : planes)
+                {
+                    const int px = pl.first + 1;
+                    rects.clear();
+                    GreedyRects2D(pl.second, rects);
+                    for (const auto& r : rects)
+                    {
+                        quad(
+                            vert(px, r[0], r[2]), vert(px, r[1] + 1, r[2]), vert(px, r[1] + 1, r[3] + 1),
+                            vert(px, r[0], r[3] + 1));
+                    }
+                }
+            }
+            // -X faces
+            {
+                AZStd::unordered_map<int, AZStd::unordered_set<AZ::u64>> planes;
+                for (const AZ::u64 key : cells)
+                {
+                    int x, y, z;
+                    VoxelDetail::UnpackCell(key, x, y, z);
+                    if (!has(x - 1, y, z))
+                    {
+                        planes[x].insert(p2(y, z));
+                    }
+                }
+                for (auto& pl : planes)
+                {
+                    const int px = pl.first;
+                    rects.clear();
+                    GreedyRects2D(pl.second, rects);
+                    for (const auto& r : rects)
+                    {
+                        quad(
+                            vert(px, r[1] + 1, r[2]), vert(px, r[0], r[2]), vert(px, r[0], r[3] + 1),
+                            vert(px, r[1] + 1, r[3] + 1));
+                    }
+                }
+            }
+            // +Y faces
+            {
+                AZStd::unordered_map<int, AZStd::unordered_set<AZ::u64>> planes;
+                for (const AZ::u64 key : cells)
+                {
+                    int x, y, z;
+                    VoxelDetail::UnpackCell(key, x, y, z);
+                    if (!has(x, y + 1, z))
+                    {
+                        planes[y].insert(p2(x, z));
+                    }
+                }
+                for (auto& pl : planes)
+                {
+                    const int py = pl.first + 1;
+                    rects.clear();
+                    GreedyRects2D(pl.second, rects);
+                    for (const auto& r : rects)
+                    {
+                        quad(
+                            vert(r[1] + 1, py, r[2]), vert(r[0], py, r[2]), vert(r[0], py, r[3] + 1),
+                            vert(r[1] + 1, py, r[3] + 1));
+                    }
+                }
+            }
+            // -Y faces
+            {
+                AZStd::unordered_map<int, AZStd::unordered_set<AZ::u64>> planes;
+                for (const AZ::u64 key : cells)
+                {
+                    int x, y, z;
+                    VoxelDetail::UnpackCell(key, x, y, z);
+                    if (!has(x, y - 1, z))
+                    {
+                        planes[y].insert(p2(x, z));
+                    }
+                }
+                for (auto& pl : planes)
+                {
+                    const int py = pl.first;
+                    rects.clear();
+                    GreedyRects2D(pl.second, rects);
+                    for (const auto& r : rects)
+                    {
+                        quad(
+                            vert(r[0], py, r[2]), vert(r[1] + 1, py, r[2]), vert(r[1] + 1, py, r[3] + 1),
+                            vert(r[0], py, r[3] + 1));
+                    }
+                }
+            }
+            // +Z faces
+            {
+                AZStd::unordered_map<int, AZStd::unordered_set<AZ::u64>> planes;
+                for (const AZ::u64 key : cells)
+                {
+                    int x, y, z;
+                    VoxelDetail::UnpackCell(key, x, y, z);
+                    if (!has(x, y, z + 1))
+                    {
+                        planes[z].insert(p2(x, y));
+                    }
+                }
+                for (auto& pl : planes)
+                {
+                    const int pz = pl.first + 1;
+                    rects.clear();
+                    GreedyRects2D(pl.second, rects);
+                    for (const auto& r : rects)
+                    {
+                        quad(
+                            vert(r[0], r[2], pz), vert(r[1] + 1, r[2], pz), vert(r[1] + 1, r[3] + 1, pz),
+                            vert(r[0], r[3] + 1, pz));
+                    }
+                }
+            }
+            // -Z faces
+            {
+                AZStd::unordered_map<int, AZStd::unordered_set<AZ::u64>> planes;
+                for (const AZ::u64 key : cells)
+                {
+                    int x, y, z;
+                    VoxelDetail::UnpackCell(key, x, y, z);
+                    if (!has(x, y, z - 1))
+                    {
+                        planes[z].insert(p2(x, y));
+                    }
+                }
+                for (auto& pl : planes)
+                {
+                    const int pz = pl.first;
+                    rects.clear();
+                    GreedyRects2D(pl.second, rects);
+                    for (const auto& r : rects)
+                    {
+                        quad(
+                            vert(r[0], r[3] + 1, pz), vert(r[1] + 1, r[3] + 1, pz), vert(r[1] + 1, r[2], pz),
+                            vert(r[0], r[2], pz));
+                    }
+                }
+            }
+        }
+    } // namespace
 
     void EditorWhiteBoxComponent::NormalizeVoxelData()
     {
@@ -1824,9 +2270,21 @@ namespace WhiteBox
             return false;
         }
 
-        const float cellSize = m_voxelCellSize < 0.05f ? 0.05f : m_voxelCellSize;
-        const AZStd::unordered_set<AZ::u64> cells(m_voxelCells.begin(), m_voxelCells.end());
-        const VoxelDetail::FaceSignatureSet voxelSigs = VoxelDetail::SurfaceFaceSignatures(cells, cellSize);
+        // Cubes can have mixed sizes; each distinct (quantized) size lives on its own integer grid.
+        // Group the occupancy by size so every cube is greedy-meshed on the grid it actually belongs
+        // to. Using the legacy single m_voxelCellSize here was the bug that produced a per-cube (or
+        // mis-scaled) collider whenever the stamped cube size was not the legacy default.
+        const VoxelDetail::SizeGroups sizeGroups = VoxelDetail::GroupBySize(m_voxelCells, m_voxelCellSizes);
+
+        // Union of the per-size voxel face signatures, so freeform faces that coincide with a voxel
+        // surface face (tested at that size's cell size) are excluded and emitted greedily below.
+        AZStd::vector<AZStd::pair<float, VoxelDetail::FaceSignatureSet>> sigsBySize;
+        sigsBySize.reserve(sizeGroups.size());
+        for (const auto& group : sizeGroups)
+        {
+            const float cs = VoxelDetail::SizeFromQuantized(group.first);
+            sigsBySize.emplace_back(cs, VoxelDetail::SurfaceFaceSignatures(group.second, cs));
+        }
 
         // 1. Keep per-face triangles for anything that is NOT part of the voxel surface
         //    (hand-edited / freeform faces), welded by white box vertex handle.
@@ -1846,9 +2304,19 @@ namespace WhiteBox
         };
         for (const Api::FaceHandle& fh : Api::MeshFaceHandles(*mesh))
         {
-            VoxelDetail::FaceSignature sig;
-            if (VoxelDetail::FaceSignatureFromPositions(Api::FaceVertexPositions(*mesh, fh), cellSize, sig) &&
-                voxelSigs.find(sig) != voxelSigs.end())
+            const AZStd::vector<AZ::Vector3> facePositions = Api::FaceVertexPositions(*mesh, fh);
+            bool isVoxelFace = false;
+            for (const auto& sizeSigs : sigsBySize)
+            {
+                VoxelDetail::FaceSignature sig;
+                if (VoxelDetail::FaceSignatureFromPositions(facePositions, sizeSigs.first, sig) &&
+                    sizeSigs.second.find(sig) != sizeSigs.second.end())
+                {
+                    isVoxelFace = true;
+                    break;
+                }
+            }
+            if (isVoxelFace)
             {
                 continue; // voxel face - emitted by the greedy pass below
             }
@@ -1877,11 +2345,37 @@ namespace WhiteBox
 
         const int freeformTris = static_cast<int>(indices.size() / 3);
 
-        // 2. Greedy-meshed triangles for the voxel surface (far fewer than per cell).
-        VoxelDetail::GreedyColliderTriangles(cells, cellSize, vertices, indices);
+        // 2. Greedy-meshed triangles for the voxel surface, one size grid at a time (coplanar exposed
+        //    cell faces merge into maximal rectangles - 2 triangles each - so N adjacent cubes cook
+        //    as one merged box instead of N).
+        for (const auto& group : sizeGroups)
+        {
+            AppendGreedyVoxelColliderTriangles(
+                group.second, VoxelDetail::SizeFromQuantized(group.first), vertices, indices);
+        }
         const int totalTris = static_cast<int>(indices.size() / 3);
+        const int voxelTris = totalTris - freeformTris;
 
-        
+        AZ_TracePrintf(
+            "WhiteBoxCollider",
+            "Greedy voxel collider: %zu cells (%zu sizes-array) across %zu size(s) -> %d voxel tris (+%d freeform) = %d "
+            "total\n",
+            m_voxelCells.size(), m_voxelCellSizes.size(), sizeGroups.size(), voxelTris, freeformTris, totalTris);
+
+        // Safety net: if there are stamped cells but the greedy pass captured none of them (e.g. the
+        // per-cell size array is out of sync so the size grouping dropped them), do NOT return this
+        // cube-less mesh - report failure so the caller cooks the evaluated (coplanar-merged) mesh
+        // per-face instead, which always contains the cubes.
+        if (!m_voxelCells.empty() && voxelTris == 0)
+        {
+            AZ_TracePrintf(
+                "WhiteBoxCollider",
+                "Greedy voxel pass captured no cube triangles for %zu cells; deferring to per-face cook\n",
+                m_voxelCells.size());
+            vertices.clear();
+            indices.clear();
+            return false;
+        }
 
         return !indices.empty();
     }
@@ -2022,9 +2516,10 @@ namespace WhiteBox
                 continue;
             }
             const AZ::Transform identity = AZ::Transform::CreateIdentity();
-            // Inter-layer booleans only apply in global-tint mode. With per-layer tint on, each
-            // layer stays a separate coloured island so its colour is unambiguous.
-            const LayerCombineMode mode = m_useGlobalTint ? m_layers[idx].m_combineMode : LayerCombineMode::Separate;
+            // Inter-layer booleans run in both tint modes. Under per-layer tint the merged surface is
+            // re-coloured per face by BuildColoredRenderData (each output face inherits the tint of
+            // the source layer it lies on), so a boolean no longer loses per-layer colour.
+            const LayerCombineMode mode = m_layers[idx].m_combineMode;
             switch (mode)
             {
             case LayerCombineMode::Union:
@@ -2157,8 +2652,15 @@ namespace WhiteBox
         // base (all visible layers, grids and transforms) so the bake matches the editor view.
         if (WhiteBoxMesh* baseMesh = GetWhiteBoxMesh())
         {
-            const Api::WhiteBoxMeshPtr combined = BuildCombined(baseMesh);
-            m_bakedBaseRenderData = CreateWhiteBoxRenderData(combined ? *combined : *baseMesh, m_material);
+            if (PerLayerRenderActive())
+            {
+                m_bakedBaseRenderData = BuildColoredRenderData(baseMesh);
+            }
+            else
+            {
+                const Api::WhiteBoxMeshPtr combined = BuildCombined(baseMesh);
+                m_bakedBaseRenderData = CreateWhiteBoxRenderData(combined ? *combined : *baseMesh, m_material);
+            }
         }
 
         // Cache the boolean-evaluated render data (serialized) so the game-mode bake can supply the
@@ -2167,10 +2669,17 @@ namespace WhiteBox
         // active-only mode fold the grids/other layers around the active boolean result.
         if (m_displayMesh)
         {
-            const Api::WhiteBoxMeshPtr combined =
-                m_booleanAffectActiveOnly ? BuildCombined(m_displayMesh.get()) : nullptr;
-            m_bakedBooleanRenderData =
-                CreateWhiteBoxRenderData(combined ? *combined : *m_displayMesh, m_material);
+            if (PerLayerRenderActive())
+            {
+                m_bakedBooleanRenderData = BuildColoredRenderData(m_displayMesh.get());
+            }
+            else
+            {
+                const Api::WhiteBoxMeshPtr combined =
+                    m_booleanAffectActiveOnly ? BuildCombined(m_displayMesh.get()) : nullptr;
+                m_bakedBooleanRenderData =
+                    CreateWhiteBoxRenderData(combined ? *combined : *m_displayMesh, m_material);
+            }
         }
         else if (!m_booleanSourceEntity.IsValid() || m_booleanSourceEntity == GetEntityId())
         {
@@ -2668,8 +3177,8 @@ namespace WhiteBox
 
     AZ::u32 EditorWhiteBoxComponent::OnGlobalTintChange()
     {
-        RebuildWhiteBox();                                 // recolour (and re-fold, since combine
-                                                           // modes only apply in global-tint mode)
+        RebuildWhiteBox();                                 // recolour (booleans run in both tint modes;
+                                                           // the coloured path re-tints merged faces)
         return AZ::Edit::PropertyRefreshLevels::EntireTree; // show / hide the global tint element
     }
 
@@ -2678,13 +3187,57 @@ namespace WhiteBox
         return m_useGlobalTint ? AZ::Edit::PropertyVisibility::Show : AZ::Edit::PropertyVisibility::Hide;
     }
 
-    WhiteBoxRenderData EditorWhiteBoxComponent::BuildColoredRenderData()
+    bool EditorWhiteBoxComponent::PerLayerRenderActive() const
     {
+        if (!m_useGlobalTint)
+        {
+            return true;
+        }
+        for (const WhiteBoxLayer& layer : m_layers)
+        {
+            if (layer.m_visible && layer.m_invertNormals)
+            {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    bool EditorWhiteBoxComponent::AnyVisibleLayerBoolean() const
+    {
+        bool seenVisible = false;
+        for (const WhiteBoxLayer& layer : m_layers)
+        {
+            if (!layer.m_visible)
+            {
+                continue;
+            }
+            if (seenVisible &&
+                (layer.m_combineMode == LayerCombineMode::Union || layer.m_combineMode == LayerCombineMode::Subtract ||
+                 layer.m_combineMode == LayerCombineMode::Intersect))
+            {
+                return true; // the first visible layer is the base; its own mode is ignored
+            }
+            seenVisible = true;
+        }
+        return false;
+    }
+
+    WhiteBoxRenderData EditorWhiteBoxComponent::BuildColoredRenderData(WhiteBoxMesh* freeformOverride)
+    {
+        // When a boolean merges layers, geometry is combined (not separate islands), so the coloured
+        // faces must be re-derived from the merged mesh and matched back to their source layer.
+        if (AnyVisibleLayerBoolean())
+        {
+            return BuildColoredBooleanRenderData(freeformOverride);
+        }
+
         WhiteBoxRenderData renderData;
         renderData.m_material = m_material;
         renderData.m_material.m_useVertexColor = !m_useGlobalTint;
 
-        WhiteBoxMesh* freeform = (m_liveBoolean && m_displayMesh) ? m_displayMesh.get() : GetWhiteBoxMesh();
+        WhiteBoxMesh* freeform =
+            freeformOverride ? freeformOverride : ((m_liveBoolean && m_displayMesh) ? m_displayMesh.get() : GetWhiteBoxMesh());
         const int count = static_cast<int>(m_layers.size());
         const int activeIdx = m_loadedLayerIndex;
         const bool activeIdentity = activeIdx >= 0 && activeIdx < count &&
@@ -2732,6 +3285,121 @@ namespace WhiteBox
             }
             renderData.m_faces.insert(
                 renderData.m_faces.end(), layerData.m_faces.begin(), layerData.m_faces.end());
+        }
+        return renderData;
+    }
+
+    WhiteBoxRenderData EditorWhiteBoxComponent::BuildColoredBooleanRenderData(WhiteBoxMesh* freeformOverride)
+    {
+        WhiteBoxRenderData renderData;
+        renderData.m_material = m_material;
+        renderData.m_material.m_useVertexColor = !m_useGlobalTint;
+
+        WhiteBoxMesh* freeform =
+            freeformOverride ? freeformOverride : ((m_liveBoolean && m_displayMesh) ? m_displayMesh.get() : GetWhiteBoxMesh());
+        const int count = static_cast<int>(m_layers.size());
+        const int activeIdx = m_loadedLayerIndex;
+        const bool activeIdentity = activeIdx >= 0 && activeIdx < count &&
+            m_layers[activeIdx].m_position.IsZero() && m_layers[activeIdx].m_rotation.IsZero() &&
+            m_layers[activeIdx].m_scale.IsClose(AZ::Vector3::CreateOne(), 1e-6f);
+
+        // Build one (transformed) mesh per visible layer.
+        const auto buildLayerMesh = [&](const int i) -> Api::WhiteBoxMeshPtr
+        {
+            if (i == activeIdx)
+            {
+                Api::WhiteBoxMeshPtr mesh = CombinedWithGrid(freeform);
+                if (!mesh && freeform != nullptr)
+                {
+                    mesh = Api::CloneMesh(*freeform);
+                }
+                if (mesh && !activeIdentity)
+                {
+                    ApplyTransformToMesh(
+                        *mesh, m_layers[i].m_position, m_layers[i].m_rotation, m_layers[i].m_scale);
+                }
+                return mesh;
+            }
+            return BuildLayerMesh(m_layers[i]);
+        };
+
+        // Accumulate the visible layers per their combine mode (matching BuildCombined), recording
+        // every contributing layer's surface so each merged face can be re-coloured by source layer.
+        LayerColorSource sources;
+        Api::WhiteBoxMeshPtr acc;
+        int baseLayer = -1;
+        for (int i = 0; i < count; ++i)
+        {
+            if (!m_layers[i].m_visible)
+            {
+                continue;
+            }
+            Api::WhiteBoxMeshPtr mesh = buildLayerMesh(i);
+            if (!mesh)
+            {
+                continue;
+            }
+            sources.AddMesh(*mesh, i);
+            if (!acc)
+            {
+                acc = AZStd::move(mesh); // first visible layer is the base (its own mode is ignored)
+                baseLayer = i;
+                continue;
+            }
+            const AZ::Transform identity = AZ::Transform::CreateIdentity();
+            switch (m_layers[i].m_combineMode)
+            {
+            case LayerCombineMode::Union:
+                if (Api::MeshFaceHandles(*acc).empty() ||
+                    !Api::ApplyMeshBoolean(*acc, *mesh, identity, Api::BooleanOperation::Union))
+                {
+                    AppendMesh(*acc, *mesh);
+                }
+                break;
+            case LayerCombineMode::Subtract:
+                Api::ApplyMeshBoolean(*acc, *mesh, identity, Api::BooleanOperation::Subtraction);
+                break;
+            case LayerCombineMode::Intersect:
+                Api::ApplyMeshBoolean(*acc, *mesh, identity, Api::BooleanOperation::Intersection);
+                break;
+            case LayerCombineMode::Separate:
+            default:
+                AppendMesh(*acc, *mesh);
+                break;
+            }
+        }
+
+        if (!acc || baseLayer < 0)
+        {
+            return renderData; // nothing visible
+        }
+        Api::CalculateNormals(*acc);
+        Api::CalculatePlanarUVs(*acc);
+
+        // Colour every face by the layer its surface came from; new Subtract walls resolve to the
+        // cutting layer. Winding is flipped per that layer's Invert Normals flag.
+        const auto faceHandles = Api::MeshFaceHandles(*acc);
+        renderData.m_faces.reserve(faceHandles.size());
+        for (const Api::FaceHandle& faceHandle : faceHandles)
+        {
+            const AZStd::vector<AZ::Vector3> verts = Api::FaceVertexPositions(*acc, faceHandle);
+            if (verts.size() < 3)
+            {
+                continue;
+            }
+            const AZ::Vector3 centroid = (verts[0] + verts[1] + verts[2]) / 3.0f;
+            const AZ::Vector3 normal = Api::FaceNormal(*acc, faceHandle);
+            const int layerIdx = sources.Match(centroid, normal, baseLayer);
+
+            const WhiteBoxLayer& layer = m_layers[layerIdx];
+            const AZ::Vector3& t = layer.m_tint;
+            const AZ::Vector4 color = m_useGlobalTint
+                ? AZ::Vector4::CreateOne()
+                : AZ::Vector4(t.GetX(), t.GetY(), t.GetZ(), 1.0f);
+
+            WhiteBoxFace face = BuildWhiteBoxFace(*acc, faceHandle, layer.m_invertNormals);
+            face.m_color = color;
+            renderData.m_faces.push_back(face);
         }
         return renderData;
     }
@@ -3074,9 +3742,18 @@ namespace WhiteBox
         // "base" variant identical to the boolean one).
         if (WhiteBoxMesh* baseMesh = GetWhiteBoxMesh())
         {
-            const Api::WhiteBoxMeshPtr combined = CombinedWithGrid(baseMesh);
-            whiteBoxComponent->GenerateWhiteBoxMesh(
-                CreateWhiteBoxRenderData(combined ? *combined : *baseMesh, m_material));
+            // Per-layer tint / inverted-normal layers must bake the coloured (winding-flipped) faces
+            // so the effect survives into game mode; otherwise use the plain CSG-combined faces.
+            if (PerLayerRenderActive())
+            {
+                whiteBoxComponent->GenerateWhiteBoxMesh(BuildColoredRenderData(baseMesh));
+            }
+            else
+            {
+                const Api::WhiteBoxMeshPtr combined = CombinedWithGrid(baseMesh);
+                whiteBoxComponent->GenerateWhiteBoxMesh(
+                    CreateWhiteBoxRenderData(combined ? *combined : *baseMesh, m_material));
+            }
         }
         else if (!m_bakedBaseRenderData.m_faces.empty())
         {
@@ -3101,8 +3778,15 @@ namespace WhiteBox
         WhiteBoxRenderData booleanRenderData;
         if (WhiteBoxMesh* displayMesh = GetLiveBooleanDisplayMesh())
         {
-            const Api::WhiteBoxMeshPtr combined = CombinedWithGrid(displayMesh);
-            booleanRenderData = CreateWhiteBoxRenderData(combined ? *combined : *displayMesh, m_material);
+            if (PerLayerRenderActive())
+            {
+                booleanRenderData = BuildColoredRenderData(displayMesh);
+            }
+            else
+            {
+                const Api::WhiteBoxMeshPtr combined = CombinedWithGrid(displayMesh);
+                booleanRenderData = CreateWhiteBoxRenderData(combined ? *combined : *displayMesh, m_material);
+            }
         }
         else
         {
@@ -3168,16 +3852,7 @@ namespace WhiteBox
             // Use the per-layer build when per-layer tint is on OR any visible layer inverts its
             // normals (both need per-layer faces). Otherwise the CSG-combined mesh is used so
             // inter-layer booleans render correctly.
-            bool anyLayerInverted = false;
-            for (const WhiteBoxLayer& layer : m_layers)
-            {
-                if (layer.m_visible && layer.m_invertNormals)
-                {
-                    anyLayerInverted = true;
-                    break;
-                }
-            }
-            const bool perLayerRender = !m_useGlobalTint || anyLayerInverted;
+            const bool perLayerRender = PerLayerRenderActive();
 
             // Global tint -> plain (white-vertex) faces coloured by the material baseColor. Per-layer
             // tint -> per-face vertex colours (needs the material's "Use Vertex Color" enabled).
