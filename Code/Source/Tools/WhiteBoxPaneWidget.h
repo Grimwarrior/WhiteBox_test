@@ -223,8 +223,7 @@ namespace WhiteBox
         QComboBox* m_booleanOpCombo = nullptr;
         QCheckBox* m_booleanLive = nullptr;
         QCheckBox* m_booleanActiveOnly = nullptr;
-        QCheckBox* m_booleanHideSource = nullptr;
-        QCheckBox* m_booleanDeleteSource = nullptr;
+        QComboBox* m_booleanSourceAfterCombo = nullptr; //!< Keep / Hide / Delete the source after Apply.
         QPushButton* m_applyBooleanButton = nullptr;
 
         // Material section.

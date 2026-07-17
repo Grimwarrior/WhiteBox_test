@@ -46,6 +46,14 @@ namespace WhiteBox
         Intersect   //!< CSG-intersect with the layers below (keeps only the overlap).
     };
 
+    //! What happens to the boolean source entity after a successful Apply Boolean.
+    enum class SourceAfterApply : int
+    {
+        Keep,   //!< Leave the source entity untouched.
+        Hide,   //!< Hide the source entity.
+        Delete  //!< Delete the source entity.
+    };
+
     //! Editor representation of White Box Tool.
     class EditorWhiteBoxComponent
         : public AzToolsFramework::Components::EditorComponentBase
@@ -95,19 +103,19 @@ namespace WhiteBox
             const DrawStairData& stair = m_drawShapeData.m_stair;
             return DrawStairInfo{stair.m_steps, stair.m_byHeight, stair.m_stepHeight, stair.m_rotation};
         }
-        bool GetDrawCarve() override { return m_drawCarve; }
-        bool GetDrawMergeUnion() override { return m_drawMergeUnion; }
-        bool GetDrawUnitCube() override { return m_drawUnitCube; }
+        bool GetDrawCarve() override { return m_drawShapeData.m_carve; }
+        bool GetDrawMergeUnion() override { return m_drawShapeData.m_mergeUnion; }
+        bool GetDrawUnitCube() override { return m_drawShapeData.m_unitCube; }
         //! The world size used for the NEXT stamp and the stamp ghost grid. This is always
         //! the desired "Cube Size", independent of any cubes already placed: each stamped
         //! cube keeps its own size, so the size can be changed at any time and new cubes of
         //! the new size coexist with the existing ones (no need to clear the stamp first).
         float GetDrawUnitCubeSize() override
         {
-            const float s = m_drawUnitCubeSize;
+            const float s = m_drawShapeData.m_unitCubeSize;
             return s < 0.05f ? 0.05f : s;
         }
-        bool GetDrawUnitCubeShowGrid() override { return m_drawUnitCubeShowGrid; }
+        bool GetDrawUnitCubeShowGrid() override { return m_drawShapeData.m_unitCubeShowGrid; }
         void SetVoxelCell(const AZ::Vector3& cellMin, bool filled) override;
         void SetVoxelCells(const AZStd::vector<AZ::Vector3>& cellMins, bool filled) override;
         bool BuildColliderMesh(AZStd::vector<AZ::Vector3>& vertices, AZStd::vector<AZ::u32>& indices) override;
@@ -153,7 +161,7 @@ namespace WhiteBox
         //! build where the source entity id is not resolvable.
         WhiteBoxMesh* GetLiveBooleanDisplayMesh();
         //! Whether the live (non-destructive) boolean is currently enabled.
-        bool GetLiveBoolean() const { return m_liveBoolean; }
+        bool GetLiveBoolean() const { return m_boolean.m_live; }
         //! Enter this component's White Box edit (component) mode. Routes through the
         //! ComponentModeDelegate, which issues ComponentModeSystemRequests::BeginComponentMode
         //! with the correct builders (as an undoable ComponentModeCommand). The entity must be
@@ -195,13 +203,13 @@ namespace WhiteBox
             m_drawShapeData.m_stair.m_stepHeight = info.m_stepHeight;
             m_drawShapeData.m_stair.m_rotation = info.m_rotation;
         }
-        void SetDrawCarve(bool carve) { m_drawCarve = carve; }
-        void SetDrawMergeUnion(bool mergeUnion) { m_drawMergeUnion = mergeUnion; }
+        void SetDrawCarve(bool carve) { m_drawShapeData.m_carve = carve; }
+        void SetDrawMergeUnion(bool mergeUnion) { m_drawShapeData.m_mergeUnion = mergeUnion; }
 
         // Unit Cube Stamp settings.
-        void SetDrawUnitCube(bool unitCube) { m_drawUnitCube = unitCube; }
-        void SetDrawUnitCubeSize(float size) { m_drawUnitCubeSize = AZStd::clamp(size, 0.05f, 100.0f); }
-        void SetDrawUnitCubeShowGrid(bool showGrid) { m_drawUnitCubeShowGrid = showGrid; }
+        void SetDrawUnitCube(bool unitCube) { m_drawShapeData.m_unitCube = unitCube; }
+        void SetDrawUnitCubeSize(float size) { m_drawShapeData.m_unitCubeSize = AZStd::clamp(size, 0.05f, 100.0f); }
+        void SetDrawUnitCubeShowGrid(bool showGrid) { m_drawShapeData.m_unitCubeShowGrid = showGrid; }
         void ClearCubeStamp() { ClearVoxelCubes(); }
 
         // Display settings.
@@ -292,38 +300,36 @@ namespace WhiteBox
             layer.m_scale = AZ::Vector3(
                 AZStd::max(meta.m_scale.GetX(), 0.001f), AZStd::max(meta.m_scale.GetY(), 0.001f),
                 AZStd::max(meta.m_scale.GetZ(), 0.001f));
-            m_layerMeshCache.erase(layer.m_id); // this layer's cached display mesh is stale now
+            m_layerRuntime.m_meshCache.erase(layer.m_id); // this layer's cached display mesh is stale now
             OnLayersMetaChanged(); // recombine + resync
         }
 
         // Boolean.
-        AZ::EntityId GetBooleanSourceEntity() const { return m_booleanSourceEntity; }
+        AZ::EntityId GetBooleanSourceEntity() const { return m_boolean.m_sourceEntity; }
         void SetBooleanSourceEntity(AZ::EntityId sourceEntity)
         {
-            m_booleanSourceEntity = sourceEntity;
+            m_boolean.m_sourceEntity = sourceEntity;
             OnBooleanSourceChange();
         }
-        Api::BooleanOperation GetBooleanOperation() const { return m_booleanOperation; }
+        Api::BooleanOperation GetBooleanOperation() const { return m_boolean.m_operation; }
         void SetBooleanOperation(Api::BooleanOperation operation)
         {
-            m_booleanOperation = operation;
+            m_boolean.m_operation = operation;
             OnLiveBooleanChange();
         }
         void SetLiveBoolean(bool live)
         {
-            m_liveBoolean = live;
+            m_boolean.m_live = live;
             OnLiveBooleanChange();
         }
-        bool GetBooleanAffectActiveOnly() const { return m_booleanAffectActiveOnly; }
+        bool GetBooleanAffectActiveOnly() const { return m_boolean.m_affectActiveOnly; }
         void SetBooleanAffectActiveOnly(bool activeOnly)
         {
-            m_booleanAffectActiveOnly = activeOnly;
+            m_boolean.m_affectActiveOnly = activeOnly;
             OnLiveBooleanChange();
         }
-        bool GetHideSourceAfterApply() const { return m_hideSourceAfterApply; }
-        void SetHideSourceAfterApply(bool hide) { m_hideSourceAfterApply = hide; }
-        bool GetDeleteSourceAfterApply() const { return m_deleteSourceAfterApply; }
-        void SetDeleteSourceAfterApply(bool del) { m_deleteSourceAfterApply = del; }
+        SourceAfterApply GetSourceAfterApply() const { return m_boolean.m_sourceAfterApply; }
+        void SetSourceAfterApply(SourceAfterApply mode) { m_boolean.m_sourceAfterApply = mode; }
         void ApplyBoolean(); //!< One-shot CSG apply using the source entity's mesh.
 
         // Mesh / entity operations.
@@ -334,6 +340,34 @@ namespace WhiteBox
         void ExportDescendantsToFile();
         bool GetFlipYZForExport() const { return m_flipYZForExport; }
         void SetFlipYZForExport(bool flip) { m_flipYZForExport = flip; }
+        //! Voxel stamp bookkeeping: INERT cell records (for "Clear Cube Stamp") plus the
+        //! legacy grid streams that are folded into the freeform mesh on load.
+        //! Public so the version converter (a free function) can construct one during migration.
+        struct VoxelData
+        {
+            AZ_TYPE_INFO(VoxelData, "{7D2B4F63-9A11-4E5B-8C27-3A6F0D51B9E2}");
+            static void Reflect(AZ::ReflectContext* context);
+
+            AZStd::vector<AZ::u64> m_cells; //!< Packed integer cell coords of stamped cubes.
+            AZStd::vector<float> m_sizes;   //!< Per-cell world cube size (parallel to m_cells).
+            float m_legacySize = 1.0f;                      //!< LEGACY single baked cell size (migration only).
+            AZStd::vector<AZ::u8> m_legacyMerged;           //!< LEGACY per-cube merged flags (cleared on load).
+            Api::WhiteBoxMeshStream m_legacyGridData;       //!< LEGACY separate-grid stream (folded on load).
+            Api::WhiteBoxMeshStream m_legacyGridMergedData; //!< LEGACY merged-grid stream (folded on load).
+        };
+
+        //! Entity-boolean settings. Public for the version converter, like VoxelData.
+        struct BooleanSettings
+        {
+            AZ_TYPE_INFO(BooleanSettings, "{58E9A1C4-2F76-4B0D-9E3A-B14C7D82F065}");
+            static void Reflect(AZ::ReflectContext* context);
+
+            AZ::EntityId m_sourceEntity; //!< Another entity whose White Box mesh is the boolean operand.
+            Api::BooleanOperation m_operation = Api::BooleanOperation::Subtraction;
+            bool m_live = false;             //!< Non-destructive: evaluate the boolean for display only.
+            bool m_affectActiveOnly = false; //!< Cut only the active layer instead of the whole combined mesh.
+            SourceAfterApply m_sourceAfterApply = SourceAfterApply::Keep; //!< Source entity fate after Apply.
+        };
         // ---- end Pane API ---------------------------------------------------------------
 
     private:
@@ -365,6 +399,11 @@ namespace WhiteBox
             DrawShapeType m_shape = DrawShapeType::Box; //!< Shape the Draw Shape tool builds.
             int m_sides = 4;        //!< Side count the Draw Shape tool uses for round / N-gon shapes (4 = box/square).
             DrawStairData m_stair;  //!< Staircase-specific settings.
+            bool m_carve = false;           //!< Draw acts as a CSG boolean (same as holding Ctrl).
+            bool m_mergeUnion = false;      //!< Committing a drawn shape CSG-unions it into the mesh.
+            bool m_unitCube = false;        //!< Draw mode click-stamps grid-snapped cubes.
+            float m_unitCubeSize = 1.0f;    //!< Desired world-space size of the next stamped cube.
+            bool m_unitCubeShowGrid = true; //!< Show the per-cube grid in the stamp ghost preview.
 
             //! When the Draw Shape changes, set a sensible default Draw Sides for it and
             //! refresh the property grid so the Draw Sides field updates.
@@ -411,6 +450,27 @@ namespace WhiteBox
             AZStd::vector<AZ::u64> m_voxelCells;
             AZStd::vector<float> m_voxelCellSizes;
             AZStd::vector<AZ::u8> m_voxelMerged;      //!< LEGACY (feature removed): cleared on load.
+        };
+
+        //! Runtime rebuild coalescing / debouncing (never serialized).
+        struct RebuildState
+        {
+            bool m_liveBooleanPending = false; //!< Boolean source moved: rebuild once on the next tick.
+            bool m_physicsPending = false;     //!< Physics rebuild deferred until the drag settles.
+            float m_physicsTimer = 0.0f;
+            bool m_bakedDataDirty = false;     //!< Game-mode bake caches need recomputing (debounced).
+            float m_bakedDataDelay = 0.0f;
+        };
+
+        //! Runtime layer bookkeeping (never serialized): which layer the working members hold,
+        //! change detection for the reflected container, and the per-layer display mesh cache.
+        struct LayerRuntime
+        {
+            int m_loadedIndex = -1;      //!< Which layer the working members currently hold (-1 = none).
+            AZ::u64 m_loadedId = 0;      //!< Stable id of the loaded layer (survives reordering).
+            int m_lastCount = -1;        //!< Layer count at the last sync (detects add/remove).
+            AZ::u64 m_lastSignature = 0; //!< Hash of the layer id order (detects reorder as well).
+            AZStd::unordered_map<AZ::u64, Api::WhiteBoxMeshPtr> m_meshCache; //!< Display mesh per NON-ACTIVE layer.
         };
 
         static void GetRequiredServices(AZ::ComponentDescriptor::DependencyArrayType& required);
@@ -490,17 +550,8 @@ namespace WhiteBox
         static void ApplyTransformToMesh(
             WhiteBoxMesh& mesh, const AZ::Vector3& position, const AZ::Vector3& eulerDegrees, const AZ::Vector3& scale);
         AZ::Crc32 OnDefaultShapeChange();
-        //! Update the voxel-stamped geometry in place: remove the faces belonging to the
-        //! previous voxel surface (@p oldCells at @p oldSizes) and add the surface for the
-        //! new cell set (@p newCells at @p newSizes), leaving all freeform mesh edits
-        //! intact. Each cell carries its own cube size (parallel arrays), so cubes of
-        //! different sizes are meshed on their own grids and can coexist. Also purges any
-        //! vertices orphaned by the removal.
-        void RegenerateVoxelMesh(
-            const AZStd::vector<AZ::u64>& oldCells, const AZStd::vector<float>& oldSizes,
-            const AZStd::vector<AZ::u64>& newCells, const AZStd::vector<float>& newSizes);
-        //! Ensure the per-cell size array (m_voxelCellSizes) is consistent with m_voxelCells,
-        //! migrating legacy data that only stored a single baked size (m_voxelCellSize).
+        //! Ensure the per-cell size array (m_voxel.m_sizes) is consistent with m_voxel.m_cells,
+        //! migrating legacy data that only stored a single baked size (m_voxel.m_legacySize).
         void NormalizeVoxelData();
         //! Regenerate a parametric layer's mesh from its shape parameters, then rebuild.
         void RegenerateParametricLayer(int index);
@@ -564,62 +615,25 @@ namespace WhiteBox
             DefaultShapeType::Cube; //!< Used for selecting a default shape for the White Box mesh.
         bool m_flipYZForExport = false; //!< Flips the Y and Z components of white box vertices when exporting for different coordinate systems
         DrawShapeData m_drawShapeData; //!< Draw Shape tool settings (shape, sides and staircase options).
-        bool m_drawCarve = false; //!< When set, draw acts as a CSG boolean (same as holding Ctrl).
-        bool m_drawMergeUnion = false; //!< When set, committing a drawn shape CSG-unions it into the mesh.
+        VoxelData m_voxel;             //!< Stamp cell records + legacy grid streams.
+        BooleanSettings m_boolean;     //!< Entity-boolean settings.
+        RebuildState m_rebuild;        //!< Runtime rebuild coalescing/debouncing.
+        LayerRuntime m_layerRuntime;   //!< Runtime layer bookkeeping + display mesh cache.
         bool m_edgesOnly = false; //!< When set, hide the solid render mesh and draw only the mesh edges.
-        bool m_mergeGridWithMesh = false; //!< LEGACY (feature removed): kept only so old scenes deserialize.
         bool m_useGlobalTint = true; //!< When set, every layer renders with the global material tint; otherwise each layer uses its own tint.
         AZ::Data::AssetId m_materialOverrideAssetId; //!< External material asset override (invalid = built-in material).
-        bool m_drawUnitCube = false; //!< Draw mode click-stamps grid-snapped unit cubes (CSG) instead of drag-draw.
-        float m_drawUnitCubeSize = 1.0f; //!< Desired world-space size of the next stamped cube.
-        float m_voxelCellSize = 1.0f; //!< Legacy single baked cell size; only used to migrate old scenes.
-        bool m_drawUnitCubeShowGrid = true; //!< Show the individual cubes (grid) in the stamp ghost preview.
 
-        AZ::EntityId m_booleanSourceEntity; //!< Another entity whose White Box mesh is used as a boolean operand.
-        Api::BooleanOperation m_booleanOperation =
-            Api::BooleanOperation::Subtraction; //!< How to combine the source mesh with this one.
-        bool m_hideSourceAfterApply = false;   //!< Hide the source entity after a successful Apply Boolean.
-        bool m_deleteSourceAfterApply = false; //!< Delete the source entity after a successful Apply Boolean.
-        bool m_booleanAffectActiveOnly = false; //!< When set, the boolean cuts only the active layer; otherwise the whole combined mesh.
 
-        AZStd::vector<AZ::u64> m_voxelCells; //!< Packed integer cell coords filled by the Unit Cube Stamp tool.
-        AZStd::vector<float> m_voxelCellSizes; //!< Per-cell world cube size (parallel to m_voxelCells) so mixed sizes coexist.
-        AZStd::vector<AZ::u8> m_voxelMerged; //!< Per-cell flag (parallel to m_voxelCells): 1 = merged-with-mesh cube, 0 = separate.
 
         AZStd::vector<WhiteBoxLayer> m_layers;  //!< All editable layers (combined for output; edits target the active one).
         int m_activeLayerIndex = 0;             //!< Which layer is the current edit target.
-        int m_loadedLayerIndex = -1;            //!< Runtime: which layer the working members currently hold (-1 = none).
-        int m_lastLayerCount = -1;              //!< Runtime: layer count at the last sync (detects add/remove in the list).
-        AZ::u64 m_loadedLayerId = 0;            //!< Runtime: stable id of the layer whose data is in the working members.
         AZ::u64 m_nextLayerId = 1;              //!< Next stable layer id to hand out (serialized so ids stay unique).
-        AZ::u64 m_lastLayerSignature = 0;       //!< Runtime: hash of the layer id order (detects reorder as well as add/remove).
 
-        // ---- performance caches / rebuild coalescing (never serialized) ----
-        //! Built (deserialized + grid-combined + transformed) display mesh per NON-ACTIVE layer,
-        //! keyed by stable layer id. BuildCombined otherwise re-deserializes every stored layer
-        //! (3 mesh streams each) on every rebuild, which made any edit slow once real geometry
-        //! (e.g. cube stamps) existed. Entries are erased when their layer's data or meta change;
-        //! undo/redo recreates the whole component so the cache resets naturally.
-        AZStd::unordered_map<AZ::u64, Api::WhiteBoxMeshPtr> m_layerMeshCache;
-        //! The boolean source entity moved: rebuild once on the next tick instead of once per
-        //! TransformNotification (which can arrive many times per frame while dragging).
-        bool m_liveBooleanRebuildPending = false;
-        //! While live-boolean drag rebuilds are streaming in, the physics mesh rebuild is
-        //! deferred until the source has been still for a short moment.
-        bool m_liveDragPhysicsPending = false;
-        float m_liveDragPhysicsTimer = 0.0f;
-        //! The serialized game-mode bake caches (m_bakedBaseRenderData / m_bakedBooleanRenderData)
-        //! are expensive full recombines; recompute them debounced on tick, not on every edit.
-        bool m_bakedRenderDataDirty = false;
-        float m_bakedRenderDataDelay = 0.0f;
         //! Recompute m_bakedBaseRenderData / m_bakedBooleanRenderData (the game-mode bake caches).
         void RebuildBakedRenderData();
 
-        bool m_liveBoolean = false; //!< Non-destructive: keep the base editable, evaluate the boolean for display only.
         Api::WhiteBoxMeshPtr m_displayMesh; //!< Evaluated (base [op] source) mesh used for display while live.
         Api::WhiteBoxMeshPtr m_gridMesh; //!< Stamped cubes kept SEPARATE from the freeform mesh (appended for output).
-        Api::WhiteBoxMeshStream m_gridMeshData; //!< Serialized separate-cube grid mesh (component-local).
-        Api::WhiteBoxMeshStream m_gridMergedData; //!< LEGACY (feature removed): folded into m_gridMesh on load.
         Api::WhiteBoxMeshPtr m_combinedMesh; //!< Non-serialized freeform+grid mesh used for render/collision/bounds/selection.
         //! Serialized boolean-evaluated render data. Persisted so the game-mode bake can supply
         //! the boolean render variant even when BuildGameEntity runs on a cloned entity (where

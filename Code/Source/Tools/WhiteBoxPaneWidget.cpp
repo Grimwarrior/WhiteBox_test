@@ -930,10 +930,12 @@ namespace WhiteBox
         layout->addRow(QString(), m_booleanLive);
         m_booleanActiveOnly = new QCheckBox(tr("Affect Only The Active Layer"));
         layout->addRow(QString(), m_booleanActiveOnly);
-        m_booleanHideSource = new QCheckBox(tr("Hide Source After Apply"));
-        layout->addRow(QString(), m_booleanHideSource);
-        m_booleanDeleteSource = new QCheckBox(tr("Delete Source After Apply"));
-        layout->addRow(QString(), m_booleanDeleteSource);
+        m_booleanSourceAfterCombo = new QComboBox();
+        m_booleanSourceAfterCombo->setToolTip(tr("What happens to the source entity after Apply Boolean."));
+        m_booleanSourceAfterCombo->addItem(tr("Keep Source"), static_cast<int>(SourceAfterApply::Keep));
+        m_booleanSourceAfterCombo->addItem(tr("Hide Source"), static_cast<int>(SourceAfterApply::Hide));
+        m_booleanSourceAfterCombo->addItem(tr("Delete Source"), static_cast<int>(SourceAfterApply::Delete));
+        layout->addRow(tr("After Apply"), m_booleanSourceAfterCombo);
         m_applyBooleanButton = new QPushButton(tr("Apply Boolean"));
         layout->addRow(m_applyBooleanButton);
 
@@ -982,25 +984,18 @@ namespace WhiteBox
                         [activeOnly](EditorWhiteBoxComponent* c) { c->SetBooleanAffectActiveOnly(activeOnly); });
                 }
             });
-        connect(m_booleanHideSource, &QCheckBox::toggled, this,
-            [this](bool hide)
+        connect(
+            m_booleanSourceAfterCombo, QOverload<int>::of(&QComboBox::currentIndexChanged), this,
+            [this](int index)
             {
-                if (!m_updating)
+                if (m_updating || index < 0)
                 {
-                    ModifyComponent(
-                        "White Box Boolean Hide Source",
-                        [hide](EditorWhiteBoxComponent* c) { c->SetHideSourceAfterApply(hide); });
+                    return;
                 }
-            });
-        connect(m_booleanDeleteSource, &QCheckBox::toggled, this,
-            [this](bool del)
-            {
-                if (!m_updating)
-                {
-                    ModifyComponent(
-                        "White Box Boolean Delete Source",
-                        [del](EditorWhiteBoxComponent* c) { c->SetDeleteSourceAfterApply(del); });
-                }
+                const auto mode = static_cast<SourceAfterApply>(m_booleanSourceAfterCombo->itemData(index).toInt());
+                ModifyComponent(
+                    "White Box Boolean Source Fate",
+                    [mode](EditorWhiteBoxComponent* c) { c->SetSourceAfterApply(mode); });
             });
         connect(m_applyBooleanButton, &QPushButton::clicked, this,
             [this]() {
@@ -1456,14 +1451,13 @@ namespace WhiteBox
                 m_booleanOpCombo->findData(static_cast<int>(component->GetBooleanOperation())));
             m_booleanLive->setChecked(component->GetLiveBoolean());
             m_booleanActiveOnly->setChecked(component->GetBooleanAffectActiveOnly());
-            m_booleanHideSource->setChecked(component->GetHideSourceAfterApply());
-            m_booleanDeleteSource->setChecked(component->GetDeleteSourceAfterApply());
+            m_booleanSourceAfterCombo->setCurrentIndex(
+                m_booleanSourceAfterCombo->findData(static_cast<int>(component->GetSourceAfterApply())));
             const bool hasSource = sourceId.IsValid();
             m_booleanOpCombo->setEnabled(hasSource);
             m_booleanLive->setEnabled(hasSource);
             m_booleanActiveOnly->setEnabled(hasSource);
-            m_booleanHideSource->setEnabled(hasSource);
-            m_booleanDeleteSource->setEnabled(hasSource);
+            m_booleanSourceAfterCombo->setEnabled(hasSource);
             m_applyBooleanButton->setEnabled(hasSource);
 
             // Material / display.
