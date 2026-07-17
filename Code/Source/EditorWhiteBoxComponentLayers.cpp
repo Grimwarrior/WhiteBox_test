@@ -42,6 +42,7 @@ namespace WhiteBox
                 ->Field("Tint", &WhiteBoxLayer::m_tint)
                 ->Field("Combine", &WhiteBoxLayer::m_combineMode)
                 ->Field("InvertNormals", &WhiteBoxLayer::m_invertNormals)
+                ->Field("EdgesOnly", &WhiteBoxLayer::m_edgesOnly)
                 ->Field("Position", &WhiteBoxLayer::m_position)
                 ->Field("Rotation", &WhiteBoxLayer::m_rotation)
                 ->Field("Scale", &WhiteBoxLayer::m_scale)
@@ -181,6 +182,12 @@ namespace WhiteBox
         if (combined)
         {
             ApplyTransformToMesh(*combined, layer.m_position, layer.m_rotation, layer.m_scale);
+            if (layer.m_invertNormals)
+            {
+                // Flip the ACTUAL winding (not just the render faces) so rendering, physics
+                // cooking and selection all agree - an inverted "room" collides from inside.
+                combined = FlippedMeshWinding(*combined);
+            }
         }
         return combined;
     }
@@ -691,10 +698,13 @@ namespace WhiteBox
             m_layers[activeIdx].m_position.IsZero() && m_layers[activeIdx].m_rotation.IsZero() &&
             m_layers[activeIdx].m_scale.IsClose(AZ::Vector3::CreateOne(), 1e-6f);
         const bool activeNoGrid = !(m_gridMesh && !Api::MeshFaceHandles(*m_gridMesh).empty());
+        const bool activeInverted = activeIdx >= 0 && activeIdx < count && m_layers[activeIdx].m_invertNormals;
 
-        // Fast path: only the active layer is visible, identity transform, no grid -> return null so
-        // EvaluatedMesh falls back to the raw working freeform (no clone, original behaviour).
-        if (visible.size() == 1 && visible[0] == activeIdx && activeIdentity && activeNoGrid)
+        // Fast path: only the active layer is visible, identity transform, no grid, not inverted
+        // -> return null so EvaluatedMesh falls back to the raw working freeform (no clone).
+        // An inverted layer must NOT take this path: the raw working mesh has outward winding,
+        // and the flip (render + physics + selection) only exists in the combined mesh.
+        if (visible.size() == 1 && visible[0] == activeIdx && activeIdentity && activeNoGrid && !activeInverted)
         {
             return nullptr;
         }
@@ -721,6 +731,10 @@ namespace WhiteBox
                     ApplyTransformToMesh(
                         *ownedMesh, m_layers[activeIdx].m_position, m_layers[activeIdx].m_rotation,
                         m_layers[activeIdx].m_scale);
+                }
+                if (ownedMesh && activeInverted)
+                {
+                    ownedMesh = FlippedMeshWinding(*ownedMesh); // mesh-level flip (see BuildLayerMesh)
                 }
                 operand = ownedMesh.get();
             }

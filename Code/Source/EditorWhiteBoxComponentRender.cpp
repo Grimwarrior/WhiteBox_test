@@ -381,13 +381,17 @@ namespace WhiteBox
 
     bool EditorWhiteBoxComponent::PerLayerRenderActive() const
     {
+        // Per-layer faces are needed for per-layer tint and for Edges Only layers (their solid
+        // faces must be excluded from the render). Invert Normals no longer forces this path:
+        // the winding flip lives in the combined MESH now (FlippedMeshWinding), so render,
+        // physics and selection all see it.
         if (!m_useGlobalTint)
         {
             return true;
         }
         for (const WhiteBoxLayer& layer : m_layers)
         {
-            if (layer.m_visible && layer.m_invertNormals)
+            if (layer.m_visible && layer.m_edgesOnly)
             {
                 return true;
             }
@@ -440,9 +444,9 @@ namespace WhiteBox
         // mode BuildCombined keeps the layers as separate islands, so this matches the geometry.)
         for (int i = 0; i < count; ++i)
         {
-            if (!m_layers[i].m_visible)
+            if (!m_layers[i].m_visible || m_layers[i].m_edgesOnly)
             {
-                continue;
+                continue; // Edges Only layers contribute no solid faces (edges drawn in DisplayEntityViewport)
             }
             Api::WhiteBoxMeshPtr mesh;
             if (i == activeIdx)
@@ -457,10 +461,14 @@ namespace WhiteBox
                     ApplyTransformToMesh(
                         *mesh, m_layers[i].m_position, m_layers[i].m_rotation, m_layers[i].m_scale);
                 }
+                if (mesh && m_layers[i].m_invertNormals)
+                {
+                    mesh = FlippedMeshWinding(*mesh); // mesh-level flip (matches BuildCombined/physics)
+                }
             }
             else
             {
-                mesh = BuildLayerMesh(m_layers[i]);
+                mesh = BuildLayerMesh(m_layers[i]); // already transformed + winding-flipped
             }
             if (!mesh)
             {
@@ -470,7 +478,7 @@ namespace WhiteBox
             const AZ::Vector4 color = m_useGlobalTint
                 ? AZ::Vector4::CreateOne()
                 : AZ::Vector4(t.GetX(), t.GetY(), t.GetZ(), 1.0f);
-            WhiteBoxRenderData layerData = CreateWhiteBoxRenderData(*mesh, m_material, m_layers[i].m_invertNormals);
+            WhiteBoxRenderData layerData = CreateWhiteBoxRenderData(*mesh, m_material);
             for (WhiteBoxFace& face : layerData.m_faces)
             {
                 face.m_color = color;
@@ -495,7 +503,7 @@ namespace WhiteBox
             m_layers[activeIdx].m_position.IsZero() && m_layers[activeIdx].m_rotation.IsZero() &&
             m_layers[activeIdx].m_scale.IsClose(AZ::Vector3::CreateOne(), 1e-6f);
 
-        // Build one (transformed) mesh per visible layer.
+        // Build one (transformed + winding-flipped) mesh per visible layer.
         const auto buildLayerMesh = [&](const int i) -> Api::WhiteBoxMeshPtr
         {
             if (i == activeIdx)
@@ -509,6 +517,10 @@ namespace WhiteBox
                 {
                     ApplyTransformToMesh(
                         *mesh, m_layers[i].m_position, m_layers[i].m_rotation, m_layers[i].m_scale);
+                }
+                if (mesh && m_layers[i].m_invertNormals)
+                {
+                    mesh = FlippedMeshWinding(*mesh); // mesh-level flip (matches BuildCombined/physics)
                 }
                 return mesh;
             }
@@ -584,12 +596,17 @@ namespace WhiteBox
             const int layerIdx = sources.Match(centroid, normal, baseLayer);
 
             const WhiteBoxLayer& layer = m_layers[layerIdx];
+            if (layer.m_edgesOnly)
+            {
+                continue; // Edges Only layers contribute no solid faces
+            }
             const AZ::Vector3& t = layer.m_tint;
             const AZ::Vector4 color = m_useGlobalTint
                 ? AZ::Vector4::CreateOne()
                 : AZ::Vector4(t.GetX(), t.GetY(), t.GetZ(), 1.0f);
 
-            WhiteBoxFace face = BuildWhiteBoxFace(*acc, faceHandle, layer.m_invertNormals);
+            // No per-face winding flip: inverted layers' meshes are flipped at mesh level.
+            WhiteBoxFace face = BuildWhiteBoxFace(*acc, faceHandle, false);
             face.m_color = color;
             renderData.m_faces.push_back(face);
         }
@@ -609,7 +626,7 @@ namespace WhiteBox
 
         for (int i = 0; i < count; ++i)
         {
-            if (!m_layers[i].m_visible)
+            if (!m_layers[i].m_visible || m_layers[i].m_edgesOnly)
             {
                 continue;
             }
@@ -625,6 +642,10 @@ namespace WhiteBox
                 {
                     ApplyTransformToMesh(
                         *mesh, m_layers[i].m_position, m_layers[i].m_rotation, m_layers[i].m_scale);
+                }
+                if (mesh && m_layers[i].m_invertNormals)
+                {
+                    mesh = FlippedMeshWinding(*mesh);
                 }
             }
             else
@@ -937,6 +958,69 @@ namespace WhiteBox
                     debugDisplay.DrawLine(
                         m_worldFromLocal.TransformPoint(Api::VertexPosition(*mesh, edgeVerts[0])),
                         m_worldFromLocal.TransformPoint(Api::VertexPosition(*mesh, edgeVerts[1])));
+                }
+            }
+        }
+
+        // Per-layer Edges Only overlay: these layers contribute no solid render faces (see
+        // BuildColoredRenderData), so draw their polygon edges here instead. Non-active layers
+        // come from the layer mesh cache (already transformed + winding-flipped); the active
+        // layer draws from the working mesh with its layer transform applied per point.
+        if (!m_edgesOnly) // the whole-component overlay above already covers everything
+        {
+            const int layerCount = static_cast<int>(m_layers.size());
+            const int activeIdx = m_layerRuntime.m_loadedIndex;
+            for (int i = 0; i < layerCount; ++i)
+            {
+                const WhiteBoxLayer& layer = m_layers[i];
+                if (!layer.m_visible || !layer.m_edgesOnly)
+                {
+                    continue;
+                }
+
+                debugDisplay.SetColor(AZ::Color(0.30f, 0.90f, 1.0f, 1.0f));
+                if (i == activeIdx)
+                {
+                    WhiteBoxMesh* mesh = GetWhiteBoxMesh();
+                    if (mesh == nullptr)
+                    {
+                        continue;
+                    }
+                    const AZ::Quaternion layerRotation =
+                        AZ::Quaternion::CreateFromEulerAnglesDegrees(layer.m_rotation);
+                    const auto layerPoint = [&](const AZ::Vector3& p)
+                    {
+                        // Same order as ApplyTransformToMesh: scale -> rotate -> translate.
+                        return m_worldFromLocal.TransformPoint(
+                            layerRotation.TransformVector(p * layer.m_scale) + layer.m_position);
+                    };
+                    for (const Api::EdgeHandle& edgeHandle : Api::MeshPolygonEdgeHandles(*mesh))
+                    {
+                        const AZStd::array<Api::VertexHandle, 2> edgeVerts = Api::EdgeVertexHandles(*mesh, edgeHandle);
+                        debugDisplay.DrawLine(
+                            layerPoint(Api::VertexPosition(*mesh, edgeVerts[0])),
+                            layerPoint(Api::VertexPosition(*mesh, edgeVerts[1])));
+                    }
+                }
+                else
+                {
+                    auto it = m_layerRuntime.m_meshCache.find(layer.m_id);
+                    if (it == m_layerRuntime.m_meshCache.end() || !it->second)
+                    {
+                        it = m_layerRuntime.m_meshCache.insert_or_assign(layer.m_id, BuildLayerMesh(layer)).first;
+                    }
+                    WhiteBoxMesh* mesh = it->second.get();
+                    if (mesh == nullptr)
+                    {
+                        continue;
+                    }
+                    for (const Api::EdgeHandle& edgeHandle : Api::MeshPolygonEdgeHandles(*mesh))
+                    {
+                        const AZStd::array<Api::VertexHandle, 2> edgeVerts = Api::EdgeVertexHandles(*mesh, edgeHandle);
+                        debugDisplay.DrawLine(
+                            m_worldFromLocal.TransformPoint(Api::VertexPosition(*mesh, edgeVerts[0])),
+                            m_worldFromLocal.TransformPoint(Api::VertexPosition(*mesh, edgeVerts[1])));
+                    }
                 }
             }
         }

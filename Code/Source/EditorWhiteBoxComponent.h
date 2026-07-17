@@ -181,6 +181,7 @@ namespace WhiteBox
             AZ::Vector3 m_tint = DefaultMaterialTint;
             LayerCombineMode m_combineMode = LayerCombineMode::Separate;
             bool m_invertNormals = false;
+            bool m_edgesOnly = false;
             AZ::Vector3 m_position = AZ::Vector3::CreateZero();
             AZ::Vector3 m_rotation = AZ::Vector3::CreateZero();
             AZ::Vector3 m_scale = AZ::Vector3::CreateOne();
@@ -277,6 +278,7 @@ namespace WhiteBox
                 meta.m_tint = layer.m_tint;
                 meta.m_combineMode = layer.m_combineMode;
                 meta.m_invertNormals = layer.m_invertNormals;
+                meta.m_edgesOnly = layer.m_edgesOnly;
                 meta.m_position = layer.m_position;
                 meta.m_rotation = layer.m_rotation;
                 meta.m_scale = layer.m_scale;
@@ -295,6 +297,7 @@ namespace WhiteBox
             layer.m_tint = meta.m_tint;
             layer.m_combineMode = meta.m_combineMode;
             layer.m_invertNormals = meta.m_invertNormals;
+            layer.m_edgesOnly = meta.m_edgesOnly;
             layer.m_position = meta.m_position;
             layer.m_rotation = meta.m_rotation;
             layer.m_scale = AZ::Vector3(
@@ -429,7 +432,8 @@ namespace WhiteBox
             bool m_visible = true;
             AZ::Vector3 m_tint = DefaultMaterialTint; //!< Per-layer render tint (used when 'Use Global Tint' is off).
             LayerCombineMode m_combineMode = LayerCombineMode::Separate; //!< How this layer combines with the ones below it.
-            bool m_invertNormals = false; //!< Render this layer inside-out (reversed winding) - non-destructive.
+            bool m_invertNormals = false; //!< Flip this layer's winding (render + collision + selection) - non-destructive.
+            bool m_edgesOnly = false;     //!< Hide this layer's solid faces and draw only its edges (visual only).
             AZ::Vector3 m_position = AZ::Vector3::CreateZero();       //!< Per-layer translation (applied at combine time).
             AZ::Vector3 m_rotation = AZ::Vector3::CreateZero();       //!< Per-layer rotation, Euler degrees (XYZ).
             AZ::Vector3 m_scale = AZ::Vector3::CreateOne();           //!< Per-layer non-uniform scale.

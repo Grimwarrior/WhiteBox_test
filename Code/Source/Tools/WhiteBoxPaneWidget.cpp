@@ -146,6 +146,7 @@ namespace WhiteBox
 
     WhiteBoxPaneWidget::~WhiteBoxPaneWidget()
     {
+        RemoveEntityGizmoCluster();
         m_entityGizmo.reset();
         m_layerGizmo.reset();
         EditorWhiteBoxComponentNotificationBus::Handler::BusDisconnect();
@@ -483,7 +484,8 @@ namespace WhiteBox
 
         m_layerList = new QListWidget();
         m_layerList->setToolTip(tr("All layers. Double-click to rename; use the checkbox to show/hide."));
-        m_layerList->setMaximumHeight(120);
+        // The list grows to show EVERY layer (the pane itself scrolls); no inner scrollbar.
+        m_layerList->setVerticalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
         layout->addWidget(m_layerList);
 
         m_layerMetaGroup = new QGroupBox(tr("Selected Layer"));
@@ -498,7 +500,15 @@ namespace WhiteBox
         m_layerCombineCombo->addItem(tr("Intersect"), static_cast<int>(LayerCombineMode::Intersect));
         metaLayout->addRow(tr("Combine"), m_layerCombineCombo);
         m_layerInvertNormals = new QCheckBox(tr("Invert Normals"));
+        m_layerInvertNormals->setToolTip(
+            tr("Flip this layer's winding so it renders, collides and selects inside-out "
+               "(e.g. a room built from an inverted box collides from the inside)."));
         metaLayout->addRow(QString(), m_layerInvertNormals);
+        m_layerEdgesOnly = new QCheckBox(tr("Edges Only"));
+        m_layerEdgesOnly->setToolTip(
+            tr("Hide this layer's solid faces and draw only its edges (visual only - collision "
+               "and selection are unaffected)."));
+        metaLayout->addRow(QString(), m_layerEdgesOnly);
         metaLayout->addRow(tr("Position"), MakeVec3Row(m_layerPos, -100000.0, 100000.0, 0.1));
         metaLayout->addRow(tr("Rotation"), MakeVec3Row(m_layerRot, -3600.0, 3600.0, 1.0));
         metaLayout->addRow(tr("Scale"), MakeVec3Row(m_layerScale, 0.001, 1000.0, 0.1));
@@ -712,6 +722,7 @@ namespace WhiteBox
             }
             const auto combine = static_cast<LayerCombineMode>(m_layerCombineCombo->currentData().toInt());
             const bool invert = m_layerInvertNormals->isChecked();
+            const bool edgesOnly = m_layerEdgesOnly->isChecked();
             const AZ::Vector3 pos(
                 aznumeric_cast<float>(m_layerPos[0]->value()), aznumeric_cast<float>(m_layerPos[1]->value()),
                 aznumeric_cast<float>(m_layerPos[2]->value()));
@@ -723,11 +734,12 @@ namespace WhiteBox
                 aznumeric_cast<float>(m_layerScale[2]->value()));
             ModifyComponent(
                 "White Box Layer Edit",
-                [row, combine, invert, pos, rot, scale](EditorWhiteBoxComponent* c)
+                [row, combine, invert, edgesOnly, pos, rot, scale](EditorWhiteBoxComponent* c)
                 {
                     EditorWhiteBoxComponent::LayerMeta meta = c->GetLayerMeta(row);
                     meta.m_combineMode = combine;
                     meta.m_invertNormals = invert;
+                    meta.m_edgesOnly = edgesOnly;
                     meta.m_position = pos;
                     meta.m_rotation = rot;
                     meta.m_scale = scale;
@@ -736,6 +748,7 @@ namespace WhiteBox
         };
         connect(m_layerCombineCombo, QOverload<int>::of(&QComboBox::currentIndexChanged), this, applyMeta);
         connect(m_layerInvertNormals, &QCheckBox::toggled, this, applyMeta);
+        connect(m_layerEdgesOnly, &QCheckBox::toggled, this, applyMeta);
         for (QDoubleSpinBox* spin :
              { m_layerPos[0], m_layerPos[1], m_layerPos[2], m_layerRot[0], m_layerRot[1], m_layerRot[2],
                m_layerScale[0], m_layerScale[1], m_layerScale[2] })
@@ -1266,6 +1279,11 @@ namespace WhiteBox
             : (layerCount > 0 ? AZStd::clamp(activeIndex, 0, layerCount - 1) : -1);
         m_layerList->setCurrentRow(row);
 
+        // Size the list to its contents so every layer is visible without an inner scrollbar.
+        const int rowHeight = AZStd::max(m_layerList->sizeHintForRow(0), 18);
+        m_layerList->setFixedHeight(
+            AZStd::max(layerCount, 1) * rowHeight + 2 * m_layerList->frameWidth() + 4);
+
         // Meta editors for the selected layer.
         const bool hasLayer = row >= 0;
         m_layerMetaGroup->setEnabled(hasLayer);
@@ -1301,6 +1319,7 @@ namespace WhiteBox
             m_layerCombineCombo->setCurrentIndex(
                 m_layerCombineCombo->findData(static_cast<int>(meta.m_combineMode)));
             m_layerInvertNormals->setChecked(meta.m_invertNormals);
+            m_layerEdgesOnly->setChecked(meta.m_edgesOnly);
             const AZ::Vector3 vecs[3] = { meta.m_position, meta.m_rotation, meta.m_scale };
             QDoubleSpinBox* (*rows[3])[3] = { &m_layerPos, &m_layerRot, &m_layerScale };
             for (int v = 0; v < 3; ++v)
@@ -1489,6 +1508,21 @@ namespace WhiteBox
             // Entity gizmo: keep it targeting the current entity.
             m_entityGizmo->SetTarget(m_currentEntityId);
             m_entityGizmo->Refresh();
+
+            // Keep the pane's gizmo buttons (and the viewport cluster highlight) in sync with
+            // the actual gizmo modes, wherever they were changed from.
+            const auto entityMode = m_entityGizmo->GetMode();
+            m_entityGizmoOff->setChecked(entityMode == WhiteBoxEntityGizmo::Mode::None);
+            m_entityGizmoMove->setChecked(entityMode == WhiteBoxEntityGizmo::Mode::Translate);
+            m_entityGizmoRotate->setChecked(entityMode == WhiteBoxEntityGizmo::Mode::Rotate);
+            m_entityGizmoScale->setChecked(entityMode == WhiteBoxEntityGizmo::Mode::Scale);
+            UpdateEntityGizmoClusterHighlight();
+
+            const auto layerMode = m_layerGizmo->GetMode();
+            m_gizmoOff->setChecked(layerMode == WhiteBoxLayerGizmo::Mode::None);
+            m_gizmoMove->setChecked(layerMode == WhiteBoxLayerGizmo::Mode::Translate);
+            m_gizmoRotate->setChecked(layerMode == WhiteBoxLayerGizmo::Mode::Rotate);
+            m_gizmoScale->setChecked(layerMode == WhiteBoxLayerGizmo::Mode::Scale);
         }
         else
         {
@@ -1728,6 +1762,112 @@ namespace WhiteBox
         QTimer::singleShot(0, this, [this]() { RefreshFromComponent(); });
     }
 
+    void WhiteBoxPaneWidget::CreateEntityGizmoCluster()
+    {
+        namespace Vui = AzToolsFramework::ViewportUi;
+        if (m_entityGizmoClusterId != Vui::ClusterId{})
+        {
+            return; // already shown
+        }
+
+        Vui::ViewportUiRequestBus::Event(
+            Vui::DefaultViewportId,
+            [this](Vui::ViewportUiRequests* requests)
+            {
+                const auto fetchIcon = [](const char* iconName)
+                {
+                    return AZStd::string::format(":/stylesheet/img/UI20/toolbar/%s.svg", iconName);
+                };
+                m_entityGizmoClusterId = requests->CreateCluster(Vui::Alignment::TopLeft);
+                m_entityGizmoMoveButtonId = requests->CreateClusterButton(m_entityGizmoClusterId, fetchIcon("Move"));
+                m_entityGizmoRotateButtonId = requests->CreateClusterButton(m_entityGizmoClusterId, fetchIcon("Rotate"));
+                m_entityGizmoScaleButtonId = requests->CreateClusterButton(m_entityGizmoClusterId, fetchIcon("Scale"));
+                requests->SetClusterButtonTooltip(
+                    m_entityGizmoClusterId, m_entityGizmoMoveButtonId, "Move the ENTITY (White Box pane gizmo)");
+                requests->SetClusterButtonTooltip(
+                    m_entityGizmoClusterId, m_entityGizmoRotateButtonId, "Rotate the ENTITY (White Box pane gizmo)");
+                requests->SetClusterButtonTooltip(
+                    m_entityGizmoClusterId, m_entityGizmoScaleButtonId, "Scale the ENTITY (White Box pane gizmo)");
+            });
+
+        m_entityGizmoClusterHandler = AZ::Event<Vui::ButtonId>::Handler(
+            [this](Vui::ButtonId buttonId)
+            {
+                WhiteBoxEntityGizmo::Mode mode = WhiteBoxEntityGizmo::Mode::None;
+                if (buttonId == m_entityGizmoMoveButtonId)
+                {
+                    mode = WhiteBoxEntityGizmo::Mode::Translate;
+                }
+                else if (buttonId == m_entityGizmoRotateButtonId)
+                {
+                    mode = WhiteBoxEntityGizmo::Mode::Rotate;
+                }
+                else if (buttonId == m_entityGizmoScaleButtonId)
+                {
+                    mode = WhiteBoxEntityGizmo::Mode::Scale;
+                }
+                // Clicking the active mode's button again toggles the gizmo off.
+                if (m_entityGizmo->GetMode() == mode)
+                {
+                    mode = WhiteBoxEntityGizmo::Mode::None;
+                }
+                m_entityGizmo->SetTarget(m_currentEntityId);
+                m_entityGizmo->SetMode(mode);
+                UpdateEntityGizmoClusterHighlight();
+                RefreshFromComponent(); // sync the pane's gizmo buttons
+            });
+        Vui::ViewportUiRequestBus::Event(
+            Vui::DefaultViewportId, &Vui::ViewportUiRequestBus::Events::RegisterClusterEventHandler,
+            m_entityGizmoClusterId, m_entityGizmoClusterHandler);
+    }
+
+    void WhiteBoxPaneWidget::RemoveEntityGizmoCluster()
+    {
+        namespace Vui = AzToolsFramework::ViewportUi;
+        if (m_entityGizmoClusterId != Vui::ClusterId{})
+        {
+            Vui::ViewportUiRequestBus::Event(
+                Vui::DefaultViewportId, &Vui::ViewportUiRequestBus::Events::RemoveCluster, m_entityGizmoClusterId);
+            m_entityGizmoClusterId = Vui::ClusterId{};
+        }
+    }
+
+    void WhiteBoxPaneWidget::UpdateEntityGizmoClusterHighlight()
+    {
+        namespace Vui = AzToolsFramework::ViewportUi;
+        if (m_entityGizmoClusterId == Vui::ClusterId{})
+        {
+            return;
+        }
+        Vui::ButtonId activeButton{};
+        switch (m_entityGizmo->GetMode())
+        {
+        case WhiteBoxEntityGizmo::Mode::Translate:
+            activeButton = m_entityGizmoMoveButtonId;
+            break;
+        case WhiteBoxEntityGizmo::Mode::Rotate:
+            activeButton = m_entityGizmoRotateButtonId;
+            break;
+        case WhiteBoxEntityGizmo::Mode::Scale:
+            activeButton = m_entityGizmoScaleButtonId;
+            break;
+        default:
+            break;
+        }
+        if (activeButton != Vui::ButtonId{})
+        {
+            Vui::ViewportUiRequestBus::Event(
+                Vui::DefaultViewportId, &Vui::ViewportUiRequestBus::Events::SetClusterActiveButton,
+                m_entityGizmoClusterId, activeButton);
+        }
+        else
+        {
+            Vui::ViewportUiRequestBus::Event(
+                Vui::DefaultViewportId, &Vui::ViewportUiRequestBus::Events::ClearClusterActiveButton,
+                m_entityGizmoClusterId);
+        }
+    }
+
     void WhiteBoxPaneWidget::OnEditorModeActivated(
         [[maybe_unused]] const AzToolsFramework::ViewportEditorModesInterface& editorModeState,
         const AzToolsFramework::ViewportEditorMode mode)
@@ -1735,6 +1875,9 @@ namespace WhiteBox
         if (mode == AzToolsFramework::ViewportEditorMode::Component)
         {
             EnsureEnabledInComponentMode();
+            // The editor's own entity gizmo is suppressed during component mode; offer ours
+            // via an in-viewport Move/Rotate/Scale cluster (like the tool-mode clusters).
+            CreateEntityGizmoCluster();
         }
     }
 
@@ -1744,6 +1887,10 @@ namespace WhiteBox
     {
         if (mode == AzToolsFramework::ViewportEditorMode::Component)
         {
+            // Leaving edit mode: drop the cluster and the gizmo (the editor's own entity
+            // gizmo takes over again outside component mode).
+            RemoveEntityGizmoCluster();
+            m_entityGizmo->SetMode(WhiteBoxEntityGizmo::Mode::None);
             RefreshFromComponent();
         }
     }

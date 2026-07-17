@@ -22,6 +22,7 @@
 #include <AzToolsFramework/API/ToolsApplicationAPI.h>
 #include <AzToolsFramework/API/ViewportEditorModeTrackerNotificationBus.h>
 #include <AzToolsFramework/Entity/EditorEntityContextBus.h>
+#include <AzToolsFramework/ViewportUi/ViewportUiRequestBus.h>
 #include <WhiteBox/EditorWhiteBoxComponentBus.h>
 #endif
 
@@ -149,6 +150,17 @@ namespace WhiteBox
         //! Viewport gizmo for the ENTITY transform (works even during component mode).
         AZStd::unique_ptr<WhiteBoxEntityGizmo> m_entityGizmo;
 
+        //! In-viewport Move/Rotate/Scale button cluster driving the entity gizmo, shown only
+        //! while a White Box component mode is active (when the editor's own gizmo is gone).
+        void CreateEntityGizmoCluster();
+        void RemoveEntityGizmoCluster();
+        void UpdateEntityGizmoClusterHighlight();
+        AzToolsFramework::ViewportUi::ClusterId m_entityGizmoClusterId; //!< Invalid when not shown.
+        AzToolsFramework::ViewportUi::ButtonId m_entityGizmoMoveButtonId;
+        AzToolsFramework::ViewportUi::ButtonId m_entityGizmoRotateButtonId;
+        AzToolsFramework::ViewportUi::ButtonId m_entityGizmoScaleButtonId;
+        AZ::Event<AzToolsFramework::ViewportUi::ButtonId>::Handler m_entityGizmoClusterHandler;
+
         // Entity section.
         QComboBox* m_entityCombo = nullptr;
         QPushButton* m_newEntityButton = nullptr;
@@ -195,6 +207,7 @@ namespace WhiteBox
         QPushButton* m_layerTintButton = nullptr;
         QComboBox* m_layerCombineCombo = nullptr;
         QCheckBox* m_layerInvertNormals = nullptr;
+        QCheckBox* m_layerEdgesOnly = nullptr;
         QDoubleSpinBox* m_layerPos[3] = {};
         QDoubleSpinBox* m_layerRot[3] = {};
         QDoubleSpinBox* m_layerScale[3] = {};

@@ -33,6 +33,13 @@ namespace WhiteBox
     //! working mesh and an asset-backed mesh).
     void ClearMeshInPlace(WhiteBoxMesh& mesh);
 
+    //! Build a copy of @p src with every face's winding REVERSED (normals point the other way).
+    //! Used for a layer's "Invert Normals": flipping the actual mesh (rather than only the
+    //! render faces) makes rendering, physics cooking and selection all agree - a room built
+    //! from an inverted box collides from the INSIDE, because PhysX triangle meshes are
+    //! single-sided and follow the winding.
+    Api::WhiteBoxMeshPtr FlippedMeshWinding(const WhiteBoxMesh& src);
+
     //! Build a single render face from a white box face handle, optionally reversing the
     //! winding (and flipping the normal) so the face renders inside-out.
     WhiteBoxFace BuildWhiteBoxFace(const WhiteBoxMesh& whiteBox, const Api::FaceHandle& faceHandle, bool flipWinding);

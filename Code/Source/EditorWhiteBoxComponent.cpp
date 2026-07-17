@@ -636,8 +636,9 @@ namespace WhiteBox
             }
         }
 
-        // Debounced game-mode bake caches: recomputing them costs a full recombine, so wait for
-        // the edits to settle instead of paying for the bake on every change.
+        // Debounced game-mode bake caches for the DRAG path (boolean source moving): wait for
+        // the drag to settle instead of paying for the bake every frame. Discrete edits bake
+        // synchronously in RebuildWhiteBox instead.
         if (m_rebuild.m_bakedDataDirty)
         {
             m_rebuild.m_bakedDataDelay += deltaTime;
@@ -645,6 +646,10 @@ namespace WhiteBox
             {
                 m_rebuild.m_bakedDataDirty = false;
                 RebuildBakedRenderData();
+                // The bake writes SERIALIZED members; without a dirty mark the prefab state
+                // (what play-in-editor spawns from) would keep the stale previous bake.
+                AzToolsFramework::ScopedUndoBatch undoBatch("White Box Bake");
+                undoBatch.MarkEntityDirty(GetEntityId());
             }
         }
     }
@@ -655,6 +660,15 @@ namespace WhiteBox
         RebuildCombinedMesh(); // fold the stamp/grid layer into the mesh used for output
         RebuildRenderMesh();
         RebuildPhysicsMesh();
+
+        // Recompute the game-mode bake caches SYNCHRONOUSLY for discrete edits: play-in-editor
+        // spawns the game entity from the SERIALIZED (prefab) state, which is captured the
+        // moment the edit marks the entity dirty - a debounced bake would land AFTER that
+        // capture, leaving game mode one edit behind. RebuildWhiteBox only runs per user
+        // gesture, so the cost is acceptable; the per-frame live-boolean drag path (OnTick)
+        // bypasses RebuildWhiteBox and keeps the debounce.
+        m_rebuild.m_bakedDataDirty = false;
+        RebuildBakedRenderData();
     }
 
     void EditorWhiteBoxComponent::BuildGameEntity(AZ::Entity* gameEntity)
@@ -691,7 +705,10 @@ namespace WhiteBox
             }
             else
             {
-                const Api::WhiteBoxMeshPtr combined = CombinedWithGrid(baseMesh);
+                // Full combine (all visible layers, transforms and winding flips) so the game
+                // entity matches the editor view - CombinedWithGrid alone only covered the
+                // active layer and ignored Invert Normals.
+                const Api::WhiteBoxMeshPtr combined = BuildCombined(baseMesh);
                 whiteBoxComponent->GenerateWhiteBoxMesh(
                     CreateWhiteBoxRenderData(combined ? *combined : *baseMesh, m_material));
             }

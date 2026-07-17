@@ -83,6 +83,52 @@ namespace WhiteBox
         Api::RemoveIsolatedVertices(mesh);
     }
 
+    Api::WhiteBoxMeshPtr FlippedMeshWinding(const WhiteBoxMesh& src)
+    {
+        Api::WhiteBoxMeshPtr dest = Api::CreateWhiteBoxMesh();
+        AZStd::unordered_map<int, Api::VertexHandle> vmap;
+        const auto destVertex = [&](const Api::VertexHandle& srcVertex) -> Api::VertexHandle
+        {
+            const auto it = vmap.find(srcVertex.Index());
+            if (it != vmap.end())
+            {
+                return it->second;
+            }
+            const Api::VertexHandle dh = Api::AddVertex(*dest, Api::VertexPosition(src, srcVertex));
+            vmap.emplace(srcVertex.Index(), dh);
+            return dh;
+        };
+
+        for (const Api::PolygonHandle& polygon : Api::MeshPolygonHandles(src))
+        {
+            Api::FaceVertHandlesList faceVertHandles;
+            faceVertHandles.reserve(polygon.m_faceHandles.size());
+            for (const Api::FaceHandle& faceHandle : polygon.m_faceHandles)
+            {
+                const auto halfedges = Api::FaceHalfedgeHandles(src, faceHandle);
+                if (halfedges.size() >= 3)
+                {
+                    // Reversed vertex order flips the triangle's winding (and thus its normal).
+                    faceVertHandles.push_back(Api::FaceVertHandles{
+                        { destVertex(Api::HalfedgeVertexHandleAtTip(src, halfedges[2])),
+                          destVertex(Api::HalfedgeVertexHandleAtTip(src, halfedges[1])),
+                          destVertex(Api::HalfedgeVertexHandleAtTip(src, halfedges[0])) }});
+                }
+            }
+            if (!faceVertHandles.empty())
+            {
+                Api::AddPolygon(*dest, faceVertHandles);
+            }
+        }
+
+        if (!Api::MeshFaceHandles(*dest).empty())
+        {
+            Api::CalculateNormals(*dest);
+            Api::CalculatePlanarUVs(*dest);
+        }
+        return dest;
+    }
+
     WhiteBoxFace BuildWhiteBoxFace(
         const WhiteBoxMesh& whiteBox, const Api::FaceHandle& faceHandle, const bool flipWinding)
     {
