@@ -15,6 +15,11 @@
 #include <AzCore/std/smart_ptr/unique_ptr.h>
 #include <AzCore/std/string/string.h>
 
+namespace AZ
+{
+    class Transform;
+}
+
 namespace AZ::IO
 {
     class GenericStream;
@@ -654,6 +659,29 @@ namespace WhiteBox
         //! tangent of the face about the pivot.
         void ScalePolygonRelative(
             WhiteBoxMesh& whiteBox, const PolygonHandle& polygonHandle, const AZ::Vector3& pivot, float scaleDelta);
+
+        //! The supported CSG (constructive solid geometry) boolean operations.
+        enum class BooleanOperation
+        {
+            Union, //!< The combined volume of both meshes (A + B).
+            Subtraction, //!< The volume of the first mesh with the second mesh cut away (A - B).
+            Intersection //!< Only the volume shared by both meshes (A & B).
+        };
+
+        //! Perform a CSG boolean operation between two white box meshes.
+        //! The result replaces the contents of whiteBox; the operand mesh is unmodified.
+        //! @param whiteBox The mesh to apply the boolean operation to (modified in place).
+        //! @param operand The second operand (the 'tool' mesh), e.g. the volume to cut away in a subtraction.
+        //! @param operandTransform Transform positioning operand in the local space of whiteBox
+        //! (for two entities, worldFromLocalA.GetInverse() * worldFromLocalB).
+        //! @param operation Which boolean operation to apply.
+        //! @return True if the operation succeeded, false otherwise (e.g. the meshes do not
+        //! intersect, or one of them is not a closed manifold). whiteBox is unmodified on failure.
+        //! @note Both meshes must be closed (watertight). Coplanar faces in the result are merged
+        //! into white box polygons, but UVs are recalculated so custom UVs are not preserved.
+        bool MeshBoolean(
+            WhiteBoxMesh& whiteBox, const WhiteBoxMesh& operand, const AZ::Transform& operandTransform,
+            BooleanOperation operation);
 
         //! Recalculate all normals of each face in the mesh.
         void CalculateNormals(WhiteBoxMesh& whiteBox);

@@ -23,6 +23,7 @@
 #include <WhiteBox/EditorWhiteBoxComponentBus.h>
 #include <WhiteBox/WhiteBoxToolApi.h>
 #include <AzToolsFramework/API/ToolsApplicationAPI.h>
+#include <AzToolsFramework/ComponentMode/EditorComponentModeBus.h>
 
 #include <AzFramework/Render/GeometryIntersectionStructures.h>
 #include <AzFramework/Visibility/EntityVisibilityBoundsUnionSystem.h>

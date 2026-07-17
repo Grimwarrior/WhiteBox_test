@@ -7,6 +7,7 @@
  */
 
 #include "EditorWhiteBoxComponentModeCommon.h"
+#include <EditorWhiteBoxComponentModeBus.h>
 #include "EditorWhiteBoxDefaultMode.h"
 
 #include <AzCore/Math/Quaternion.h>

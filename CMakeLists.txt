@@ -7,4 +7,7 @@ set(CMAKE_MODULE_PATH ${CMAKE_MODULE_PATH})
 # installed engine builds where the engine only provides stub targets.
 include(${CMAKE_CURRENT_SOURCE_DIR}/3rdParty/FindOpenMesh.cmake)
 
+# Mcut provides the CSG boolean operations (Api::MeshBoolean).
+include(${CMAKE_CURRENT_SOURCE_DIR}/3rdParty/FindMcut.cmake)
+
 add_subdirectory(Code)
