@@ -26,8 +26,11 @@ namespace WhiteBox
         if (auto serializeContext = azrtti_cast<AZ::SerializeContext*>(context))
         {
             serializeContext->Class<WhiteBoxColliderComponent, AZ::Component>()
-                ->Version(1)
+                ->Version(2)
                 ->Field("MeshData", &WhiteBoxColliderComponent::m_shapeConfiguration)
+                ->Field("BooleanMeshData", &WhiteBoxColliderComponent::m_booleanShapeConfiguration)
+                ->Field("HasBooleanMesh", &WhiteBoxColliderComponent::m_hasBooleanMesh)
+                ->Field("UseBooleanMesh", &WhiteBoxColliderComponent::m_useBooleanMesh)
                 ->Field("Configuration", &WhiteBoxColliderComponent::m_physicsColliderConfiguration)
                 ->Field("WhiteBoxConfiguration", &WhiteBoxColliderComponent::m_whiteBoxColliderConfiguration);
         }
@@ -53,14 +56,33 @@ namespace WhiteBox
     WhiteBoxColliderComponent::WhiteBoxColliderComponent(
         const Physics::CookedMeshShapeConfiguration& shapeConfiguration,
         const Physics::ColliderConfiguration& physicsColliderConfiguration,
-        const WhiteBoxColliderConfiguration& whiteBoxColliderConfiguration)
+        const WhiteBoxColliderConfiguration& whiteBoxColliderConfiguration,
+        const Physics::CookedMeshShapeConfiguration& booleanMeshShape,
+        const bool hasBooleanMesh,
+        const bool useBooleanMesh)
         : m_shapeConfiguration(shapeConfiguration)
+        , m_booleanShapeConfiguration(booleanMeshShape)
+        , m_hasBooleanMesh(hasBooleanMesh)
+        , m_useBooleanMesh(hasBooleanMesh && useBooleanMesh)
         , m_physicsColliderConfiguration(physicsColliderConfiguration)
         , m_whiteBoxColliderConfiguration(whiteBoxColliderConfiguration)
     {
     }
 
+    const Physics::CookedMeshShapeConfiguration& WhiteBoxColliderComponent::ActiveShapeConfiguration() const
+    {
+        return (m_useBooleanMesh && m_hasBooleanMesh) ? m_booleanShapeConfiguration : m_shapeConfiguration;
+    }
+
     void WhiteBoxColliderComponent::Activate()
+    {
+        RebuildBody();
+
+        AZ::TransformNotificationBus::Handler::BusConnect(GetEntityId());
+        WhiteBoxColliderRequestBus::Handler::BusConnect(GetEntityId());
+    }
+
+    void WhiteBoxColliderComponent::RebuildBody()
     {
         auto* sceneInterface = AZ::Interface<AzPhysics::SceneInterface>::Get();
         if (sceneInterface == nullptr)
@@ -76,15 +98,30 @@ namespace WhiteBox
             return;
         }
 
+        // remove any existing body so this can be called again to swap the collider mesh
+        DestroyBody();
+
+        const Physics::CookedMeshShapeConfiguration& shapeConfiguration = ActiveShapeConfiguration();
+        if (shapeConfiguration.GetCookedMeshData().empty())
+        {
+            // nothing cooked for the selected variant - skip creating a shape rather than
+            // letting PhysX fail on an empty buffer.
+            AZ_Warning(
+                "WhiteBox", false,
+                "WhiteBoxColliderComponent has no cooked mesh data for the %s collider; skipping physics body creation",
+                m_useBooleanMesh ? "boolean" : "base");
+            return;
+        }
+
         const AZ::EntityId entityId = GetEntityId();
 
         AZ::Transform worldTransform = AZ::Transform::CreateIdentity();
         AZ::TransformBus::EventResult(worldTransform, entityId, &AZ::TransformInterface::GetWorldTM);
 
-        // create shape
+        // create shape from the currently selected (base or boolean-evaluated) cooked mesh
         AZStd::shared_ptr<Physics::Shape> shape;
         Physics::SystemRequestBus::BroadcastResult(
-            shape, &Physics::SystemRequests::CreateShape, m_physicsColliderConfiguration, m_shapeConfiguration);
+            shape, &Physics::SystemRequests::CreateShape, m_physicsColliderConfiguration, shapeConfiguration);
 
         // create rigid body
         switch (m_whiteBoxColliderConfiguration.m_bodyType)
@@ -122,13 +159,14 @@ namespace WhiteBox
                 false, "WhiteBoxBodyType %d not handled", static_cast<int>(m_whiteBoxColliderConfiguration.m_bodyType));
             break;
         }
-
-        AZ::TransformNotificationBus::Handler::BusConnect(entityId);
     }
 
-    void WhiteBoxColliderComponent::Deactivate()
+    void WhiteBoxColliderComponent::DestroyBody()
     {
-        AZ::TransformNotificationBus::Handler::BusDisconnect();
+        if (m_simulatedBodyHandle == AzPhysics::InvalidSimulatedBodyHandle)
+        {
+            return;
+        }
 
         if (auto* sceneInterface = AZ::Interface<AzPhysics::SceneInterface>::Get())
         {
@@ -138,6 +176,29 @@ namespace WhiteBox
                 sceneInterface->RemoveSimulatedBody(defaultScene, m_simulatedBodyHandle);
             }
         }
+
+        m_simulatedBodyHandle = AzPhysics::InvalidSimulatedBodyHandle;
+    }
+
+    void WhiteBoxColliderComponent::BakeCollider(const bool useBooleanMesh)
+    {
+        // ignore requests for the boolean mesh when one was not baked
+        const bool desired = useBooleanMesh && m_hasBooleanMesh;
+        if (desired == m_useBooleanMesh)
+        {
+            return; // already using the requested collider
+        }
+
+        m_useBooleanMesh = desired;
+        RebuildBody();
+    }
+
+    void WhiteBoxColliderComponent::Deactivate()
+    {
+        WhiteBoxColliderRequestBus::Handler::BusDisconnect();
+        AZ::TransformNotificationBus::Handler::BusDisconnect();
+
+        DestroyBody();
     }
 
     void WhiteBoxColliderComponent::OnTransformChanged(

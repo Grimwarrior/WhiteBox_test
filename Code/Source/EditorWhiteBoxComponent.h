@@ -98,6 +98,19 @@ namespace WhiteBox
         //! @note EditorWhiteBoxComponent takes ownership of the editorMeshAsset and will handle deleting it
         void OverrideEditorWhiteBoxMeshAsset(EditorWhiteBoxMeshAsset* editorMeshAsset);
 
+        //! Returns the mesh used for render / collision / selection: the live-boolean
+        //! evaluated result when active, otherwise the editable base mesh.
+        //! Public so the collider component can bake physics from the same mesh the
+        //! render path uses.
+        WhiteBoxMesh* GetEvaluatedWhiteBoxMesh();
+        //! Evaluate (base [op] source) into a new mesh, regardless of the live-boolean
+        //! flag, and return it (or nullptr if no boolean source is set or evaluation
+        //! fails). Used to bake the "with boolean" variant when building the game entity.
+        //! @note Uses the CSG API which is only available in the Editor.
+        Api::WhiteBoxMeshPtr EvaluateBooleanMesh();
+        //! Whether the live (non-destructive) boolean is currently enabled.
+        bool GetLiveBoolean() const { return m_liveBoolean; }
+
     private:
         //! Staircase-specific settings for the Draw Shape tool (only relevant when the
         //! draw shape is a Staircase). Grouped to keep the related members together.

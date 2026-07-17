@@ -59,6 +59,11 @@ namespace WhiteBox
         void DestroyPhysics() override;
 
         void ConvertToPhysicsMesh(const WhiteBoxMesh& whiteBox);
+        //! Cook @p whiteBox into @p outConfiguration without touching the edit-time body.
+        //! Used to pre-bake the base and boolean collider variants for the game entity.
+        //! @return true if cooking succeeded.
+        static bool CookToConfiguration(
+            const WhiteBoxMesh& whiteBox, Physics::CookedMeshShapeConfiguration& outConfiguration);
 
         AzPhysics::SceneInterface* m_sceneInterface = nullptr;
         AzPhysics::SceneHandle m_editorSceneHandle = AzPhysics::InvalidSceneHandle;

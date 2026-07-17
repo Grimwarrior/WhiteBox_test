@@ -36,6 +36,7 @@ namespace WhiteBox
             constexpr float CoplanarNormalDotThreshold = 0.99996f;
         } // namespace
 
+
         namespace Detail
         {
             // convert a white box mesh to an indexed triangle mesh, transforming all

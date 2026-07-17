@@ -469,19 +469,22 @@ namespace WhiteBox
         return GetWhiteBoxMesh();
     }
 
-    void EditorWhiteBoxComponent::EvaluateLiveBoolean()
+    WhiteBoxMesh* EditorWhiteBoxComponent::GetEvaluatedWhiteBoxMesh()
     {
-        m_displayMesh.reset();
+        return EvaluatedMesh();
+    }
 
-        if (!m_liveBoolean || !m_booleanSourceEntity.IsValid() || m_booleanSourceEntity == GetEntityId())
+    Api::WhiteBoxMeshPtr EditorWhiteBoxComponent::EvaluateBooleanMesh()
+    {
+        if (!m_booleanSourceEntity.IsValid() || m_booleanSourceEntity == GetEntityId())
         {
-            return;
+            return nullptr;
         }
 
         WhiteBoxMesh* baseMesh = GetWhiteBoxMesh();
         if (baseMesh == nullptr)
         {
-            return;
+            return nullptr;
         }
 
         AZ::Entity* sourceEntity = nullptr;
@@ -489,17 +492,17 @@ namespace WhiteBox
             sourceEntity, &AZ::ComponentApplicationRequests::FindEntity, m_booleanSourceEntity);
         if (sourceEntity == nullptr)
         {
-            return;
+            return nullptr;
         }
         const auto sourceComponents = sourceEntity->FindComponents<EditorWhiteBoxComponent>();
         if (sourceComponents.empty())
         {
-            return;
+            return nullptr;
         }
         WhiteBoxMesh* sourceMesh = sourceComponents[0]->GetWhiteBoxMesh();
         if (sourceMesh == nullptr)
         {
-            return;
+            return nullptr;
         }
 
         AZ::Transform thisWorldTM = AZ::Transform::CreateIdentity();
@@ -512,15 +515,28 @@ namespace WhiteBox
         Api::WhiteBoxMeshPtr evaluated = Api::CloneMesh(*baseMesh);
         if (!evaluated)
         {
-            return;
+            return nullptr;
         }
         if (Api::ApplyMeshBoolean(*evaluated, *sourceMesh, operandTransform, m_booleanOperation))
         {
             Api::CalculateNormals(*evaluated);
             Api::CalculatePlanarUVs(*evaluated);
-            m_displayMesh = AZStd::move(evaluated);
+            return evaluated;
         }
-        // on failure (no overlap) m_displayMesh stays null -> falls back to the base.
+        // on failure (no overlap) return null -> callers fall back to the base mesh.
+        return nullptr;
+    }
+
+    void EditorWhiteBoxComponent::EvaluateLiveBoolean()
+    {
+        m_displayMesh.reset();
+
+        if (!m_liveBoolean)
+        {
+            return;
+        }
+
+        m_displayMesh = EvaluateBooleanMesh();
     }
 
     void EditorWhiteBoxComponent::UpdateBooleanSourceListener()
@@ -995,11 +1011,37 @@ namespace WhiteBox
 
     void EditorWhiteBoxComponent::BuildGameEntity(AZ::Entity* gameEntity)
     {
-        if (auto* whiteBoxComponent = gameEntity->CreateComponent<WhiteBoxComponent>())
+        auto* whiteBoxComponent = gameEntity->CreateComponent<WhiteBoxComponent>();
+        if (whiteBoxComponent == nullptr)
         {
-            // note: it is important no edit time only functions are called here as BuildGameEntity
-            // will be called by the Asset Processor when creating dynamic slices
+            return;
+        }
+
+        // note: it is important no edit time only functions are called here as BuildGameEntity
+        // will be called by the Asset Processor when creating dynamic slices
+
+        // Bake the base (un-boolean) render geometry.
+        if (WhiteBoxMesh* baseMesh = GetWhiteBoxMesh())
+        {
+            whiteBoxComponent->GenerateWhiteBoxMesh(CreateWhiteBoxRenderData(*baseMesh, m_material));
+        }
+        else
+        {
             whiteBoxComponent->GenerateWhiteBoxMesh(m_renderData);
+        }
+
+        // Also bake the boolean-evaluated variant. The CSG boolean can only be computed in
+        // the Editor (the Manifold/OpenMesh backed Tool API is not linked into the runtime),
+        // so we pre-bake both variants here. At runtime the component toggles between them
+        // via the live-boolean parameter (see WhiteBoxComponent::SetLiveBoolean / BakeWhiteBox).
+        if (Api::WhiteBoxMeshPtr evaluated = EvaluateBooleanMesh())
+        {
+            whiteBoxComponent->SetBooleanRenderData(CreateWhiteBoxRenderData(*evaluated, m_material));
+            whiteBoxComponent->SetLiveBooleanState(true, m_liveBoolean);
+        }
+        else
+        {
+            whiteBoxComponent->SetLiveBooleanState(false, false);
         }
     }
 

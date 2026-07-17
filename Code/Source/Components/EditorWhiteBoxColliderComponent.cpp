@@ -98,7 +98,9 @@ namespace WhiteBox
         // can't use buses here as EditorWhiteBoxComponentBus is addressed using component id. How do get component id?
         if (auto whiteBoxComponent = GetEntity()->FindComponent<WhiteBox::EditorWhiteBoxComponent>())
         {
-            if (auto whiteBoxMesh = whiteBoxComponent->GetWhiteBoxMesh())
+            // use the evaluated mesh so the edit-time collider matches the (possibly
+            // live-boolean) geometry that is rendered.
+            if (auto whiteBoxMesh = whiteBoxComponent->GetEvaluatedWhiteBoxMesh())
             {
                 CreatePhysics(*whiteBoxMesh);
             }
@@ -119,8 +121,32 @@ namespace WhiteBox
 
     void EditorWhiteBoxColliderComponent::BuildGameEntity(AZ::Entity* gameEntity)
     {
+        // Pre-bake both collider variants: the base mesh and (if a boolean source is set)
+        // the boolean-evaluated mesh. CSG cannot run at runtime, so baking both here lets
+        // the runtime component toggle its collider between them via the live-boolean param.
+        Physics::CookedMeshShapeConfiguration baseConfiguration;
+        Physics::CookedMeshShapeConfiguration booleanConfiguration;
+        bool hasBooleanMesh = false;
+        bool liveBoolean = false;
+
+        if (auto* whiteBoxComponent = GetEntity()->FindComponent<WhiteBox::EditorWhiteBoxComponent>())
+        {
+            if (auto* baseMesh = whiteBoxComponent->GetWhiteBoxMesh())
+            {
+                CookToConfiguration(*baseMesh, baseConfiguration);
+            }
+
+            if (Api::WhiteBoxMeshPtr evaluated = whiteBoxComponent->EvaluateBooleanMesh())
+            {
+                hasBooleanMesh = CookToConfiguration(*evaluated, booleanConfiguration);
+            }
+
+            liveBoolean = whiteBoxComponent->GetLiveBoolean();
+        }
+
         gameEntity->CreateComponent<WhiteBoxColliderComponent>(
-            m_meshShapeConfiguration, m_physicsColliderConfiguration, m_whiteBoxColliderConfiguration);
+            baseConfiguration, m_physicsColliderConfiguration, m_whiteBoxColliderConfiguration, booleanConfiguration,
+            hasBooleanMesh, hasBooleanMesh && liveBoolean);
     }
 
     void EditorWhiteBoxColliderComponent::OnTransformChanged(
@@ -172,39 +198,45 @@ namespace WhiteBox
     static bool ConvertToTriangles(
         const WhiteBoxMesh& whiteBox, AZStd::vector<AZ::Vector3>& vertices, AZStd::vector<AZ::u32>& indices)
     {
-        const auto triangleCount = Api::MeshFaceCount(whiteBox);
-        if (triangleCount == 0)
-        {
-            return false;
-        }
+        // Build the vertex and index buffers together, one face at a time. Do NOT size the
+        // vertex buffer from MeshHalfedgeCount and assume 3 vertices per face: after a CSG
+        // boolean the mesh can contain boundary half-edges and merged (n-gon) polygon faces,
+        // which made the old approach emit a mismatched buffer with uninitialised trailing
+        // vertices - PhysX then rejected the cooked data ("Unable to create a mesh object
+        // from the CookedMeshShapeConfiguration buffer"). Triangle-fanning each face handles
+        // both plain triangles and any n-gon faces safely.
+        vertices.clear();
+        indices.clear();
 
-        const auto vertexCount = Api::MeshHalfedgeCount(whiteBox);
-
-        vertices.resize(vertexCount);
-        indices.resize(triangleCount * 3);
-
-        // fill vertex position array
-        size_t index = 0;
         const auto faceHandles = Api::MeshFaceHandles(whiteBox);
         for (const auto& faceHandle : faceHandles)
         {
-            const auto faceHalfedgeHandles = Api::FaceHalfedgeHandles(whiteBox, faceHandle);
-
-            for (const auto& halfEdgeHandle : faceHalfedgeHandles)
+            const auto faceVertexHandles = Api::FaceVertexHandles(whiteBox, faceHandle);
+            if (faceVertexHandles.size() < 3)
             {
-                const auto vh = Api::HalfedgeVertexHandleAtTip(whiteBox, halfEdgeHandle);
-                vertices[index] = Api::VertexPosition(whiteBox, vh);
-                index++;
+                continue; // degenerate face, skip
+            }
+
+            const AZ::u32 base = static_cast<AZ::u32>(vertices.size());
+            for (const auto& vertexHandle : faceVertexHandles)
+            {
+                vertices.push_back(Api::VertexPosition(whiteBox, vertexHandle));
+            }
+
+            // fan the face into triangles (base, i, i+1)
+            for (size_t i = 1; i + 1 < faceVertexHandles.size(); ++i)
+            {
+                indices.push_back(base);
+                indices.push_back(base + static_cast<AZ::u32>(i));
+                indices.push_back(base + static_cast<AZ::u32>(i + 1));
             }
         }
 
-        // fill index array - this will have to change at some point probably
-        std::iota(indices.begin(), indices.end(), 0);
-
-        return true;
+        return !indices.empty();
     }
 
-    void EditorWhiteBoxColliderComponent::ConvertToPhysicsMesh(const WhiteBoxMesh& whiteBox)
+    bool EditorWhiteBoxColliderComponent::CookToConfiguration(
+        const WhiteBoxMesh& whiteBox, Physics::CookedMeshShapeConfiguration& outConfiguration)
     {
         AZStd::vector<AZ::Vector3> vertices;
         AZStd::vector<AZ::u32> indices;
@@ -212,7 +244,7 @@ namespace WhiteBox
         if (!ConvertToTriangles(whiteBox, vertices, indices))
         {
             // if there are no valid triangles then do not attempt to create a physics mesh
-            return;
+            return false;
         }
 
         if (auto* physicsSystem = AZ::Interface<Physics::System>::Get())
@@ -221,12 +253,15 @@ namespace WhiteBox
             const bool result = physicsSystem->CookTriangleMeshToMemory(
                 vertices.data(), (AZ::u32)vertices.size(), indices.data(), (AZ::u32)indices.size(), bytes);
 
-            AZ_Warning("EditorWhiteBoxColliderComponent", result, "Failed to cook mesh data");
+            AZ_Warning(
+                "EditorWhiteBoxColliderComponent", result, "Failed to cook mesh data (verts=%zu, indices=%zu)",
+                vertices.size(), indices.size());
 
             if (result)
             {
-                m_meshShapeConfiguration.SetCookedMeshData(
+                outConfiguration.SetCookedMeshData(
                     bytes.data(), bytes.size(), Physics::CookedMeshShapeConfiguration::MeshType::TriangleMesh);
+                return true;
             }
         }
         else
@@ -234,5 +269,12 @@ namespace WhiteBox
             AZ_Warning(
                 "EditorWhiteBoxColliderComponent", false, "No physics backend enabled - please ensure one is provided");
         }
+
+        return false;
+    }
+
+    void EditorWhiteBoxColliderComponent::ConvertToPhysicsMesh(const WhiteBoxMesh& whiteBox)
+    {
+        CookToConfiguration(whiteBox, m_meshShapeConfiguration);
     }
 } // namespace WhiteBox
