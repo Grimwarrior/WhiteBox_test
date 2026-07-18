@@ -32,6 +32,7 @@ namespace WhiteBox
                 ->Field("Name", &WhiteBoxLayer::m_name)
                 ->Field("Id", &WhiteBoxLayer::m_id)
                 ->Field("Visible", &WhiteBoxLayer::m_visible)
+                ->Field("Collision", &WhiteBoxLayer::m_collision)
                 ->Field("Parametric", &WhiteBoxLayer::m_parametric)
                 ->Field("ParamShape", &WhiteBoxLayer::m_paramShape)
                 ->Field("ParamWidth", &WhiteBoxLayer::m_paramWidth)
@@ -61,6 +62,9 @@ namespace WhiteBox
                     ->DataElement(
                         AZ::Edit::UIHandlers::CheckBox, &WhiteBoxLayer::m_visible, "Visible",
                         "Show or hide this layer (hidden layers are excluded from the combined output).")
+                    ->DataElement(
+                        AZ::Edit::UIHandlers::CheckBox, &WhiteBoxLayer::m_collision, "Collision",
+                        "Include or exclude this layer from the physics collision mesh.")
                     ->DataElement(
                         AZ::Edit::UIHandlers::Color, &WhiteBoxLayer::m_tint, "Tint",
                         "Render colour for this layer (used when 'Use Global Tint' is off).")
@@ -675,7 +679,7 @@ namespace WhiteBox
         return combined;
     }
 
-    Api::WhiteBoxMeshPtr EditorWhiteBoxComponent::BuildCombined(WhiteBoxMesh* activeFreeform)
+    Api::WhiteBoxMeshPtr EditorWhiteBoxComponent::BuildCombined(WhiteBoxMesh* activeFreeform, bool physicsPass)
     {
         const int count = static_cast<int>(m_layers.size());
         const int activeIdx = m_layerRuntime.m_loadedIndex;
@@ -686,6 +690,11 @@ namespace WhiteBox
         {
             if (m_layers[i].m_visible)
             {
+                // Skip this layer if we are building the physics mesh and collision is off
+                if (physicsPass && !m_layers[i].m_collision)
+                {
+                    continue;
+                }
                 visible.push_back(i);
             }
         }
@@ -704,7 +713,14 @@ namespace WhiteBox
         // -> return null so EvaluatedMesh falls back to the raw working freeform (no clone).
         // An inverted layer must NOT take this path: the raw working mesh has outward winding,
         // and the flip (render + physics + selection) only exists in the combined mesh.
-        if (visible.size() == 1 && visible[0] == activeIdx && activeIdentity && activeNoGrid && !activeInverted)
+        //
+        // This must NOT run on the physics pass: there, `visible` can collapse to just the active
+        // layer because OTHER visible layers were filtered out by their Collision flag. Returning
+        // null then makes the caller fall back to the UNFILTERED evaluated mesh (which still
+        // contains those non-collidable layers), so a per-layer Collision toggle would have no
+        // effect. On the physics pass we always build the filtered mesh explicitly below.
+        if (!physicsPass && visible.size() == 1 && visible[0] == activeIdx && activeIdentity && activeNoGrid &&
+            !activeInverted)
         {
             return nullptr;
         }
@@ -768,16 +784,16 @@ namespace WhiteBox
             {
             case LayerCombineMode::Union:
                 if (Api::MeshFaceHandles(*acc).empty() ||
-                    !Api::ApplyMeshBoolean(*acc, *operand, identity, Api::BooleanOperation::Union))
+                    !Api::ApplyMeshBoolean(*acc, *operand, identity, Api::BooleanOperation::Union, m_csgSolver))
                 {
                     AppendMesh(*acc, *operand);
                 }
                 break;
             case LayerCombineMode::Subtract:
-                Api::ApplyMeshBoolean(*acc, *operand, identity, Api::BooleanOperation::Subtraction);
+                Api::ApplyMeshBoolean(*acc, *operand, identity, Api::BooleanOperation::Subtraction, m_csgSolver);
                 break;
             case LayerCombineMode::Intersect:
-                Api::ApplyMeshBoolean(*acc, *operand, identity, Api::BooleanOperation::Intersection);
+                Api::ApplyMeshBoolean(*acc, *operand, identity, Api::BooleanOperation::Intersection, m_csgSolver);
                 break;
             case LayerCombineMode::Separate:
             default:
@@ -794,19 +810,45 @@ namespace WhiteBox
         return acc;
     }
 
+    // void EditorWhiteBoxComponent::RebuildCombinedMesh()
+    // {
+    //     // When the entity boolean is live and applies to the WHOLE mesh (not just the active layer),
+    //     // m_displayMesh already folds in every layer, grid and transform, so use it directly.
+    //     if (m_boolean.m_live && m_displayMesh && !m_boolean.m_affectActiveOnly)
+    //     {
+    //         m_combinedMesh = Api::CloneMesh(*m_displayMesh);
+    //         return;
+    //     }
+
+    //     // Otherwise the active-layer base is the live-boolean result (active-only mode) or the raw
+    //     // editable mesh; BuildCombined folds in the grids, the other layers and all transforms.
+    //     WhiteBoxMesh* freeform = (m_boolean.m_live && m_displayMesh) ? m_displayMesh.get() : GetWhiteBoxMesh();
+    //     m_combinedMesh = BuildCombined(freeform);
+    // }
     void EditorWhiteBoxComponent::RebuildCombinedMesh()
     {
-        // When the entity boolean is live and applies to the WHOLE mesh (not just the active layer),
-        // m_displayMesh already folds in every layer, grid and transform, so use it directly.
         if (m_boolean.m_live && m_displayMesh && !m_boolean.m_affectActiveOnly)
         {
             m_combinedMesh = Api::CloneMesh(*m_displayMesh);
+            // Physics uses the collision-FILTERED cut result (m_physicsDisplayMesh), not the visual
+            // one, so layers with Collision off stay out of the collider even while the live boolean
+            // is on. Fall back to the visual cut mesh only if the physics variant was not evaluated.
+            m_physicsCombinedMesh =
+                Api::CloneMesh(m_physicsDisplayMesh ? *m_physicsDisplayMesh : *m_displayMesh);
             return;
         }
 
-        // Otherwise the active-layer base is the live-boolean result (active-only mode) or the raw
-        // editable mesh; BuildCombined folds in the grids, the other layers and all transforms.
         WhiteBoxMesh* freeform = (m_boolean.m_live && m_displayMesh) ? m_displayMesh.get() : GetWhiteBoxMesh();
-        m_combinedMesh = BuildCombined(freeform);
+        m_combinedMesh = BuildCombined(freeform, false);       // Visual Mesh
+        m_physicsCombinedMesh = BuildCombined(freeform, true); // Physics Mesh
+    }
+
+    WhiteBoxMesh* EditorWhiteBoxComponent::GetPhysicsMesh()
+    {
+        if (m_physicsCombinedMesh)
+        {
+            return m_physicsCombinedMesh.get();
+        }
+        return EvaluatedMesh(); // Fallback safely
     }
 } // namespace WhiteBox

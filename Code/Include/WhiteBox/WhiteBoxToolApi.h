@@ -673,6 +673,20 @@ namespace WhiteBox
             Intersection //!< Only the volume shared by both meshes (A & B).
         };
 
+        //! Which CSG solver backend performs the boolean.
+        enum class CsgSolver
+        {
+            //! Volumetric, orientation-based (Manifold library). Robust and precise, but requires
+            //! closed two-manifold inputs and treats normal direction as the definition of "solid",
+            //! so a mesh with inverted normals becomes its complement.
+            Manifold,
+            //! Face/plane-based BSP (brush-style, like Blender's "Fast" solver). Tolerant of open,
+            //! non-manifold and INWARD-facing (shell/room) meshes and composes inverted-normal
+            //! operands intuitively. Best suited to White Box's blocky, mostly-planar geometry.
+            //! Less numerically robust than Manifold on tiny slivers, and may emit non-manifold output.
+            Fast
+        };
+
         //! Perform a CSG boolean operation between two white box meshes.
         //! The result replaces the contents of whiteBox; the operand mesh is unmodified.
         //! @param whiteBox The mesh to apply the boolean operation to (modified in place).
@@ -680,13 +694,16 @@ namespace WhiteBox
         //! @param operandTransform Transform positioning operand in the local space of whiteBox
         //! (for two entities, worldFromLocalA.GetInverse() * worldFromLocalB).
         //! @param operation Which boolean operation to apply.
+        //! @param solver Which CSG backend to use (Manifold by default; Fast/BSP for the face-based,
+        //! brush-style path that handles shells and inverted normals). See CsgSolver.
         //! @return True if the operation succeeded, false otherwise (e.g. the meshes do not
         //! intersect, or one of them is not a closed manifold). whiteBox is unmodified on failure.
-        //! @note Both meshes must be closed (watertight). Coplanar faces in the result are merged
-        //! into white box polygons, but UVs are recalculated so custom UVs are not preserved.
+        //! @note With the Manifold solver both meshes must be closed (watertight). Coplanar faces in
+        //! the result are merged into white box polygons, but UVs are recalculated so custom UVs are
+        //! not preserved.
         bool ApplyMeshBoolean(
             WhiteBoxMesh& whiteBox, const WhiteBoxMesh& operand, const AZ::Transform& operandTransform,
-            BooleanOperation operation);
+            BooleanOperation operation, CsgSolver solver = CsgSolver::Manifold);
 
         //! Repair a mesh so it becomes a clean, weldable manifold: coincident vertices are
         //! welded and coplanar triangles are regrouped into single polygons (the exact

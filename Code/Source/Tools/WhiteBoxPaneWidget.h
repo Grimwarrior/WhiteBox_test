@@ -208,6 +208,7 @@ namespace WhiteBox
         QComboBox* m_layerCombineCombo = nullptr;
         QCheckBox* m_layerInvertNormals = nullptr;
         QCheckBox* m_layerEdgesOnly = nullptr;
+        QCheckBox* m_layerCollision;
         QDoubleSpinBox* m_layerPos[3] = {};
         QDoubleSpinBox* m_layerRot[3] = {};
         QDoubleSpinBox* m_layerScale[3] = {};
@@ -232,6 +233,7 @@ namespace WhiteBox
         QPushButton* m_clearCubesButton = nullptr;
 
         // Boolean section.
+        QComboBox* m_csgSolverCombo = nullptr; //!< CSG backend (Fast/BSP vs Manifold) for all booleans.
         QComboBox* m_booleanSourceCombo = nullptr;
         QComboBox* m_booleanOpCombo = nullptr;
         QCheckBox* m_booleanLive = nullptr;

@@ -509,6 +509,9 @@ namespace WhiteBox
             tr("Hide this layer's solid faces and draw only its edges (visual only - collision "
                "and selection are unaffected)."));
         metaLayout->addRow(QString(), m_layerEdgesOnly);
+        m_layerCollision = new QCheckBox(tr("Collision"));
+        m_layerCollision->setToolTip(tr("Include this layer in the physics collision mesh."));
+        metaLayout->addRow(QString(), m_layerCollision);
         metaLayout->addRow(tr("Position"), MakeVec3Row(m_layerPos, -100000.0, 100000.0, 0.1));
         metaLayout->addRow(tr("Rotation"), MakeVec3Row(m_layerRot, -3600.0, 3600.0, 1.0));
         metaLayout->addRow(tr("Scale"), MakeVec3Row(m_layerScale, 0.001, 1000.0, 0.1));
@@ -723,6 +726,7 @@ namespace WhiteBox
             const auto combine = static_cast<LayerCombineMode>(m_layerCombineCombo->currentData().toInt());
             const bool invert = m_layerInvertNormals->isChecked();
             const bool edgesOnly = m_layerEdgesOnly->isChecked();
+            const bool collision = m_layerCollision->isChecked();
             const AZ::Vector3 pos(
                 aznumeric_cast<float>(m_layerPos[0]->value()), aznumeric_cast<float>(m_layerPos[1]->value()),
                 aznumeric_cast<float>(m_layerPos[2]->value()));
@@ -734,12 +738,13 @@ namespace WhiteBox
                 aznumeric_cast<float>(m_layerScale[2]->value()));
             ModifyComponent(
                 "White Box Layer Edit",
-                [row, combine, invert, edgesOnly, pos, rot, scale](EditorWhiteBoxComponent* c)
+                [row, combine, invert, edgesOnly, collision, pos, rot, scale](EditorWhiteBoxComponent* c)
                 {
                     EditorWhiteBoxComponent::LayerMeta meta = c->GetLayerMeta(row);
                     meta.m_combineMode = combine;
                     meta.m_invertNormals = invert;
                     meta.m_edgesOnly = edgesOnly;
+                    meta.m_collision = collision;
                     meta.m_position = pos;
                     meta.m_rotation = rot;
                     meta.m_scale = scale;
@@ -749,6 +754,7 @@ namespace WhiteBox
         connect(m_layerCombineCombo, QOverload<int>::of(&QComboBox::currentIndexChanged), this, applyMeta);
         connect(m_layerInvertNormals, &QCheckBox::toggled, this, applyMeta);
         connect(m_layerEdgesOnly, &QCheckBox::toggled, this, applyMeta);
+        connect(m_layerCollision, &QCheckBox::toggled, this, applyMeta);
         for (QDoubleSpinBox* spin :
              { m_layerPos[0], m_layerPos[1], m_layerPos[2], m_layerRot[0], m_layerRot[1], m_layerRot[2],
                m_layerScale[0], m_layerScale[1], m_layerScale[2] })
@@ -930,6 +936,19 @@ namespace WhiteBox
         auto* group = new QGroupBox(tr("Boolean"));
         auto* layout = new QFormLayout(group);
 
+        m_csgSolverCombo = new QComboBox();
+        m_csgSolverCombo->setToolTip(tr(
+            "CSG solver used for EVERY boolean on this component - the per-layer Combine modes and the "
+            "entity Boolean below.\n"
+            "Fast (BSP): brush-style, face-based. Handles inward-facing shells (rooms/corridors) and "
+            "inverted-normal meshes, and tolerates open/non-manifold geometry. Best for blocky level "
+            "geometry.\n"
+            "Manifold: volumetric and precise, but needs closed watertight meshes and treats inverted "
+            "normals as a shape's complement."));
+        m_csgSolverCombo->addItem(tr("Manifold"), static_cast<int>(Api::CsgSolver::Manifold));
+        m_csgSolverCombo->addItem(tr("Fast (BSP)"), static_cast<int>(Api::CsgSolver::Fast));
+        layout->addRow(tr("Solver"), m_csgSolverCombo);
+
         m_booleanSourceCombo = new QComboBox();
         m_booleanSourceCombo->setToolTip(
             tr("Another entity with a White Box component to use as the boolean operand."));
@@ -952,6 +971,18 @@ namespace WhiteBox
         m_applyBooleanButton = new QPushButton(tr("Apply Boolean"));
         layout->addRow(m_applyBooleanButton);
 
+        connect(
+            m_csgSolverCombo, QOverload<int>::of(&QComboBox::currentIndexChanged), this,
+            [this](int index)
+            {
+                if (m_updating || index < 0)
+                {
+                    return;
+                }
+                const auto solver = static_cast<Api::CsgSolver>(m_csgSolverCombo->itemData(index).toInt());
+                ModifyComponent(
+                    "White Box CSG Solver", [solver](EditorWhiteBoxComponent* c) { c->SetCsgSolver(solver); });
+            });
         connect(
             m_booleanSourceCombo, QOverload<int>::of(&QComboBox::currentIndexChanged), this,
             [this](int index)
@@ -1320,6 +1351,7 @@ namespace WhiteBox
                 m_layerCombineCombo->findData(static_cast<int>(meta.m_combineMode)));
             m_layerInvertNormals->setChecked(meta.m_invertNormals);
             m_layerEdgesOnly->setChecked(meta.m_edgesOnly);
+            m_layerCollision->setChecked(meta.m_collision);
             const AZ::Vector3 vecs[3] = { meta.m_position, meta.m_rotation, meta.m_scale };
             QDoubleSpinBox* (*rows[3])[3] = { &m_layerPos, &m_layerRot, &m_layerScale };
             for (int v = 0; v < 3; ++v)
@@ -1462,6 +1494,8 @@ namespace WhiteBox
             m_clearCubesButton->setEnabled(true);
 
             // Boolean.
+            m_csgSolverCombo->setCurrentIndex(
+                m_csgSolverCombo->findData(static_cast<int>(component->GetCsgSolver())));
             const AZ::EntityId sourceId = component->GetBooleanSourceEntity();
             const int sourceIndex =
                 m_booleanSourceCombo->findData(QVariant(static_cast<qulonglong>(static_cast<AZ::u64>(sourceId))));

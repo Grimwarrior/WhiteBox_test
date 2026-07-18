@@ -800,7 +800,7 @@ namespace WhiteBox
 
         bool ApplyMeshBoolean(
             WhiteBoxMesh& whiteBox, const WhiteBoxMesh& operand, const AZ::Transform& operandTransform,
-            const BooleanOperation operation)
+            const BooleanOperation operation, const CsgSolver solver)
         {
             const auto csgOperation = [operation]
             {
@@ -821,9 +821,22 @@ namespace WhiteBox
 
             Csg::TriangleMesh result;
 
-            if (!Csg::MeshBoolean(meshA, meshB, csgOperation, result))
+            // Choose the solver. The Fast (BSP) solver is face-based, so inward-facing shells
+            // (rooms/corridors) and inverted-normal operands compose the way Blender's "Fast" solver
+            // does, rather than being treated as volumetric complements like Manifold. Whichever
+            // solver is selected, fall back to the other if it yields an empty result, so a
+            // degenerate case one backend cannot handle is not silently dropped.
+            const bool preferBsp = (solver == CsgSolver::Fast);
+            const bool primaryOk = preferBsp ? Csg::MeshBooleanBsp(meshA, meshB, csgOperation, result)
+                                             : Csg::MeshBoolean(meshA, meshB, csgOperation, result);
+            if (!primaryOk)
             {
-                return false;
+                const bool fallbackOk = preferBsp ? Csg::MeshBoolean(meshA, meshB, csgOperation, result)
+                                                  : Csg::MeshBooleanBsp(meshA, meshB, csgOperation, result);
+                if (!fallbackOk)
+                {
+                    return false;
+                }
             }
             Detail::RebuildFromTriangleMesh(whiteBox, result);
 

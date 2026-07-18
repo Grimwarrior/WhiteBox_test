@@ -45,7 +45,7 @@ namespace WhiteBox
         // same cube size (which regenerates the surface from occupancy) restores carved cubes.
         WhiteBoxMesh* grid = m_gridMesh.get();
         return grid != nullptr && !Api::MeshFaceHandles(*grid).empty() &&
-            Api::ApplyMeshBoolean(*grid, cutter, cutterTransform, Api::BooleanOperation::Subtraction);
+            Api::ApplyMeshBoolean(*grid, cutter, cutterTransform, Api::BooleanOperation::Subtraction, m_csgSolver);
     }
 
     void EditorWhiteBoxComponent::MapMeshToActiveLayerSpace(WhiteBoxMesh& mesh, const size_t firstVertexIndex)
@@ -143,7 +143,7 @@ namespace WhiteBox
             // Union the gesture solid into the freeform; when they don't intersect (or the
             // freeform is empty / non-manifold) fall back to appending it as its own island.
             if (Api::MeshFaceHandles(*freeform).empty() ||
-                !Api::ApplyMeshBoolean(*freeform, *solid, identity, Api::BooleanOperation::Union))
+                !Api::ApplyMeshBoolean(*freeform, *solid, identity, Api::BooleanOperation::Union, m_csgSolver))
             {
                 AppendMesh(*freeform, *solid);
             }
@@ -157,7 +157,7 @@ namespace WhiteBox
             // Carve: subtract the gesture volume. This cuts stamped cubes AND any freeform
             // geometry inside the cells - by design (the cells mark a volume, not "cubes").
             if (!Api::MeshFaceHandles(*freeform).empty() &&
-                !Api::ApplyMeshBoolean(*freeform, *solid, identity, Api::BooleanOperation::Subtraction))
+                !Api::ApplyMeshBoolean(*freeform, *solid, identity, Api::BooleanOperation::Subtraction, m_csgSolver))
             {
                 // Manifold reports an EMPTY result (the cut removes everything) as failure and
                 // leaves the mesh untouched - e.g. carving the cell of the only cube. Detect
@@ -225,7 +225,8 @@ namespace WhiteBox
                 Api::CalculateNormals(*cutter);
                 Api::CalculatePlanarUVs(*cutter);
                 if (Api::ApplyMeshBoolean(
-                        *freeform, *cutter, AZ::Transform::CreateIdentity(), Api::BooleanOperation::Subtraction))
+                        *freeform, *cutter, AZ::Transform::CreateIdentity(), Api::BooleanOperation::Subtraction,
+                        m_csgSolver))
                 {
                     Api::CalculateNormals(*freeform);
                     Api::CalculatePlanarUVs(*freeform);

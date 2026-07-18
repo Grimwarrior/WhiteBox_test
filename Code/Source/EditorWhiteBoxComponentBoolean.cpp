@@ -79,7 +79,7 @@ namespace WhiteBox
 
         AzToolsFramework::ScopedUndoBatch undoBatch("White Box Boolean");
 
-        if (!Api::ApplyMeshBoolean(*targetMesh, *sourceMesh, operandTransform, m_boolean.m_operation))
+        if (!Api::ApplyMeshBoolean(*targetMesh, *sourceMesh, operandTransform, m_boolean.m_operation, m_csgSolver))
         {
             AZ_Warning(
                 "EditorWhiteBoxComponent", false,
@@ -129,7 +129,7 @@ namespace WhiteBox
         return m_displayMesh.get();
     }
 
-    Api::WhiteBoxMeshPtr EditorWhiteBoxComponent::EvaluateBooleanMesh()
+    Api::WhiteBoxMeshPtr EditorWhiteBoxComponent::EvaluateBooleanMesh(bool physicsPass)
     {
         if (!m_boolean.m_sourceEntity.IsValid() || m_boolean.m_sourceEntity == GetEntityId())
         {
@@ -176,7 +176,8 @@ namespace WhiteBox
         }
         else
         {
-            evaluated = BuildCombined(baseMesh); // full base combined (no live boolean -> no recursion)
+            // Pass the physicsPass flag down to BuildCombined!
+            evaluated = BuildCombined(baseMesh, physicsPass); // full base combined (no live boolean -> no recursion)
             if (!evaluated)
             {
                 evaluated = Api::CloneMesh(*baseMesh);
@@ -186,7 +187,7 @@ namespace WhiteBox
         {
             return nullptr;
         }
-        if (Api::ApplyMeshBoolean(*evaluated, *sourceMesh, operandTransform, m_boolean.m_operation))
+        if (Api::ApplyMeshBoolean(*evaluated, *sourceMesh, operandTransform, m_boolean.m_operation, m_csgSolver))
         {
             Api::CalculateNormals(*evaluated);
             Api::CalculatePlanarUVs(*evaluated);
@@ -204,7 +205,8 @@ namespace WhiteBox
         // only affects what EvaluatedMesh() returns (what is displayed / used by the edit-time
         // collider); the game entity always receives both variants when a source is present.
         m_displayMesh = EvaluateBooleanMesh();
-
+        m_physicsDisplayMesh = EvaluateBooleanMesh(true); // Physics pass
+        
         // The game-mode bake caches (m_bakedBaseRenderData / m_bakedBooleanRenderData) each cost a
         // FULL recombine of every layer, so computing them inline here made every edit (and every
         // frame of a live-boolean drag) pay for the game-mode bake. Recompute them debounced on
@@ -221,15 +223,24 @@ namespace WhiteBox
         // base (all visible layers, grids and transforms) so the bake matches the editor view.
         if (WhiteBoxMesh* baseMesh = GetWhiteBoxMesh())
         {
-            if (PerLayerRenderActive())
-            {
+            // --- VISUAL BAKE ---
+            if (PerLayerRenderActive()) {
                 m_bakedBaseRenderData = BuildColoredRenderData(baseMesh);
-            }
-            else
-            {
-                const Api::WhiteBoxMeshPtr combined = BuildCombined(baseMesh);
+            } else {
+                const Api::WhiteBoxMeshPtr combined = BuildCombined(baseMesh, false);
                 m_bakedBaseRenderData = CreateWhiteBoxRenderData(combined ? *combined : *baseMesh, m_material);
             }
+
+            // --- PHYSICS BAKE (ADD THIS) ---
+            // Physics doesn't care about per-layer vertex colors, just raw geometry without collision=false layers.
+            // BuildCombined(physicsPass=true) never returns null, so an empty result genuinely means "no
+            // collidable layers" (collision disabled) rather than "fall back to the full base mesh".
+            const Api::WhiteBoxMeshPtr physicsCombined = BuildCombined(baseMesh, true);
+            m_bakedPhysicsBaseRenderData =
+                physicsCombined ? CreateWhiteBoxRenderData(*physicsCombined, m_material) : WhiteBoxRenderData{};
+            // Mark that the physics geometry has been baked (even when empty) so the game-mode build can
+            // trust an empty result as "collision off" instead of falling back to the full visual mesh.
+            m_physicsBaked = true;
         }
 
         // Cache the boolean-evaluated render data (serialized) so the game-mode bake can supply the
@@ -249,11 +260,20 @@ namespace WhiteBox
                 m_bakedBooleanRenderData =
                     CreateWhiteBoxRenderData(combined ? *combined : *m_displayMesh, m_material);
             }
+            // --- PHYSICS BAKE (ADD THIS) ---
+            if (m_physicsDisplayMesh)
+            {
+                const Api::WhiteBoxMeshPtr physicsCombined =
+                    m_boolean.m_affectActiveOnly ? BuildCombined(m_physicsDisplayMesh.get(), true) : nullptr;
+                m_bakedPhysicsBooleanRenderData =
+                    CreateWhiteBoxRenderData(physicsCombined ? *physicsCombined : *m_physicsDisplayMesh, m_material);
+            }
         }
         else if (!m_boolean.m_sourceEntity.IsValid() || m_boolean.m_sourceEntity == GetEntityId())
         {
             // no boolean source -> there is no boolean variant; clear the cache
             m_bakedBooleanRenderData = WhiteBoxRenderData{};
+            m_bakedPhysicsBooleanRenderData = WhiteBoxRenderData{};
         }
         // else: a source is set but evaluation transiently failed (e.g. the source entity is
         // not active yet at load time). Keep any previously cached boolean render data.

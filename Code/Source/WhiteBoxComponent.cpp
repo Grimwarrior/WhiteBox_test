@@ -27,11 +27,14 @@ namespace WhiteBox
         if (auto serializeContext = azrtti_cast<AZ::SerializeContext*>(context))
         {
             serializeContext->Class<WhiteBoxComponent, AZ::Component>()
-                ->Version(2)
+                ->Version(3)
                 ->Field("WhiteBoxRenderData", &WhiteBoxComponent::m_whiteBoxRenderData)
                 ->Field("BooleanRenderData", &WhiteBoxComponent::m_booleanRenderData)
                 ->Field("HasBooleanMesh", &WhiteBoxComponent::m_hasBooleanMesh)
-                ->Field("LiveBoolean", &WhiteBoxComponent::m_liveBoolean);
+                ->Field("LiveBoolean", &WhiteBoxComponent::m_liveBoolean)
+                ->Field("PhysicsRenderData", &WhiteBoxComponent::m_physicsRenderData)
+                ->Field("BooleanPhysicsRenderData", &WhiteBoxComponent::m_booleanPhysicsRenderData)
+                ->Field("HasPhysicsData", &WhiteBoxComponent::m_hasPhysicsData);
         }
 
         // Reflect the request bus to the BehaviorContext here (rather than in the Editor-only
@@ -161,4 +164,42 @@ namespace WhiteBox
     {
         return m_renderMesh->IsVisible();
     }
+
+    // Implement the setters:
+    void WhiteBoxComponent::SetPhysicsGeometryData(const WhiteBoxRenderData& physicsData)
+    {
+        m_physicsRenderData = physicsData;
+        // Mark that authoritative physics data was supplied. Even an empty result is meaningful
+        // (collision disabled for every layer) and must not fall back to the visual geometry.
+        m_hasPhysicsData = true;
+    }
+
+    void WhiteBoxComponent::SetBooleanPhysicsGeometryData(const WhiteBoxRenderData& physicsData)
+    {
+        m_booleanPhysicsRenderData = physicsData;
+    }
+
+    // Implement the getter for the physics collider:
+    const WhiteBoxRenderData& WhiteBoxComponent::GetPhysicsRenderData() const
+    {
+        // If the live boolean is toggled ON and we have valid boolean physics data, use it.
+        if (m_liveBoolean && m_hasBooleanMesh && !m_booleanPhysicsRenderData.m_faces.empty())
+        {
+            return m_booleanPhysicsRenderData;
+        }
+
+        // When authoritative physics data was baked, it is the source of truth - return it even
+        // when empty (collision disabled for every layer). Falling back to the visual geometry
+        // here is what made a disabled collider's debug wireframe reappear.
+        if (m_hasPhysicsData)
+        {
+            return m_physicsRenderData;
+        }
+
+        // Failsafe: only legacy data (saved before physics geometry was baked) reaches here -
+        // fall back to the visual geometry. ActiveRenderData() handles base vs boolean automatically.
+        return ActiveRenderData();
+    }
+
+
 } // namespace WhiteBox

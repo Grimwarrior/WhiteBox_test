@@ -555,16 +555,16 @@ namespace WhiteBox
             {
             case LayerCombineMode::Union:
                 if (Api::MeshFaceHandles(*acc).empty() ||
-                    !Api::ApplyMeshBoolean(*acc, *mesh, identity, Api::BooleanOperation::Union))
+                    !Api::ApplyMeshBoolean(*acc, *mesh, identity, Api::BooleanOperation::Union, m_csgSolver))
                 {
                     AppendMesh(*acc, *mesh);
                 }
                 break;
             case LayerCombineMode::Subtract:
-                Api::ApplyMeshBoolean(*acc, *mesh, identity, Api::BooleanOperation::Subtraction);
+                Api::ApplyMeshBoolean(*acc, *mesh, identity, Api::BooleanOperation::Subtraction, m_csgSolver);
                 break;
             case LayerCombineMode::Intersect:
-                Api::ApplyMeshBoolean(*acc, *mesh, identity, Api::BooleanOperation::Intersection);
+                Api::ApplyMeshBoolean(*acc, *mesh, identity, Api::BooleanOperation::Intersection, m_csgSolver);
                 break;
             case LayerCombineMode::Separate:
             default:
@@ -769,14 +769,20 @@ namespace WhiteBox
         }
     }
 
+    // void EditorWhiteBoxComponent::RebuildPhysicsMesh()
+    // {
+    //     AZ_PROFILE_FUNCTION(AzToolsFramework);
+
+    //     EditorWhiteBoxColliderRequestBus::Event(
+    //         GetEntityId(), &EditorWhiteBoxColliderRequests::CreatePhysics, *EvaluatedMesh());
+    // }
     void EditorWhiteBoxComponent::RebuildPhysicsMesh()
     {
         AZ_PROFILE_FUNCTION(AzToolsFramework);
 
         EditorWhiteBoxColliderRequestBus::Event(
-            GetEntityId(), &EditorWhiteBoxColliderRequests::CreatePhysics, *EvaluatedMesh());
+            GetEntityId(), &EditorWhiteBoxColliderRequests::CreatePhysics, *GetPhysicsMesh()); // <-- CHANGED HERE
     }
-
     AZ::Aabb EditorWhiteBoxComponent::GetEditorSelectionBoundsViewport(
         [[maybe_unused]] const AzFramework::ViewportInfo& viewportInfo)
     {

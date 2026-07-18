@@ -419,7 +419,7 @@ namespace WhiteBox
         if (auto serializeContext = azrtti_cast<AZ::SerializeContext*>(context))
         {
             serializeContext->Class<EditorWhiteBoxComponent, EditorComponentBase>()
-                ->Version(3, &EditorWhiteBoxVersionConverter)
+                ->Version(5, &EditorWhiteBoxVersionConverter)
                 ->Field("WhiteBoxData", &EditorWhiteBoxComponent::m_whiteBoxData)
                 ->Field("Layers", &EditorWhiteBoxComponent::m_layers)
                 ->Field("ActiveLayer", &EditorWhiteBoxComponent::m_activeLayerIndex)
@@ -436,8 +436,16 @@ namespace WhiteBox
                 ->Field("MaterialOverride", &EditorWhiteBoxComponent::m_materialOverrideAssetId)
                 ->Field("Voxel", &EditorWhiteBoxComponent::m_voxel)
                 ->Field("Boolean", &EditorWhiteBoxComponent::m_boolean)
+                ->Field("CsgSolver", &EditorWhiteBoxComponent::m_csgSolver)
                 ->Field("BakedBooleanRenderData", &EditorWhiteBoxComponent::m_bakedBooleanRenderData)
-                ->Field("BakedBaseRenderData", &EditorWhiteBoxComponent::m_bakedBaseRenderData);
+                ->Field("BakedBaseRenderData", &EditorWhiteBoxComponent::m_bakedBaseRenderData)
+                // Persist the collision-filtered physics bakes too, so the game-mode / asset-processor
+                // build (which runs on a clone that is never live-edited) has the FILTERED physics
+                // geometry available - otherwise it falls back to the full visual mesh and the runtime
+                // collider wireframe shows layers whose Collision flag is off.
+                ->Field("BakedPhysicsBaseRenderData", &EditorWhiteBoxComponent::m_bakedPhysicsBaseRenderData)
+                ->Field("BakedPhysicsBooleanRenderData", &EditorWhiteBoxComponent::m_bakedPhysicsBooleanRenderData)
+                ->Field("PhysicsBaked", &EditorWhiteBoxComponent::m_physicsBaked);
 
             if (AZ::EditContext* editContext = serializeContext->GetEditContext())
             {
@@ -566,6 +574,16 @@ namespace WhiteBox
         UpdateBooleanSourceListener();
         EvaluateLiveBoolean();
         RebuildCombinedMesh(); // fold in the stamp/grid layer so it renders on load
+
+        // Ensure the collision-filtered physics bake exists on load. Levels saved before this data
+        // was persisted (m_physicsBaked == false) would otherwise fall back to the full visual mesh
+        // for physics in game mode, making the runtime collider wireframe show non-collidable layers.
+        // Baking here means entering game mode uses the filtered collider geometry immediately, and
+        // saving the level persists it for the exported / asset-processor build.
+        if (!m_physicsBaked)
+        {
+            RebuildBakedRenderData();
+        }
 
         if (AzToolsFramework::IsEntityVisible(entityId))
         {
@@ -722,6 +740,24 @@ namespace WhiteBox
             whiteBoxComponent->GenerateWhiteBoxMesh(m_renderData);
         }
 
+        // Hand the runtime the BAKED physics render data (used only for the "Draw Collider"
+        // debug wireframe; the real body is the cooked collider config). This data already
+        // honours each layer's Collision flag - an empty result means "no collision", so it
+        // must NOT fall back to the full visual geometry (m_renderData), which is exactly what
+        // made the runtime collider wireframe show non-collidable layers. m_physicsBaked (now
+        // serialized) is true whenever the filtered physics geometry has been baked, so it is
+        // trustworthy even on the clone/asset-processor build; an empty bake then correctly means
+        // "collision off" rather than "missing". Only genuinely legacy data (m_physicsBaked false)
+        // falls back to the visual geometry.
+        if (m_physicsBaked)
+        {
+            whiteBoxComponent->SetPhysicsGeometryData(m_bakedPhysicsBaseRenderData);
+        }
+        else
+        {
+            // Legacy data with no physics bake: fall back to the visual geometry.
+            whiteBoxComponent->SetPhysicsGeometryData(m_renderData);
+        }
         // Also bake the boolean-evaluated variant. The CSG boolean can only be computed in
         // the Editor (the Manifold/OpenMesh backed Tool API is not linked into the runtime),
         // so we pre-bake both variants here. Use the cached display mesh (evaluated during
@@ -755,6 +791,10 @@ namespace WhiteBox
         {
             whiteBoxComponent->SetBooleanRenderData(booleanRenderData);
             whiteBoxComponent->SetLiveBooleanState(true, m_boolean.m_live);
+
+            if (!m_bakedPhysicsBooleanRenderData.m_faces.empty()) {
+                whiteBoxComponent->SetBooleanPhysicsGeometryData(m_bakedPhysicsBooleanRenderData);
+            }
         }
         else
         {

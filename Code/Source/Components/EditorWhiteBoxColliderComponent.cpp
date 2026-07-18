@@ -111,9 +111,10 @@ namespace WhiteBox
         // can't use buses here as EditorWhiteBoxComponentBus is addressed using component id. How do get component id?
         if (auto whiteBoxComponent = GetEntity()->FindComponent<WhiteBox::EditorWhiteBoxComponent>())
         {
-            // use the evaluated mesh so the edit-time collider matches the (possibly
-            // live-boolean) geometry that is rendered.
-            if (auto whiteBoxMesh = whiteBoxComponent->GetEvaluatedWhiteBoxMesh())
+            // use the collision-filtered evaluated mesh so the edit-time collider matches the
+            // (possibly live-boolean) geometry that is rendered AND honours each layer's Collision
+            // flag. CreatePhysics tears down the body when this comes back empty (collision off).
+            if (auto whiteBoxMesh = whiteBoxComponent->GetPhysicsFilteredMesh())
             {
                 CreatePhysics(*whiteBoxMesh);
             }
@@ -147,12 +148,32 @@ namespace WhiteBox
         {
             liveBoolean = whiteBoxComponent->GetLiveBoolean();
 
-            if (auto* baseMesh = whiteBoxComponent->GetWhiteBoxMesh())
+            // Re-cook the base from the COLLISION-FILTERED mesh (layers with Collision off removed)
+            // to pick up the latest edits. Use the STRICT accessor: it returns the cached filtered
+            // mesh or null, and NEVER the unfiltered evaluated mesh, so a clone/asset-processor build
+            // (where the cached mesh is not built) keeps the serialized filtered cook instead of
+            // silently cooking the full geometry. No CSG runs here (it must not, in the game build).
+            // When the live boolean is on, the displayed mesh is the CUT result, so we do NOT re-cook
+            // the base here - the true (uncut) filtered base was already cooked into
+            // m_meshShapeConfiguration by the edit-time CookColliderVariants, so keep it. When the
+            // filtered mesh is present but empty (collision disabled for every layer), clear the base
+            // config so no collider is created in game mode.
+            if (!liveBoolean)
             {
-                Physics::CookedMeshShapeConfiguration freshBase;
-                if (CookToConfiguration(*baseMesh, freshBase, whiteBoxComponent))
+                if (WhiteBoxMesh* baseMesh = whiteBoxComponent->GetPhysicsCombinedMeshStrict())
                 {
-                    baseConfiguration = freshBase;
+                    if (Api::MeshFaceCount(*baseMesh) == 0)
+                    {
+                        baseConfiguration = Physics::CookedMeshShapeConfiguration{}; // collision disabled
+                    }
+                    else
+                    {
+                        Physics::CookedMeshShapeConfiguration freshBase;
+                        if (CookToConfiguration(*baseMesh, freshBase, whiteBoxComponent))
+                        {
+                            baseConfiguration = freshBase;
+                        }
+                    }
                 }
             }
         }
@@ -170,9 +191,16 @@ namespace WhiteBox
 
             // Bake the actual cooked collider geometry so the runtime "Draw Collider" wireframe shows
             // the real physics shape (the coplanar-merged mesh) instead of the per-cube render mesh.
+            // Use the STRICT collision-filtered mesh: it is either the filtered geometry or null,
+            // never the UNFILTERED evaluated mesh. That last fallback was the bug - on the game/asset-
+            // processor build path the cached mesh is not built, so GetPhysicsFilteredMesh returned the
+            // full visual mesh and the wireframe showed every layer even though the real (serialized)
+            // collider was correctly filtered. When the strict mesh is unavailable we leave the debug
+            // mesh empty; the runtime then falls back to the serialized, filtered physics render data.
             if (auto* whiteBoxComponent = GetEntity()->FindComponent<WhiteBox::EditorWhiteBoxComponent>())
             {
-                if (auto* mesh = whiteBoxComponent->GetEvaluatedWhiteBoxMesh())
+                if (auto* mesh = whiteBoxComponent->GetPhysicsCombinedMeshStrict();
+                    mesh != nullptr && Api::MeshFaceCount(*mesh) > 0)
                 {
                     AZStd::vector<AZ::Vector3> debugVertices;
                     AZStd::vector<AZ::u32> debugIndices;
@@ -195,7 +223,10 @@ namespace WhiteBox
         {
             if (auto* whiteBoxComponent = GetEntity()->FindComponent<EditorWhiteBoxComponent>())
             {
-                if (auto* mesh = whiteBoxComponent->GetEvaluatedWhiteBoxMesh())
+                // Re-cook from the collision-filtered mesh so a scale change does not resurrect a
+                // collider for layers whose Collision flag is off. CreatePhysics tears the body
+                // down if this is empty (collision disabled).
+                if (auto* mesh = whiteBoxComponent->GetPhysicsFilteredMesh())
                 {
                     CreatePhysics(*mesh);
                     return;
@@ -249,29 +280,45 @@ namespace WhiteBox
             return;
         }
 
-        // Base mesh (used when the live-boolean is off). Cook the EVALUATED mesh, not the raw
-        // freeform: the stamped cubes live in the grid meshes that are folded into the evaluated
-        // result (and it reflects carves and every visible layer), so the freeform alone omits them.
-        // CookToConfiguration coplanar-merges whatever mesh it is given. When the live-boolean is on
-        // the evaluated mesh is the cut result, so fall back to the freeform for the true base there.
-        WhiteBoxMesh* baseMesh = whiteBoxComponent->GetLiveBoolean() ? whiteBoxComponent->GetWhiteBoxMesh()
-                                                                     : whiteBoxComponent->GetEvaluatedWhiteBoxMesh();
-        if (baseMesh != nullptr)
+        // Base mesh (used when the live-boolean is off). Cook the COLLISION-FILTERED evaluated
+        // mesh, not the raw freeform: the stamped cubes live in the grid meshes that are folded
+        // into the evaluated result (and it reflects carves and every visible layer), so the
+        // freeform alone omits them, and the filter drops layers whose Collision flag is off.
+        // CookToConfiguration coplanar-merges whatever mesh it is given. When the live-boolean is
+        // on the displayed mesh is the cut result, so build the true (uncut) filtered base there.
+        Api::WhiteBoxMeshPtr ownedBase; // keeps a freshly built base alive for the cook below
+        WhiteBoxMesh* baseMesh = nullptr;
+        if (whiteBoxComponent->GetLiveBoolean())
+        {
+            ownedBase = whiteBoxComponent->BuildPhysicsFilteredBaseMesh();
+            baseMesh = ownedBase ? ownedBase.get() : whiteBoxComponent->GetWhiteBoxMesh();
+        }
+        else
+        {
+            baseMesh = whiteBoxComponent->GetPhysicsFilteredMesh();
+        }
+        // Only cook when there is collidable geometry. If every visible layer has Collision off
+        // the filtered mesh is empty, leaving m_meshShapeConfiguration empty -> no base collider.
+        if (baseMesh != nullptr && Api::MeshFaceCount(*baseMesh) > 0)
         {
             CookToConfiguration(*baseMesh, m_meshShapeConfiguration, whiteBoxComponent);
         }
 
         // boolean-evaluated mesh (used when the live-boolean is on); empty if none. Use the
-        // White Box component's cached display mesh - it was just re-evaluated by the mesh
-        // rebuild that drives this call, so it is current, and reading it needs no boolean
-        // source lookup (which is what fails during the game-mode build).
-        if (auto* displayMesh = whiteBoxComponent->GetLiveBooleanDisplayMesh())
+        // White Box component's cached COLLISION-FILTERED display mesh - it was just re-evaluated
+        // by the mesh rebuild that drives this call, so it is current, and reading it needs no
+        // boolean source lookup (which is what fails during the game-mode build).
+        if (auto* displayMesh = whiteBoxComponent->GetPhysicsFilteredBooleanMesh())
         {
             // Pass the White Box component so the boolean variant also uses the greedy (merged) voxel
             // collider for any stamped cubes, instead of a heavy per-cube triangulation. The live
             // boolean only cuts the freeform mesh, so the cubes are unaffected and cook identically to
             // the base variant.
-            m_hasBooleanMesh = CookToConfiguration(*displayMesh, m_booleanMeshShapeConfiguration, whiteBoxComponent);
+            if (Api::MeshFaceCount(*displayMesh) > 0)
+            {
+                m_hasBooleanMesh =
+                    CookToConfiguration(*displayMesh, m_booleanMeshShapeConfiguration, whiteBoxComponent);
+            }
         }
     }
 
@@ -279,6 +326,15 @@ namespace WhiteBox
     {
         if (Api::MeshFaceCount(whiteBox) == 0)
         {
+            // No collidable geometry (e.g. every visible layer has its Collision flag off).
+            // Tear down any existing body and clear the cooked/debug data so disabling collision
+            // actually removes the collider instead of leaving the previous body alive.
+            DestroyPhysics();
+            m_debugVertices.clear();
+            m_debugIndices.clear();
+            m_meshShapeConfiguration = Physics::CookedMeshShapeConfiguration{};
+            m_booleanMeshShapeConfiguration = Physics::CookedMeshShapeConfiguration{};
+            m_hasBooleanMesh = false;
             return;
         }
 
@@ -306,7 +362,10 @@ namespace WhiteBox
 
         if (viewportConfiguration.GetCookedMeshData().empty())
         {
-            return; // nothing cooked (e.g. physics backend not ready yet)
+            // Nothing cooked - either the physics backend was not ready, or the selected variant
+            // has no collidable geometry. Remove any stale body so the collider does not linger.
+            DestroyPhysics();
+            return;
         }
 
         // apply the entity's uniform scale to the cooked shape (the mesh is cooked unscaled

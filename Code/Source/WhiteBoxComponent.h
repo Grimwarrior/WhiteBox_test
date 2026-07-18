@@ -38,6 +38,10 @@ namespace WhiteBox
         WhiteBoxComponent& operator=(WhiteBoxComponent&&) = default;
         ~WhiteBoxComponent();
 
+        void SetPhysicsGeometryData(const WhiteBoxRenderData& physicsData);
+        void SetBooleanPhysicsGeometryData(const WhiteBoxRenderData& physicsData);
+        // Add a getter for the collider to use:
+        const WhiteBoxRenderData& GetPhysicsRenderData() const;
         // WhiteBoxComponentRequestBus ...
         bool WhiteBoxIsVisible() const override;
         void SetLiveBoolean(bool enabled) override;
@@ -76,6 +80,14 @@ namespace WhiteBox
 
         WhiteBoxRenderData m_whiteBoxRenderData; //!< Base White Box render data (live-boolean disabled).
         WhiteBoxRenderData m_booleanRenderData; //!< Pre-baked boolean-evaluated render data (live-boolean enabled).
+        WhiteBoxRenderData m_physicsRenderData;
+        WhiteBoxRenderData m_booleanPhysicsRenderData;
+        //! Whether authoritative physics geometry was baked for this entity (set once the editor
+        //! hands over physics data, even when that data is empty because collision is disabled).
+        //! Distinguishes "collision intentionally off" (empty + flag set) from "legacy data with
+        //! no physics bake" (flag clear) so the debug wireframe never falls back to the full
+        //! visual geometry for a deliberately-disabled collider.
+        bool m_hasPhysicsData = false;
         bool m_hasBooleanMesh = false; //!< Whether a boolean-evaluated variant was baked.
         bool m_liveBoolean = false; //!< Whether the boolean-evaluated variant is currently selected.
         AZStd::unique_ptr<RenderMeshInterface> m_renderMesh; //!< The render mesh to use for White Box rendering.

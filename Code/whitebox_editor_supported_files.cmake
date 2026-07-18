@@ -44,6 +44,7 @@ set(FILES
     Source/Core/WhiteBoxCsg.h
     Source/Core/WhiteBoxCsgCore.cpp
     Source/Core/WhiteBoxCsgCore.h
+    Source/Core/WhiteBoxCsgBsp.cpp
     Source/Components/EditorWhiteBoxColliderComponent.cpp
     Source/Components/EditorWhiteBoxColliderComponent.h
     Source/Util/WhiteBoxTextureUtil.cpp

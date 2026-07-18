@@ -154,7 +154,7 @@ namespace WhiteBox
         //! flag, and return it (or nullptr if no boolean source is set or evaluation
         //! fails). Used to bake the "with boolean" variant when building the game entity.
         //! @note Uses the CSG API which is only available in the Editor.
-        Api::WhiteBoxMeshPtr EvaluateBooleanMesh();
+        Api::WhiteBoxMeshPtr EvaluateBooleanMesh(bool physicsPass = false);
         //! The cached live-boolean result evaluated during editing (nullptr if the live
         //! boolean is off or no result). Unlike EvaluateBooleanMesh this does not touch the
         //! boolean source entity, so it is safe to read during the game-mode / spawnable
@@ -162,6 +162,28 @@ namespace WhiteBox
         WhiteBoxMesh* GetLiveBooleanDisplayMesh();
         //! Whether the live (non-destructive) boolean is currently enabled.
         bool GetLiveBoolean() const { return m_boolean.m_live; }
+        //! Collision-filtered counterparts of the mesh accessors used by the collider. These
+        //! drop every layer whose per-layer "Collision" flag is off, so the cooked physics
+        //! shape matches only the layers the user marked as collidable. Without cooking from
+        //! these, the collider bakes the full (visual) geometry and the Collision toggle has no
+        //! effect on the actual physics body.
+        //! Current displayed variant (base, or the live-boolean cut result when live is on),
+        //! with non-collidable layers removed. May be empty (0 faces) when collision is disabled
+        //! for every visible layer, or null on a clone where no live mesh exists.
+        WhiteBoxMesh* GetPhysicsFilteredMesh() { return GetPhysicsMesh(); }
+        //! STRICT variant of GetPhysicsFilteredMesh: returns the cached collision-filtered mesh, or
+        //! NULL if it has not been built (e.g. during the game-entity / asset-processor build on a
+        //! clone). Unlike GetPhysicsFilteredMesh it never falls back to the UNFILTERED evaluated
+        //! mesh, so callers that must not resurrect non-collidable geometry (the game-entity cook
+        //! and its debug wireframe) can rely on it and fall back to serialized filtered data instead.
+        WhiteBoxMesh* GetPhysicsCombinedMeshStrict() { return m_physicsCombinedMesh.get(); }
+        //! The physics-filtered boolean-evaluated mesh (null when no boolean source is set).
+        WhiteBoxMesh* GetPhysicsFilteredBooleanMesh() { return m_physicsDisplayMesh.get(); }
+        //! Build the true (uncut) base collider mesh with non-collidable layers removed. Used
+        //! for the base variant when the live boolean is on (where the displayed mesh is the cut
+        //! result). Returns null on the single-active-identity-layer fast path (caller then uses
+        //! the raw base mesh) or an empty mesh when every collidable layer was filtered out.
+        Api::WhiteBoxMeshPtr BuildPhysicsFilteredBaseMesh() { return BuildCombined(GetWhiteBoxMesh(), true); }
         //! Enter this component's White Box edit (component) mode. Routes through the
         //! ComponentModeDelegate, which issues ComponentModeSystemRequests::BeginComponentMode
         //! with the correct builders (as an undoable ComponentModeCommand). The entity must be
@@ -178,6 +200,7 @@ namespace WhiteBox
         {
             AZStd::string m_name;
             bool m_visible = true;
+            bool m_collision = true;
             AZ::Vector3 m_tint = DefaultMaterialTint;
             LayerCombineMode m_combineMode = LayerCombineMode::Separate;
             bool m_invertNormals = false;
@@ -275,6 +298,7 @@ namespace WhiteBox
                 const WhiteBoxLayer& layer = m_layers[index];
                 meta.m_name = layer.m_name;
                 meta.m_visible = layer.m_visible;
+                meta.m_collision = layer.m_collision;
                 meta.m_tint = layer.m_tint;
                 meta.m_combineMode = layer.m_combineMode;
                 meta.m_invertNormals = layer.m_invertNormals;
@@ -294,6 +318,7 @@ namespace WhiteBox
             WhiteBoxLayer& layer = m_layers[index];
             layer.m_name = meta.m_name;
             layer.m_visible = meta.m_visible;
+            layer.m_collision = meta.m_collision;
             layer.m_tint = meta.m_tint;
             layer.m_combineMode = meta.m_combineMode;
             layer.m_invertNormals = meta.m_invertNormals;
@@ -334,6 +359,20 @@ namespace WhiteBox
         SourceAfterApply GetSourceAfterApply() const { return m_boolean.m_sourceAfterApply; }
         void SetSourceAfterApply(SourceAfterApply mode) { m_boolean.m_sourceAfterApply = mode; }
         void ApplyBoolean(); //!< One-shot CSG apply using the source entity's mesh.
+
+        // CSG solver selection (applies to every boolean this component runs: the per-layer combine
+        // modes and the entity boolean). Fast/BSP is face-based (brush-style) and handles inward
+        // shells + inverted normals; Manifold is the volumetric, precision-first backend.
+        Api::CsgSolver GetCsgSolver() const { return m_csgSolver; }
+        void SetCsgSolver(Api::CsgSolver solver)
+        {
+            if (m_csgSolver != solver)
+            {
+                m_csgSolver = solver;
+                m_layerRuntime.m_meshCache.clear(); // cached combined layers were built with the old solver
+                RebuildWhiteBox();                  // re-evaluate all booleans with the new solver
+            }
+        }
 
         // Mesh / entity operations.
         void AddCollision() { OnAddCollision(); }
@@ -430,6 +469,7 @@ namespace WhiteBox
             AZStd::string m_name = "Layer";
             AZ::u64 m_id = 0; //!< Stable unique id so the active/working layer survives list reordering.
             bool m_visible = true;
+            bool m_collision = true;
             AZ::Vector3 m_tint = DefaultMaterialTint; //!< Per-layer render tint (used when 'Use Global Tint' is off).
             LayerCombineMode m_combineMode = LayerCombineMode::Separate; //!< How this layer combines with the ones below it.
             bool m_invertNormals = false; //!< Flip this layer's winding (render + collision + selection) - non-destructive.
@@ -525,7 +565,8 @@ namespace WhiteBox
         //! (active from @p activeFreeform + grids + its transform, others from their stored data),
         //! CSG-accumulated in list order per each layer's combine mode. Null == the single-active
         //! identity/no-grid fast path (caller falls back to the raw freeform).
-        Api::WhiteBoxMeshPtr BuildCombined(WhiteBoxMesh* activeFreeform);
+        // Change the signature of BuildCombined to accept a physics filter:
+        Api::WhiteBoxMeshPtr BuildCombined(WhiteBoxMesh* activeFreeform, bool physicsPass = false);
         AZ::u64 AllocLayerId();                 //!< Hand out a fresh stable layer id.
         int IndexOfLayerId(AZ::u64 id) const;   //!< Index of the layer with @p id, or -1.
         AZ::u64 LayerSignature() const;         //!< Hash of the current layer id order + count.
@@ -621,6 +662,7 @@ namespace WhiteBox
         DrawShapeData m_drawShapeData; //!< Draw Shape tool settings (shape, sides and staircase options).
         VoxelData m_voxel;             //!< Stamp cell records + legacy grid streams.
         BooleanSettings m_boolean;     //!< Entity-boolean settings.
+        Api::CsgSolver m_csgSolver = Api::CsgSolver::Manifold; //!< CSG backend for all of this component's booleans.
         RebuildState m_rebuild;        //!< Runtime rebuild coalescing/debouncing.
         LayerRuntime m_layerRuntime;   //!< Runtime layer bookkeeping + display mesh cache.
         bool m_edgesOnly = false; //!< When set, hide the solid render mesh and draw only the mesh edges.
@@ -636,18 +678,31 @@ namespace WhiteBox
         //! Recompute m_bakedBaseRenderData / m_bakedBooleanRenderData (the game-mode bake caches).
         void RebuildBakedRenderData();
 
+        // Add a getter for the new physics mesh:
+        WhiteBoxMesh* GetPhysicsMesh();
+
         Api::WhiteBoxMeshPtr m_displayMesh; //!< Evaluated (base [op] source) mesh used for display while live.
+        Api::WhiteBoxMeshPtr m_physicsDisplayMesh;
         Api::WhiteBoxMeshPtr m_gridMesh; //!< Stamped cubes kept SEPARATE from the freeform mesh (appended for output).
         Api::WhiteBoxMeshPtr m_combinedMesh; //!< Non-serialized freeform+grid mesh used for render/collision/bounds/selection.
+        Api::WhiteBoxMeshPtr m_physicsCombinedMesh; // <-- ADD THIS
         //! Serialized boolean-evaluated render data. Persisted so the game-mode bake can supply
         //! the boolean render variant even when BuildGameEntity runs on a cloned entity (where
         //! the non-serialized m_displayMesh is null). Empty (no faces) when there is no boolean.
         WhiteBoxRenderData m_bakedBooleanRenderData;
+        WhiteBoxRenderData m_bakedPhysicsBooleanRenderData;
         //! Serialized copy of the true (uncut) base render data. Persisted so the game-mode bake
         //! always has the base variant even on a clone where GetWhiteBoxMesh() is null - otherwise
         //! the base would wrongly fall back to the evaluated (possibly cut) m_renderData.
         WhiteBoxRenderData m_bakedBaseRenderData;
-
+        WhiteBoxRenderData m_bakedPhysicsBaseRenderData;
+        //! True once the collision-filtered physics render data above has been baked at least once.
+        //! Serialized so the game-mode / asset-processor build (which runs on a clone that is never
+        //! live-edited) can tell "collision intentionally off -> empty physics bake" apart from
+        //! "legacy data with no physics bake". Without this the build falls back to the full visual
+        //! geometry for physics, which is why the runtime collider wireframe showed non-collidable
+        //! layers even though the real (filtered) collider was correct.
+        bool m_physicsBaked = false;
         //! Re-evaluates this component's live boolean when the source entity moves.
         struct BooleanSourceListener : public AZ::TransformNotificationBus::Handler
         {

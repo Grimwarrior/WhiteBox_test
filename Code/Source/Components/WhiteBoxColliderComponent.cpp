@@ -253,7 +253,7 @@ namespace WhiteBox
         {
             return;
         }
-        const WhiteBoxRenderData& renderData = whiteBoxComponent->GetActiveRenderData();
+        const WhiteBoxRenderData& renderData = whiteBoxComponent->GetPhysicsRenderData();
         for (const WhiteBoxFace& face : renderData.m_faces)
         {
             const AZ::Vector3 a = worldTransform.TransformPoint(face.m_v1.m_position);
