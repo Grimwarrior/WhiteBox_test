@@ -11,6 +11,7 @@
 #include "WhiteBoxColliderConfiguration.h"
 
 #include <AzCore/Component/Component.h>
+#include <AzCore/Component/NonUniformScaleBus.h>
 #include <AzCore/Component/TransformBus.h>
 #include <AzCore/Math/Vector3.h>
 #include <AzCore/std/containers/vector.h>
@@ -72,7 +73,7 @@ namespace WhiteBox
         void OnTransformChanged(const AZ::Transform& local, const AZ::Transform& world) override;
 
         // WhiteBoxColliderRequestBus ...
-        void BakeCollider(bool useBooleanMesh) override;
+        void BakeCollider(bool useBooleanMesh, bool forceRebuild = false) override;
 
         // EntityDebugDisplayEventBus ...
         void DisplayEntityViewport(
@@ -95,6 +96,10 @@ namespace WhiteBox
         AZStd::vector<AZ::Vector3> m_debugVertices; //!< Cooked collider geometry for the runtime wireframe overlay.
         AZStd::vector<AZ::u32> m_debugIndices; //!< Triangle indices into m_debugVertices for the wireframe overlay.
         float m_builtScale = 1.0f; //!< Uniform scale the current physics shape was built with.
+        AZ::Vector3 m_builtNonUniformScale = AZ::Vector3::CreateOne(); //!< Non-uniform scale folded into the current shape.
+        //! Rebuilds the body when the entity's Non-Uniform Scale component changes (the cooked
+        //! shape's Vector3 scale is set from it, so a change needs a body rebuild).
+        AZ::NonUniformScaleChangedEvent::Handler m_nonUniformScaleChangedHandler;
         Physics::ColliderConfiguration
             m_physicsColliderConfiguration; //!< General physics collider configuration information.
         AzPhysics::SimulatedBodyHandle m_simulatedBodyHandle = AzPhysics::InvalidSimulatedBodyHandle; //!< Simulated body to represent the White Box Mesh at runtime.

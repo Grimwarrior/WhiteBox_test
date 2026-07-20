@@ -5,6 +5,7 @@
 --     SetLiveBoolean(entityId, bool)
 --     GetLiveBoolean(entityId) -> bool
 --     BakeWhiteBox(entityId)            -- applies the current selection to render + collider
+--     BakeWhiteBox(entityId, true)      -- also rebakes the collider to the entity's current size
 --
 -- How to use:
 --   1. Add a "Lua Script" component to an entity that also has a White Box Component and a

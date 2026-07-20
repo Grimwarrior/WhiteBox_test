@@ -28,7 +28,7 @@ namespace WhiteBox
         if (auto* serializeContext = azrtti_cast<AZ::SerializeContext*>(context))
         {
             serializeContext->Class<WhiteBoxLayer>()
-                ->Version(1)
+                ->Version(2)
                 ->Field("Name", &WhiteBoxLayer::m_name)
                 ->Field("Id", &WhiteBoxLayer::m_id)
                 ->Field("Visible", &WhiteBoxLayer::m_visible)
@@ -40,6 +40,10 @@ namespace WhiteBox
                 ->Field("ParamHeight", &WhiteBoxLayer::m_paramHeight)
                 ->Field("ParamSides", &WhiteBoxLayer::m_paramSides)
                 ->Field("ParamSteps", &WhiteBoxLayer::m_paramSteps)
+                ->Field("ParamWallThickness", &WhiteBoxLayer::m_paramWallThickness)
+                ->Field("ParamCavityGap", &WhiteBoxLayer::m_paramCavityGap)
+                ->Field("ParamFloor", &WhiteBoxLayer::m_paramFloor)
+                ->Field("ParamCeiling", &WhiteBoxLayer::m_paramCeiling)
                 ->Field("Tint", &WhiteBoxLayer::m_tint)
                 ->Field("Combine", &WhiteBoxLayer::m_combineMode)
                 ->Field("InvertNormals", &WhiteBoxLayer::m_invertNormals)
@@ -273,6 +277,13 @@ namespace WhiteBox
         case DrawShapeType::Sphere:
             layer.m_paramSides = 16;
             break;
+        case DrawShapeType::Room:
+            // A 1x1x1 interior is uselessly small for a room; start with a walkable box.
+            layer.m_paramSides = 4;
+            layer.m_paramWidth = 4.0f;
+            layer.m_paramDepth = 4.0f;
+            layer.m_paramHeight = 3.0f;
+            break;
         default:
             layer.m_paramSides = 4;
             break;
@@ -280,7 +291,8 @@ namespace WhiteBox
 
         const Api::WhiteBoxMeshPtr mesh = BuildParametricShapeMesh(
             layer.m_paramShape, layer.m_paramWidth, layer.m_paramDepth, layer.m_paramHeight, layer.m_paramSides,
-            layer.m_paramSteps);
+            layer.m_paramSteps, layer.m_paramWallThickness, layer.m_paramCavityGap, layer.m_paramFloor,
+            layer.m_paramCeiling);
         Api::WriteMesh(*mesh, layer.m_freeformData);
 
         m_layers.push_back(AZStd::move(layer));
@@ -306,6 +318,10 @@ namespace WhiteBox
             params.m_height = layer.m_paramHeight;
             params.m_sides = layer.m_paramSides;
             params.m_steps = layer.m_paramSteps;
+            params.m_wallThickness = layer.m_paramWallThickness;
+            params.m_cavityGap = layer.m_paramCavityGap;
+            params.m_floor = layer.m_paramFloor;
+            params.m_ceiling = layer.m_paramCeiling;
         }
         return params;
     }
@@ -323,6 +339,10 @@ namespace WhiteBox
         layer.m_paramHeight = AZStd::max(params.m_height, 0.01f);
         layer.m_paramSides = AZStd::clamp(params.m_sides, 3, 128);
         layer.m_paramSteps = AZStd::clamp(params.m_steps, 1, 128);
+        layer.m_paramWallThickness = AZStd::max(params.m_wallThickness, 0.001f);
+        layer.m_paramCavityGap = AZStd::max(params.m_cavityGap, 0.0f);
+        layer.m_paramFloor = params.m_floor;
+        layer.m_paramCeiling = params.m_ceiling;
         RegenerateParametricLayer(index);
     }
 
@@ -345,7 +365,8 @@ namespace WhiteBox
         WhiteBoxLayer& layer = m_layers[index];
         const ShapeParams params = GetLayerShapeParams(index);
         Api::WhiteBoxMeshPtr mesh = BuildParametricShapeMesh(
-            params.m_shape, params.m_width, params.m_depth, params.m_height, params.m_sides, params.m_steps);
+            params.m_shape, params.m_width, params.m_depth, params.m_height, params.m_sides, params.m_steps,
+            params.m_wallThickness, params.m_cavityGap, params.m_floor, params.m_ceiling);
         if (index == m_layerRuntime.m_loadedIndex)
         {
             // The parametric layer is the ACTIVE one: replace the working mesh so viewport
@@ -835,12 +856,37 @@ namespace WhiteBox
             // is on. Fall back to the visual cut mesh only if the physics variant was not evaluated.
             m_physicsCombinedMesh =
                 Api::CloneMesh(m_physicsDisplayMesh ? *m_physicsDisplayMesh : *m_displayMesh);
+            BakeEntityScaleIntoPhysicsMesh();
             return;
         }
 
         WhiteBoxMesh* freeform = (m_boolean.m_live && m_displayMesh) ? m_displayMesh.get() : GetWhiteBoxMesh();
-        m_combinedMesh = BuildCombined(freeform, false);       // Visual Mesh
+        m_combinedMesh = BuildCombined(freeform, false);       // Visual Mesh (entity non-uniform scale via render transform)
         m_physicsCombinedMesh = BuildCombined(freeform, true); // Physics Mesh
+        BakeEntityScaleIntoPhysicsMesh();
+    }
+
+    AZ::Vector3 EditorWhiteBoxComponent::EntityNonUniformScale() const
+    {
+        AZ::Vector3 scale = AZ::Vector3::CreateOne();
+        AZ::NonUniformScaleRequestBus::EventResult(scale, GetEntityId(), &AZ::NonUniformScaleRequests::GetScale);
+        return scale;
+    }
+
+    void EditorWhiteBoxComponent::BakeEntityScaleIntoPhysicsMesh()
+    {
+        // The render mesh gets the entity's non-uniform scale from its render transform (Atom applies
+        // it), but a cooked triangle-mesh collider does not reliably honour a non-uniform shape scale,
+        // so bake it straight into the PHYSICS mesh geometry instead - exactly how per-layer scale is
+        // handled. BuildCombined(physicsPass) always returns a fresh owned mesh, so mutating it here is
+        // safe (it never aliases the editable working mesh). The collider then cooks scaled geometry and
+        // its debug wireframe matches.
+        const AZ::Vector3 scale = EntityNonUniformScale();
+        if (m_physicsCombinedMesh && !scale.IsClose(AZ::Vector3::CreateOne()))
+        {
+            ApplyTransformToMesh(*m_physicsCombinedMesh, AZ::Vector3::CreateZero(), AZ::Vector3::CreateZero(), scale);
+            Api::CalculateNormals(*m_physicsCombinedMesh);
+        }
     }
 
     WhiteBoxMesh* EditorWhiteBoxComponent::GetPhysicsMesh()

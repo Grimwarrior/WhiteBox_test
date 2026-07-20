@@ -236,6 +236,15 @@ namespace WhiteBox
             // BuildCombined(physicsPass=true) never returns null, so an empty result genuinely means "no
             // collidable layers" (collision disabled) rather than "fall back to the full base mesh".
             const Api::WhiteBoxMeshPtr physicsCombined = BuildCombined(baseMesh, true);
+            // Bake the entity's non-uniform scale into the physics geometry (matches the edit-time
+            // m_physicsCombinedMesh), so the game-mode collider and its debug wireframe are scaled even
+            // on a clone where the live physics mesh is unavailable.
+            if (const AZ::Vector3 nus = EntityNonUniformScale();
+                physicsCombined && !nus.IsClose(AZ::Vector3::CreateOne()))
+            {
+                ApplyTransformToMesh(*physicsCombined, AZ::Vector3::CreateZero(), AZ::Vector3::CreateZero(), nus);
+                Api::CalculateNormals(*physicsCombined);
+            }
             m_bakedPhysicsBaseRenderData =
                 physicsCombined ? CreateWhiteBoxRenderData(*physicsCombined, m_material) : WhiteBoxRenderData{};
             // Mark that the physics geometry has been baked (even when empty) so the game-mode build can
@@ -263,8 +272,22 @@ namespace WhiteBox
             // --- PHYSICS BAKE (ADD THIS) ---
             if (m_physicsDisplayMesh)
             {
-                const Api::WhiteBoxMeshPtr physicsCombined =
+                Api::WhiteBoxMeshPtr physicsCombined =
                     m_boolean.m_affectActiveOnly ? BuildCombined(m_physicsDisplayMesh.get(), true) : nullptr;
+                // Bake the entity non-uniform scale in (clone the shared display mesh first if needed).
+                if (const AZ::Vector3 nus = EntityNonUniformScale(); !nus.IsClose(AZ::Vector3::CreateOne()))
+                {
+                    if (!physicsCombined)
+                    {
+                        physicsCombined = Api::CloneMesh(*m_physicsDisplayMesh);
+                    }
+                    if (physicsCombined)
+                    {
+                        ApplyTransformToMesh(
+                            *physicsCombined, AZ::Vector3::CreateZero(), AZ::Vector3::CreateZero(), nus);
+                        Api::CalculateNormals(*physicsCombined);
+                    }
+                }
                 m_bakedPhysicsBooleanRenderData =
                     CreateWhiteBoxRenderData(physicsCombined ? *physicsCombined : *m_physicsDisplayMesh, m_material);
             }

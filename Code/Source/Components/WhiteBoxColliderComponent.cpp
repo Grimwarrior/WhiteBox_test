@@ -12,6 +12,7 @@
 #include <Rendering/WhiteBoxRenderData.h>
 
 #include <AzCore/Component/Entity.h>
+#include <AzCore/Component/NonUniformScaleBus.h>
 #include <AzCore/Component/TransformBus.h>
 #include <AzCore/Math/MathUtils.h>
 #include <AzCore/Serialization/SerializeContext.h>
@@ -54,7 +55,8 @@ namespace WhiteBox
 
     void WhiteBoxColliderComponent::GetIncompatibleServices(AZ::ComponentDescriptor::DependencyArrayType& incompatible)
     {
-        incompatible.push_back(AZ_CRC_CE("NonUniformScaleService"));
+        // NonUniformScaleService intentionally NOT listed - the runtime collider folds the entity's
+        // non-uniform scale into its cooked shape scale.
         // Incompatible with other rigid bodies because it handles its own rigid body
         // internally and it would conflict if another rigid body is added to the entity.
         incompatible.push_back(AZ_CRC_CE("PhysicsRigidBodyService"));
@@ -88,6 +90,16 @@ namespace WhiteBox
         AZ::TransformNotificationBus::Handler::BusConnect(GetEntityId());
         WhiteBoxColliderRequestBus::Handler::BusConnect(GetEntityId());
         AzFramework::EntityDebugDisplayEventBus::Handler::BusConnect(GetEntityId());
+
+        // A non-uniform scale change does not fire a transform notification, so listen for it
+        // explicitly and rebuild the body (its cooked shape scale is derived from it).
+        m_nonUniformScaleChangedHandler = AZ::NonUniformScaleChangedEvent::Handler(
+            [this]([[maybe_unused]] const AZ::Vector3& scale)
+            {
+                RebuildBody();
+            });
+        AZ::NonUniformScaleRequestBus::Event(
+            GetEntityId(), &AZ::NonUniformScaleRequests::RegisterScaleChangedEvent, m_nonUniformScaleChangedHandler);
     }
 
     void WhiteBoxColliderComponent::RebuildBody()
@@ -120,7 +132,23 @@ namespace WhiteBox
         // the entity's scale (while the render mesh scales via its transform).
         Physics::CookedMeshShapeConfiguration shapeConfiguration = ActiveShapeConfiguration();
         m_builtScale = worldTransform.GetUniformScale();
-        shapeConfiguration.m_scale = AZ::Vector3(m_builtScale);
+
+        // Fold in the entity's CURRENT non-uniform scale as well as the uniform scale, so a runtime
+        // resize (game mode) is reflected in the collider. The cooked triangle-mesh shape honours a
+        // Vector3 m_scale (that is how the uniform path below already works), so a non-uniform value
+        // scales it the same way.
+        //
+        // Note: the editor bakes any non-uniform scale that exists AT BAKE TIME straight into the
+        // cooked mesh geometry (BakeEntityScaleIntoPhysicsMesh). This runtime scale multiplies that,
+        // so it is correct as long as the mesh was baked with an identity (1,1,1) non-uniform scale
+        // in the editor - which is the normal case. If a non-identity non-uniform scale was baked in
+        // the editor, that baked factor would need to be recorded and divided out here to avoid
+        // double-applying it.
+        AZ::Vector3 nonUniformScale = AZ::Vector3::CreateOne();
+        AZ::NonUniformScaleRequestBus::EventResult(
+            nonUniformScale, entityId, &AZ::NonUniformScaleRequests::GetScale);
+        m_builtNonUniformScale = nonUniformScale;
+        shapeConfiguration.m_scale = AZ::Vector3(m_builtScale) * nonUniformScale;
 
         if (shapeConfiguration.GetCookedMeshData().empty())
         {
@@ -195,21 +223,25 @@ namespace WhiteBox
         m_simulatedBodyHandle = AzPhysics::InvalidSimulatedBodyHandle;
     }
 
-    void WhiteBoxColliderComponent::BakeCollider(const bool useBooleanMesh)
+    void WhiteBoxColliderComponent::BakeCollider(const bool useBooleanMesh, const bool forceRebuild)
     {
         // ignore requests for the boolean mesh when one was not baked
         const bool desired = useBooleanMesh && m_hasBooleanMesh;
-        if (desired == m_useBooleanMesh)
+        if (desired == m_useBooleanMesh && !forceRebuild)
         {
-            return; // already using the requested collider
+            return; // already using the requested collider and no rebuild was forced
         }
 
         m_useBooleanMesh = desired;
+        // RebuildBody() re-reads the entity's current world transform (including its uniform
+        // scale) and folds it into the cooked shape, so a forced rebuild re-bakes the collider
+        // to the entity's current size.
         RebuildBody();
     }
 
     void WhiteBoxColliderComponent::Deactivate()
     {
+        m_nonUniformScaleChangedHandler.Disconnect();
         AzFramework::EntityDebugDisplayEventBus::Handler::BusDisconnect();
         WhiteBoxColliderRequestBus::Handler::BusDisconnect();
         AZ::TransformNotificationBus::Handler::BusDisconnect();
@@ -228,6 +260,17 @@ namespace WhiteBox
         AZ::Transform worldTransform = AZ::Transform::CreateIdentity();
         AZ::TransformBus::EventResult(worldTransform, GetEntityId(), &AZ::TransformBus::Events::GetWorldTM);
 
+        // The AZ::Transform only carries uniform scale, so fold in the entity's current non-uniform
+        // scale exactly as RebuildBody does for the physics shape - otherwise the overlay would show
+        // the baked (un-scaled) collider while the real body is non-uniformly scaled.
+        AZ::Vector3 nonUniformScale = AZ::Vector3::CreateOne();
+        AZ::NonUniformScaleRequestBus::EventResult(
+            nonUniformScale, GetEntityId(), &AZ::NonUniformScaleRequests::GetScale);
+        const auto toWorld = [&worldTransform, &nonUniformScale](const AZ::Vector3& localPoint)
+        {
+            return worldTransform.TransformPoint(nonUniformScale * localPoint);
+        };
+
         debugDisplay.DepthTestOn();
         debugDisplay.SetColor(AZ::Color(1.0f, 0.25f, 0.1f, 1.0f)); // orange wireframe (game mode)
 
@@ -238,9 +281,9 @@ namespace WhiteBox
         {
             for (size_t i = 0; i + 2 < m_debugIndices.size(); i += 3)
             {
-                const AZ::Vector3 a = worldTransform.TransformPoint(m_debugVertices[m_debugIndices[i]]);
-                const AZ::Vector3 b = worldTransform.TransformPoint(m_debugVertices[m_debugIndices[i + 1]]);
-                const AZ::Vector3 c = worldTransform.TransformPoint(m_debugVertices[m_debugIndices[i + 2]]);
+                const AZ::Vector3 a = toWorld(m_debugVertices[m_debugIndices[i]]);
+                const AZ::Vector3 b = toWorld(m_debugVertices[m_debugIndices[i + 1]]);
+                const AZ::Vector3 c = toWorld(m_debugVertices[m_debugIndices[i + 2]]);
                 debugDisplay.DrawLine(a, b);
                 debugDisplay.DrawLine(b, c);
                 debugDisplay.DrawLine(c, a);
@@ -256,9 +299,9 @@ namespace WhiteBox
         const WhiteBoxRenderData& renderData = whiteBoxComponent->GetPhysicsRenderData();
         for (const WhiteBoxFace& face : renderData.m_faces)
         {
-            const AZ::Vector3 a = worldTransform.TransformPoint(face.m_v1.m_position);
-            const AZ::Vector3 b = worldTransform.TransformPoint(face.m_v2.m_position);
-            const AZ::Vector3 c = worldTransform.TransformPoint(face.m_v3.m_position);
+            const AZ::Vector3 a = toWorld(face.m_v1.m_position);
+            const AZ::Vector3 b = toWorld(face.m_v2.m_position);
+            const AZ::Vector3 c = toWorld(face.m_v3.m_position);
             debugDisplay.DrawLine(a, b);
             debugDisplay.DrawLine(b, c);
             debugDisplay.DrawLine(c, a);

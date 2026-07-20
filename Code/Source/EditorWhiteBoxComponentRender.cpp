@@ -17,6 +17,7 @@
 
 #include "Util/WhiteBoxMeshUtil.h"
 
+#include <AzCore/Component/NonUniformScaleBus.h>
 #include <AzCore/Component/TransformBus.h>
 #include <AzCore/Console/Console.h>
 #include <AzCore/Math/IntersectSegment.h>
@@ -795,8 +796,15 @@ namespace WhiteBox
 
         if (!m_worldAabb.has_value())
         {
-            m_worldAabb = GetLocalBounds();
-            m_worldAabb->ApplyTransform(m_worldFromLocal);
+            AZ::Aabb bounds = GetLocalBounds();
+            // Fold in the entity's non-uniform scale (Non-Uniform Scale component) before applying the
+            // world transform, which only carries uniform scale. No-op when there is no such component.
+            AZ::Vector3 nonUniformScale = AZ::Vector3::CreateOne();
+            AZ::NonUniformScaleRequestBus::EventResult(
+                nonUniformScale, GetEntityId(), &AZ::NonUniformScaleRequests::GetScale);
+            bounds.MultiplyByScale(nonUniformScale);
+            bounds.ApplyTransform(m_worldFromLocal);
+            m_worldAabb = bounds;
         }
 
         return m_worldAabb.value();

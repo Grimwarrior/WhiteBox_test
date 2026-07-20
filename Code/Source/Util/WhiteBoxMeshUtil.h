@@ -51,8 +51,12 @@ namespace WhiteBox
 
     //! Generate a parametric shape solid in layer-local space: footprint centred on the origin
     //! in XY, extruded from z=0 up to @p height. The extents are FULL sizes along each axis.
+    //! For DrawShapeType::Room, @p width / @p depth / @p height are the INTERIOR dimensions and the
+    //! room-only parameters (@p wallThickness, @p cavityGap, @p floor, @p ceiling) drive the double
+    //! walls and caps; those are ignored by every other shape.
     Api::WhiteBoxMeshPtr BuildParametricShapeMesh(
-        DrawShapeType shape, float width, float depth, float height, int sides, int steps);
+        DrawShapeType shape, float width, float depth, float height, int sides, int steps,
+        float wallThickness = 0.15f, float cavityGap = 0.1f, bool floor = true, bool ceiling = false);
 
     //! True when the default shape is set to a custom mesh asset.
     bool DisplayingAsset(DefaultShapeType defaultShapeType);

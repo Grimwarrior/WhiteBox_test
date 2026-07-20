@@ -20,6 +20,7 @@
 #include <Atom/RPI.Reflect/Model/ModelLodAssetCreator.h>
 #include <Atom/RPI.Reflect/ResourcePoolAssetCreator.h>
 #include <AtomLyIntegration/CommonFeatures/Material/MaterialComponentBus.h>
+#include <AzCore/Component/NonUniformScaleBus.h>
 #include <AzCore/Math/PackedVector3.h>
 
 namespace WhiteBox
@@ -299,7 +300,14 @@ namespace WhiteBox
         // mesh simply has nothing to transform/show.
         if (m_meshFeatureProcessor)
         {
-            m_meshFeatureProcessor->SetTransform(m_meshHandle, worldFromLocal);
+            // Fold in the entity's non-uniform scale (from an optional Non-Uniform Scale component).
+            // AZ::Transform only carries uniform scale, so the non-uniform factor is passed to the
+            // mesh feature processor separately. GetScale returns (1,1,1) when no such component is
+            // present, so this is a no-op for uniformly-scaled entities.
+            AZ::Vector3 nonUniformScale = AZ::Vector3::CreateOne();
+            AZ::NonUniformScaleRequestBus::EventResult(
+                nonUniformScale, m_entityId, &AZ::NonUniformScaleRequests::GetScale);
+            m_meshFeatureProcessor->SetTransform(m_meshHandle, worldFromLocal, nonUniformScale);
         }
     }
 

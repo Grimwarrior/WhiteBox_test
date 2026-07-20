@@ -12,6 +12,7 @@
 #include "WhiteBox/WhiteBoxComponentBus.h"
 
 #include <AzCore/Component/Component.h>
+#include <AzCore/Component/NonUniformScaleBus.h>
 #include <AzCore/Component/TransformBus.h>
 #include <AzCore/Math/Transform.h>
 #include <AzFramework/Visibility/VisibleGeometryBus.h>
@@ -46,7 +47,7 @@ namespace WhiteBox
         bool WhiteBoxIsVisible() const override;
         void SetLiveBoolean(bool enabled) override;
         bool GetLiveBoolean() const override;
-        void BakeWhiteBox() override;
+        void BakeWhiteBox(bool rebakeCollider = false) override;
 
         //! Set the base (un-boolean) render data. This is the geometry used when the
         //! live-boolean is disabled.
@@ -91,5 +92,8 @@ namespace WhiteBox
         bool m_hasBooleanMesh = false; //!< Whether a boolean-evaluated variant was baked.
         bool m_liveBoolean = false; //!< Whether the boolean-evaluated variant is currently selected.
         AZStd::unique_ptr<RenderMeshInterface> m_renderMesh; //!< The render mesh to use for White Box rendering.
+        //! Re-applies the render transform when the entity's Non-Uniform Scale component changes
+        //! (the render mesh reads that scale, but a scale change raises no transform notification).
+        AZ::NonUniformScaleChangedEvent::Handler m_nonUniformScaleChangedHandler;
     };
 } // namespace WhiteBox

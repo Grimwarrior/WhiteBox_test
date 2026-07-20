@@ -10,6 +10,7 @@
 #include "EditorWhiteBoxComponent.h"
 #include "WhiteBoxColliderComponent.h"
 
+#include <AzCore/Component/NonUniformScaleBus.h>
 #include <AzCore/Component/TransformBus.h>
 #include <AzCore/Math/MathUtils.h>
 #include <AzCore/Serialization/EditContext.h>
@@ -84,7 +85,8 @@ namespace WhiteBox
 
     void EditorWhiteBoxColliderComponent::GetIncompatibleServices(AZ::ComponentDescriptor::DependencyArrayType& incompatible)
     {
-        incompatible.push_back(AZ_CRC_CE("NonUniformScaleService"));
+        // NonUniformScaleService intentionally NOT listed - the collider bakes the entity's
+        // non-uniform scale into its cooked shape scale (PhysX triangle meshes support it).
         incompatible.push_back(AZ_CRC_CE("WhiteBoxColliderService"));
         // Incompatible with other rigid bodies because it handles its own rigid body
         // internally and it would conflict if another rigid body is added to the entity.
@@ -372,6 +374,10 @@ namespace WhiteBox
         // and the body carries only translation + rotation).
         Physics::CookedMeshShapeConfiguration scaledConfiguration = viewportConfiguration;
         m_editorBuiltScale = GetTransform()->GetWorldUniformScale();
+        // Only the UNIFORM scale goes on the cooked shape - the entity's NON-uniform scale is baked
+        // directly into the White Box physics mesh geometry (see BakeEntityScaleIntoPhysicsMesh), which
+        // is what this shape was cooked from, because a cooked triangle-mesh shape does not reliably
+        // honour a non-uniform shape scale.
         scaledConfiguration.m_scale = AZ::Vector3(m_editorBuiltScale);
 
         AzPhysics::StaticRigidBodyConfiguration bodyConfiguration;

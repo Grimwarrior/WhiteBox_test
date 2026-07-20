@@ -39,7 +39,13 @@ namespace WhiteBox
         //! Apply the current live-boolean selection: rebuild the render mesh and re-create
         //! the physics collider from the matching pre-baked geometry. This is the "bake"
         //! command callable from Lua at runtime.
-        virtual void BakeWhiteBox() {}
+        //! @param rebakeCollider When true, force the physics collider to rebuild from the
+        //! entity's current size/scale even if the live-boolean selection has not changed.
+        //! The cooked collision mesh is authored in local (unscaled) space and the runtime
+        //! body folds in the entity's current uniform scale when it is (re)built, so this is
+        //! how a resized entity gets a matching collider at runtime. Defaults to false so
+        //! existing callers keep the original behaviour (only rebuild on a boolean change).
+        virtual void BakeWhiteBox([[maybe_unused]] bool rebakeCollider = false) {}
 
     protected:
         ~WhiteBoxComponentRequests() = default;

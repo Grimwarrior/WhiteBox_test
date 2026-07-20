@@ -15,9 +15,12 @@
 #include <AzCore/Casting/numeric_cast.h>
 #include <AzCore/Component/ComponentApplicationBus.h>
 #include <AzCore/Component/Entity.h>
+#include <AzCore/Component/NonUniformScaleBus.h>
 #include <AzCore/Component/TickBus.h>
 #include <AzCore/Math/Quaternion.h>
+#include <AzToolsFramework/API/EntityCompositionRequestBus.h>
 #include <AzToolsFramework/ComponentMode/ComponentModeDelegate.h>
+#include <AzToolsFramework/ToolsComponents/EditorNonUniformScaleComponent.h>
 
 #include <QCheckBox>
 #include <QColorDialog>
@@ -251,6 +254,15 @@ namespace WhiteBox
         layout->addRow(tr("Rotation"), MakeVec3Row(m_entityRot, -3600.0, 3600.0, 1.0));
         m_entityScale = MakeSpin(0.001, 1000.0, 0.1);
         layout->addRow(tr("Uniform Scale"), m_entityScale);
+        auto* nonUniformRow = MakeVec3Row(m_entityNonUniformScale, 0.001, 1000.0, 0.1);
+        for (QDoubleSpinBox* spin : m_entityNonUniformScale)
+        {
+            spin->setToolTip(
+                tr("Per-axis (non-uniform) scale for the whole entity. Setting a non-(1,1,1) value adds an "
+                   "O3DE Non-Uniform Scale component if the entity doesn't already have one; it also drives the "
+                   "transform Scale gizmo. Multiplies with Uniform Scale above."));
+        }
+        layout->addRow(tr("Non-Uniform Scale"), nonUniformRow);
 
         // Viewport gizmo driving the entity transform - available even during component mode
         // (when the editor's built-in entity gizmo is suppressed).
@@ -328,6 +340,41 @@ namespace WhiteBox
                m_entityScale })
         {
             connect(spin, QOverload<double>::of(&QDoubleSpinBox::valueChanged), this, applyEntityTransform);
+        }
+
+        // Non-uniform scale is stored on the entity's Non-Uniform Scale component (separate from the
+        // Transform). Write it through the bus, adding the component the first time a non-(1,1,1)
+        // value is set so the field "just works" without the user hunting for the component.
+        const auto applyNonUniformScale = [this]()
+        {
+            if (m_updating || !m_currentEntityId.IsValid())
+            {
+                return;
+            }
+            const AZ::Vector3 scale(
+                aznumeric_cast<float>(m_entityNonUniformScale[0]->value()),
+                aznumeric_cast<float>(m_entityNonUniformScale[1]->value()),
+                aznumeric_cast<float>(m_entityNonUniformScale[2]->value()));
+
+            AzToolsFramework::ScopedUndoBatch undoBatch("White Box Non-Uniform Scale");
+            if (!AZ::NonUniformScaleRequestBus::HasHandlers(m_currentEntityId) &&
+                !scale.IsClose(AZ::Vector3::CreateOne()))
+            {
+                AzToolsFramework::EntityCompositionRequests::AddComponentsOutcome outcome =
+                    AZ::Failure(AZStd::string("uninitialized"));
+                const AzToolsFramework::EntityIdList entities{ m_currentEntityId };
+                const AZ::ComponentTypeList types{
+                    azrtti_typeid<AzToolsFramework::Components::EditorNonUniformScaleComponent>()
+                };
+                AzToolsFramework::EntityCompositionRequestBus::BroadcastResult(
+                    outcome, &AzToolsFramework::EntityCompositionRequests::AddComponentsToEntities, entities, types);
+            }
+            AZ::NonUniformScaleRequestBus::Event(m_currentEntityId, &AZ::NonUniformScaleRequests::SetScale, scale);
+            undoBatch.MarkEntityDirty(m_currentEntityId);
+        };
+        for (QDoubleSpinBox* spin : m_entityNonUniformScale)
+        {
+            connect(spin, QOverload<double>::of(&QDoubleSpinBox::valueChanged), this, applyNonUniformScale);
         }
 
         return group;
@@ -447,6 +494,7 @@ namespace WhiteBox
             { "Box", DrawShapeType::Box },           { "Cylinder", DrawShapeType::Cylinder },
             { "Pyramid", DrawShapeType::Pyramid },   { "Cone", DrawShapeType::Cone },
             { "Sphere", DrawShapeType::Sphere },     { "Staircase", DrawShapeType::Staircase },
+            { "Room", DrawShapeType::Room },
         };
         int shapeButtonIndex = 0;
         for (const auto& [label, shapeType] : shapeDefs)
@@ -554,6 +602,7 @@ namespace WhiteBox
         m_shapeParamShape->addItem(tr("Cone"), static_cast<int>(DrawShapeType::Cone));
         m_shapeParamShape->addItem(tr("Sphere"), static_cast<int>(DrawShapeType::Sphere));
         m_shapeParamShape->addItem(tr("Staircase"), static_cast<int>(DrawShapeType::Staircase));
+        m_shapeParamShape->addItem(tr("Room"), static_cast<int>(DrawShapeType::Room));
         shapeLayout->addRow(tr("Shape"), m_shapeParamShape);
         m_shapeParamWidth = MakeSpin(0.01, 10000.0, 0.1);
         shapeLayout->addRow(tr("Width"), m_shapeParamWidth);
@@ -570,6 +619,21 @@ namespace WhiteBox
         m_shapeParamSteps->setRange(1, 128);
         m_shapeParamStepsLabel = new QLabel(tr("Steps"));
         shapeLayout->addRow(m_shapeParamStepsLabel, m_shapeParamSteps);
+        // Room-only controls. Width/Depth/Height above are the interior dimensions for a Room.
+        m_shapeParamWallThickness = MakeSpin(0.001, 100.0, 0.05);
+        m_shapeParamWallThickness->setToolTip(tr("Thickness of each wall leaf (inner and outer)."));
+        m_shapeParamWallThicknessLabel = new QLabel(tr("Wall Thickness"));
+        shapeLayout->addRow(m_shapeParamWallThicknessLabel, m_shapeParamWallThickness);
+        m_shapeParamCavityGap = MakeSpin(0.0, 100.0, 0.05);
+        m_shapeParamCavityGap->setToolTip(tr("Empty gap between the inner and outer wall leaves (0 = single solid wall)."));
+        m_shapeParamCavityGapLabel = new QLabel(tr("Cavity Gap"));
+        shapeLayout->addRow(m_shapeParamCavityGapLabel, m_shapeParamCavityGap);
+        m_shapeParamFloor = new QCheckBox(tr("Floor"));
+        m_shapeParamFloor->setToolTip(tr("Add a floor slab beneath the interior."));
+        shapeLayout->addRow(QString(), m_shapeParamFloor);
+        m_shapeParamCeiling = new QCheckBox(tr("Ceiling"));
+        m_shapeParamCeiling->setToolTip(tr("Add a ceiling slab above the interior."));
+        shapeLayout->addRow(QString(), m_shapeParamCeiling);
         m_bakeShapeButton = new QPushButton(tr("Bake To Mesh"));
         m_bakeShapeButton->setToolTip(
             tr("Freeze this parametric shape into an ordinary mesh layer so vertex-level edits are safe "
@@ -595,17 +659,25 @@ namespace WhiteBox
             params.m_height = aznumeric_cast<float>(m_shapeParamHeight->value());
             params.m_sides = m_shapeParamSides->value();
             params.m_steps = m_shapeParamSteps->value();
+            params.m_wallThickness = aznumeric_cast<float>(m_shapeParamWallThickness->value());
+            params.m_cavityGap = aznumeric_cast<float>(m_shapeParamCavityGap->value());
+            params.m_floor = m_shapeParamFloor->isChecked();
+            params.m_ceiling = m_shapeParamCeiling->isChecked();
             ModifyComponent(
                 "Edit Parametric Shape",
                 [row, params](EditorWhiteBoxComponent* c) { c->SetLayerShapeParams(row, params); });
         };
         connect(m_shapeParamShape, QOverload<int>::of(&QComboBox::currentIndexChanged), this, applyShapeParams);
-        for (QDoubleSpinBox* spin : { m_shapeParamWidth, m_shapeParamDepth, m_shapeParamHeight })
+        for (QDoubleSpinBox* spin :
+             { m_shapeParamWidth, m_shapeParamDepth, m_shapeParamHeight, m_shapeParamWallThickness,
+               m_shapeParamCavityGap })
         {
             connect(spin, QOverload<double>::of(&QDoubleSpinBox::valueChanged), this, applyShapeParams);
         }
         connect(m_shapeParamSides, QOverload<int>::of(&QSpinBox::valueChanged), this, applyShapeParams);
         connect(m_shapeParamSteps, QOverload<int>::of(&QSpinBox::valueChanged), this, applyShapeParams);
+        connect(m_shapeParamFloor, &QCheckBox::toggled, this, applyShapeParams);
+        connect(m_shapeParamCeiling, &QCheckBox::toggled, this, applyShapeParams);
         connect(m_bakeShapeButton, &QPushButton::clicked, this,
             [this]()
             {
@@ -1331,16 +1403,28 @@ namespace WhiteBox
             m_shapeParamHeight->setValue(params.m_height);
             m_shapeParamSides->setValue(params.m_sides);
             m_shapeParamSteps->setValue(params.m_steps);
-            // Every shape except the staircase honours Sides: round shapes inscribe the
-            // N-gon in the ellipse, angular shapes (Box/Pyramid) fill the rectangle with it.
+            m_shapeParamWallThickness->setValue(params.m_wallThickness);
+            m_shapeParamCavityGap->setValue(params.m_cavityGap);
+            m_shapeParamFloor->setChecked(params.m_floor);
+            m_shapeParamCeiling->setChecked(params.m_ceiling);
+            // Room has no Sides/Steps; every other non-staircase shape honours Sides (round shapes
+            // inscribe the N-gon in the ellipse, angular shapes fill the rectangle with it).
             const bool stair = params.m_shape == DrawShapeType::Staircase;
-            const bool hasSides = !stair;
+            const bool room = params.m_shape == DrawShapeType::Room;
+            const bool hasSides = !stair && !room;
             m_shapeParamSides->setVisible(hasSides);
             m_shapeParamSidesLabel->setVisible(hasSides);
             m_shapeParamSidesLabel->setText(
                 params.m_shape == DrawShapeType::Sphere ? tr("Subdivision") : tr("Sides"));
             m_shapeParamSteps->setVisible(stair);
             m_shapeParamStepsLabel->setVisible(stair);
+            // Room-only controls (Width/Depth/Height read as the interior dimensions for a Room).
+            m_shapeParamWallThickness->setVisible(room);
+            m_shapeParamWallThicknessLabel->setVisible(room);
+            m_shapeParamCavityGap->setVisible(room);
+            m_shapeParamCavityGapLabel->setVisible(room);
+            m_shapeParamFloor->setVisible(room);
+            m_shapeParamCeiling->setVisible(room);
         }
 
         if (hasLayer)
@@ -1399,6 +1483,15 @@ namespace WhiteBox
             m_entityRot[i]->setValue(rotationDegrees.GetElement(i));
         }
         m_entityScale->setValue(scale);
+
+        // Non-uniform scale from the entity's Non-Uniform Scale component (identity when absent).
+        AZ::Vector3 nonUniformScale = AZ::Vector3::CreateOne();
+        AZ::NonUniformScaleRequestBus::EventResult(
+            nonUniformScale, m_currentEntityId, &AZ::NonUniformScaleRequests::GetScale);
+        for (int i = 0; i < 3; ++i)
+        {
+            m_entityNonUniformScale[i]->setValue(nonUniformScale.GetElement(i));
+        }
 
         m_updating = wasUpdating;
     }

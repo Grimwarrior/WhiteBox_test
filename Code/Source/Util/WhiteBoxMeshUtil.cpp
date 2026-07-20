@@ -185,7 +185,7 @@ namespace WhiteBox
 
     Api::WhiteBoxMeshPtr BuildParametricShapeMesh(
         const DrawShapeType shape, const float width, const float depth, const float height, const int sides,
-        const int steps)
+        const int steps, const float wallThickness, const float cavityGap, const bool floor, const bool ceiling)
     {
         const float w = AZStd::max(width, 0.01f);
         const float d = AZStd::max(depth, 0.01f);
@@ -193,12 +193,22 @@ namespace WhiteBox
         const int clampedSides = AZStd::clamp(sides, 3, 128);
         const int clampedSteps = AZStd::clamp(steps, 1, 128);
 
-        // Note: the builders take FULL-extent axis vectors (they halve internally).
         Api::WhiteBoxMeshPtr mesh = Api::CreateWhiteBoxMesh();
-        Detail::BuildShapeSolid(
-            *mesh, AZ::Transform::CreateIdentity(), AZ::Vector3::CreateZero(),
-            AZ::Vector3(w, 0.0f, 0.0f), AZ::Vector3(0.0f, d, 0.0f),
-            AZ::Vector3::CreateAxisZ(), 0.0f, h, shape, clampedSides, clampedSteps);
+
+        // The Room is a shell, not a footprint-extruded solid, so it has its own builder rather than
+        // going through BuildShapeSolid. width/depth/height are its INTERIOR dimensions here.
+        if (shape == DrawShapeType::Room)
+        {
+            Detail::BuildRoomSolid(*mesh, w, d, h, wallThickness, cavityGap, floor, ceiling);
+        }
+        else
+        {
+            // Note: the builders take FULL-extent axis vectors (they halve internally).
+            Detail::BuildShapeSolid(
+                *mesh, AZ::Transform::CreateIdentity(), AZ::Vector3::CreateZero(),
+                AZ::Vector3(w, 0.0f, 0.0f), AZ::Vector3(0.0f, d, 0.0f),
+                AZ::Vector3::CreateAxisZ(), 0.0f, h, shape, clampedSides, clampedSteps);
+        }
         if (!Api::MeshFaceHandles(*mesh).empty())
         {
             Api::CalculateNormals(*mesh);

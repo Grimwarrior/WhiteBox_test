@@ -48,7 +48,12 @@ namespace WhiteBox
                 ->Event("WhiteBoxIsVisible", &WhiteBoxComponentRequestBus::Events::WhiteBoxIsVisible)
                 ->Event("SetLiveBoolean", &WhiteBoxComponentRequestBus::Events::SetLiveBoolean)
                 ->Event("GetLiveBoolean", &WhiteBoxComponentRequestBus::Events::GetLiveBoolean)
-                ->Event("BakeWhiteBox", &WhiteBoxComponentRequestBus::Events::BakeWhiteBox);
+                ->Event(
+                    "BakeWhiteBox", &WhiteBoxComponentRequestBus::Events::BakeWhiteBox,
+                    {{AZ::BehaviorParameterOverrides(
+                        "rebakeCollider",
+                        "When true, rebuild the physics collider from the entity's current size/scale",
+                        behaviorContext->MakeDefaultValue(false))}});
         }
     }
 
@@ -67,10 +72,26 @@ namespace WhiteBox
         AzFramework::VisibleGeometryRequestBus::Handler::BusConnect(entityId);
         AZ::TransformNotificationBus::Handler::BusConnect(entityId);
         WhiteBoxComponentRequestBus::Handler::BusConnect(entityId);
+
+        // Re-apply the transform (which pulls in the current non-uniform scale) when the entity's
+        // Non-Uniform Scale component changes - no transform notification is raised for it.
+        m_nonUniformScaleChangedHandler = AZ::NonUniformScaleChangedEvent::Handler(
+            [this]([[maybe_unused]] const AZ::Vector3& scale)
+            {
+                if (m_renderMesh)
+                {
+                    AZ::Transform worldFromLocal = AZ::Transform::CreateIdentity();
+                    AZ::TransformBus::EventResult(worldFromLocal, GetEntityId(), &AZ::TransformBus::Events::GetWorldTM);
+                    m_renderMesh->UpdateTransform(worldFromLocal);
+                }
+            });
+        AZ::NonUniformScaleRequestBus::Event(
+            entityId, &AZ::NonUniformScaleRequests::RegisterScaleChangedEvent, m_nonUniformScaleChangedHandler);
     }
 
     void WhiteBoxComponent::Deactivate()
     {
+        m_nonUniformScaleChangedHandler.Disconnect();
         WhiteBoxComponentRequestBus::Handler::BusDisconnect();
         AZ::TransformNotificationBus::Handler::BusDisconnect();
         AzFramework::VisibleGeometryRequestBus::Handler::BusDisconnect();
@@ -131,15 +152,17 @@ namespace WhiteBox
         return m_liveBoolean;
     }
 
-    void WhiteBoxComponent::BakeWhiteBox()
+    void WhiteBoxComponent::BakeWhiteBox(const bool rebakeCollider)
     {
         // apply the current selection to the render mesh ...
         RebuildRenderMesh();
 
         // ... and to the physics collider (no-op if this entity has no White Box collider
-        // or no boolean collider variant was baked).
+        // or no boolean collider variant was baked). When rebakeCollider is true the collider
+        // is rebuilt even when the boolean selection is unchanged, re-cooking it against the
+        // entity's current size/scale.
         WhiteBoxColliderRequestBus::Event(
-            GetEntityId(), &WhiteBoxColliderRequests::BakeCollider, m_liveBoolean);
+            GetEntityId(), &WhiteBoxColliderRequests::BakeCollider, m_liveBoolean, rebakeCollider);
     }
 
     void WhiteBoxComponent::OnTransformChanged([[maybe_unused]] const AZ::Transform& local, const AZ::Transform& world)

@@ -12,6 +12,7 @@
 #include "Rendering/WhiteBoxRenderData.h"
 #include "Viewport/WhiteBoxViewportConstants.h"
 
+#include <AzCore/Component/NonUniformScaleBus.h>
 #include <AzCore/Component/TickBus.h>
 #include <AzCore/Component/TransformBus.h>
 #include <AzCore/Math/Aabb.h>
@@ -269,11 +270,16 @@ namespace WhiteBox
         struct ShapeParams
         {
             DrawShapeType m_shape = DrawShapeType::Box;
-            float m_width = 1.0f;  //!< Full extent along local X.
-            float m_depth = 1.0f;  //!< Full extent along local Y.
-            float m_height = 1.0f; //!< Full extent along local Z (a tall sphere makes a bullet).
+            float m_width = 1.0f;  //!< Full extent along local X. For a Room this is the INTERIOR width.
+            float m_depth = 1.0f;  //!< Full extent along local Y. For a Room this is the INTERIOR depth.
+            float m_height = 1.0f; //!< Full extent along local Z (a tall sphere makes a bullet). Room: INTERIOR height.
             int m_sides = 4;       //!< Side count (round shapes) / sphere subdivision.
             int m_steps = 8;       //!< Staircase step count.
+            // Room-only parameters (ignored by the other shapes).
+            float m_wallThickness = 0.15f; //!< Thickness of EACH wall leaf (inner and outer).
+            float m_cavityGap = 0.1f;      //!< Empty gap between the inner and outer wall leaves (double wall).
+            bool m_floor = true;           //!< Add a floor slab beneath the interior.
+            bool m_ceiling = false;        //!< Add a ceiling slab above the interior.
         };
         //! Append a new PARAMETRIC layer generating @p shape (made active). Returns its index.
         int AddParametricShapeLayer(DrawShapeType shape);
@@ -487,6 +493,11 @@ namespace WhiteBox
             float m_paramHeight = 1.0f; //!< Full extent along local Z.
             int m_paramSides = 4;       //!< Side count (round shapes) / sphere subdivision.
             int m_paramSteps = 8;       //!< Staircase step count.
+            // Room-only parameters (m_paramShape == DrawShapeType::Room).
+            float m_paramWallThickness = 0.15f; //!< Thickness of each wall leaf.
+            float m_paramCavityGap = 0.1f;      //!< Gap between the inner and outer wall leaves.
+            bool m_paramFloor = true;           //!< Generate a floor slab.
+            bool m_paramCeiling = false;        //!< Generate a ceiling slab.
 
             Api::WhiteBoxMeshStream m_freeformData;   //!< Serialized freeform (drawable) mesh.
             Api::WhiteBoxMeshStream m_gridData;       //!< Serialized stamped-cube grid mesh.
@@ -681,6 +692,12 @@ namespace WhiteBox
         // Add a getter for the new physics mesh:
         WhiteBoxMesh* GetPhysicsMesh();
 
+        //! The entity's non-uniform scale (from an optional Non-Uniform Scale component); (1,1,1) if none.
+        AZ::Vector3 EntityNonUniformScale() const;
+        //! Bake the entity's non-uniform scale into m_physicsCombinedMesh so the cooked collider (which
+        //! does not reliably honour a non-uniform cooked-shape scale) matches the rendered geometry.
+        void BakeEntityScaleIntoPhysicsMesh();
+
         Api::WhiteBoxMeshPtr m_displayMesh; //!< Evaluated (base [op] source) mesh used for display while live.
         Api::WhiteBoxMeshPtr m_physicsDisplayMesh;
         Api::WhiteBoxMeshPtr m_gridMesh; //!< Stamped cubes kept SEPARATE from the freeform mesh (appended for output).
@@ -710,6 +727,10 @@ namespace WhiteBox
             EditorWhiteBoxComponent* m_owner = nullptr;
         };
         BooleanSourceListener m_booleanSourceListener;
+
+        //! Refreshes render / physics / bounds when the entity's Non-Uniform Scale component changes
+        //! (that scale is not part of the Transform, so no OnTransformChanged fires for it).
+        AZ::NonUniformScaleChangedEvent::Handler m_nonUniformScaleChangedHandler;
     };
 
     inline bool EditorWhiteBoxComponent::SupportsEditorRayIntersect()

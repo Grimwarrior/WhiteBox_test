@@ -182,6 +182,7 @@ namespace WhiteBox
         QDoubleSpinBox* m_entityPos[3] = {};
         QDoubleSpinBox* m_entityRot[3] = {};
         QDoubleSpinBox* m_entityScale = nullptr;
+        QDoubleSpinBox* m_entityNonUniformScale[3] = {}; //!< Per-axis scale (via the Non-Uniform Scale component).
         QPushButton* m_entityGizmoOff = nullptr;
         QPushButton* m_entityGizmoMove = nullptr;
         QPushButton* m_entityGizmoRotate = nullptr;
@@ -196,6 +197,13 @@ namespace WhiteBox
         QSpinBox* m_shapeParamSteps = nullptr;
         QLabel* m_shapeParamSidesLabel = nullptr;
         QLabel* m_shapeParamStepsLabel = nullptr;
+        // Room-only shape parameters.
+        QDoubleSpinBox* m_shapeParamWallThickness = nullptr;
+        QDoubleSpinBox* m_shapeParamCavityGap = nullptr;
+        QCheckBox* m_shapeParamFloor = nullptr;
+        QCheckBox* m_shapeParamCeiling = nullptr;
+        QLabel* m_shapeParamWallThicknessLabel = nullptr;
+        QLabel* m_shapeParamCavityGapLabel = nullptr;
         QPushButton* m_bakeShapeButton = nullptr;
         QGroupBox* m_shapeParamsGroup = nullptr;
         QPushButton* m_gizmoOff = nullptr;

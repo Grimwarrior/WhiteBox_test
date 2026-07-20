@@ -513,7 +513,8 @@ namespace WhiteBox
 
     void EditorWhiteBoxComponent::GetIncompatibleServices(AZ::ComponentDescriptor::DependencyArrayType& incompatible)
     {
-        incompatible.push_back(AZ_CRC_CE("NonUniformScaleService"));
+        // Note: NonUniformScaleService is intentionally NOT listed - White Box supports the entity's
+        // Non-Uniform Scale component (render, collider and bounds all honour it via the bus).
         incompatible.push_back(AZ_CRC_CE("MeshService"));
         incompatible.push_back(AZ_CRC_CE("WhiteBoxService"));
     }
@@ -570,6 +571,20 @@ namespace WhiteBox
         // regenerating would discard freeform edits made before the level was saved).
         DeserializeWhiteBox();
 
+        // Refresh render/physics/bounds when the entity's non-uniform scale changes (it is separate
+        // from the Transform, so it does not raise OnTransformChanged).
+        m_nonUniformScaleChangedHandler = AZ::NonUniformScaleChangedEvent::Handler(
+            [this]([[maybe_unused]] const AZ::Vector3& scale)
+            {
+                m_worldAabb.reset();
+                // Full rebuild: RebuildCombinedMesh re-bakes the entity non-uniform scale into the
+                // physics mesh, RebuildRenderMesh re-applies the render transform (AtomRenderMesh reads
+                // the new scale), and the physics/baked passes re-cook the collider from the scaled mesh.
+                RebuildWhiteBox();
+            });
+        AZ::NonUniformScaleRequestBus::Event(
+            entityId, &AZ::NonUniformScaleRequests::RegisterScaleChangedEvent, m_nonUniformScaleChangedHandler);
+
         // re-evaluate the live boolean and listen for the source entity moving
         UpdateBooleanSourceListener();
         EvaluateLiveBoolean();
@@ -601,6 +616,7 @@ namespace WhiteBox
 
     void EditorWhiteBoxComponent::Deactivate()
     {
+        m_nonUniformScaleChangedHandler.Disconnect();
         AZ::TickBus::Handler::BusDisconnect();
         AzToolsFramework::EditorVisibilityNotificationBus::Handler::BusDisconnect();
         AzToolsFramework::EditorComponentSelectionRequestsBus::Handler::BusDisconnect();
