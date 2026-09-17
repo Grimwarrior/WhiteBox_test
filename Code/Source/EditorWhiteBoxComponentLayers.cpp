@@ -169,6 +169,44 @@ namespace WhiteBox
         Api::CalculatePlanarUVs(mesh);
     }
 
+    AZStd::vector<AZ::Vector3> EditorWhiteBoxComponent::GetLayerVertexPositionsEntityLocal(const int index)
+    {
+        if (index < 0 || index >= GetLayerCount())
+        {
+            return {};
+        }
+
+        const WhiteBoxLayer& layer = m_layers[index];
+
+        // The active layer's geometry lives in the working mesh, not in its serialised data, so
+        // read that and apply the layer transform arithmetically - matching ApplyTransformToMesh
+        // (scale, then rotate, then translate) without paying for a mesh copy.
+        if (index == m_layerRuntime.m_loadedIndex)
+        {
+            WhiteBoxMesh* working = GetWhiteBoxMesh();
+            if (working == nullptr)
+            {
+                return {};
+            }
+
+            const AZ::Quaternion rotation = AZ::Quaternion::CreateFromEulerAnglesDegrees(layer.m_rotation);
+            AZStd::vector<AZ::Vector3> positions = Api::MeshVertexPositions(*working);
+            for (AZ::Vector3& position : positions)
+            {
+                position = layer.m_position + rotation.TransformVector(position * layer.m_scale);
+            }
+            return positions;
+        }
+
+        // Non-active layers: BuildLayerMesh already returns the transformed display mesh.
+        if (const Api::WhiteBoxMeshPtr layerMesh = BuildLayerMesh(layer))
+        {
+            return Api::MeshVertexPositions(*layerMesh);
+        }
+
+        return {};
+    }
+
     Api::WhiteBoxMeshPtr EditorWhiteBoxComponent::BuildLayerMesh(const WhiteBoxLayer& layer)
     {
         // Deserialize a stored layer and combine its geometry into one display mesh.
@@ -432,6 +470,30 @@ namespace WhiteBox
         return AZ::Edit::PropertyRefreshLevels::EntireTree;
     }
 
+    void EditorWhiteBoxComponent::MoveLayer(const int from, const int to)
+    {
+        const int count = static_cast<int>(m_layers.size());
+        if (from < 0 || from >= count || to < 0 || to >= count || from == to)
+        {
+            return;
+        }
+
+        AzToolsFramework::ScopedUndoBatch undoBatch("Reorder White Box Layer");
+        // The working members hold the active layer's live edits; flush them into m_layers
+        // before the vector shuffles, otherwise the move would drop them.
+        SerializeWhiteBox();
+
+        WhiteBoxLayer moved = AZStd::move(m_layers[from]);
+        m_layers.erase(m_layers.begin() + from);
+        m_layers.insert(m_layers.begin() + to, AZStd::move(moved));
+
+        // SyncLayerStructure re-finds the loaded layer by its stable id (so the edit target
+        // follows the move rather than the slot), recombines, refreshes component mode and
+        // notifies the pane - exactly what the reflected container's reorder used to trigger.
+        SyncLayerStructure();
+        undoBatch.MarkEntityDirty(GetEntityId());
+    }
+
     AZ::u32 EditorWhiteBoxComponent::OnLayersMetaChanged()
     {
         // If the id order/count changed, the list was added-to, removed-from or reordered (some
@@ -656,8 +718,9 @@ namespace WhiteBox
             return m_combinedMesh.get();
         }
         // Non-destructive: render/collide/select against the evaluated result while
-        // the editable base (GetWhiteBoxMesh) stays untouched.
-        if (m_boolean.m_live && m_displayMesh)
+        // the editable base (GetWhiteBoxMesh) stays untouched. Covers both the single-source
+        // live boolean and an active global-boolean target.
+        if (BooleanDisplayActive() && m_displayMesh)
         {
             return m_displayMesh.get();
         }
@@ -848,7 +911,7 @@ namespace WhiteBox
     // }
     void EditorWhiteBoxComponent::RebuildCombinedMesh()
     {
-        if (m_boolean.m_live && m_displayMesh && !m_boolean.m_affectActiveOnly)
+        if (BooleanDisplayActive() && m_displayMesh && !m_boolean.m_affectActiveOnly)
         {
             m_combinedMesh = Api::CloneMesh(*m_displayMesh);
             // Physics uses the collision-FILTERED cut result (m_physicsDisplayMesh), not the visual

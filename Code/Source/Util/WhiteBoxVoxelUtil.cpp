@@ -462,7 +462,10 @@ namespace WhiteBox
             };
 
             // Greedy-merge a plane's exposed (a,b) cells into maximal rectangles.
-            const auto greedy = [&](AZStd::unordered_set<AZ::u64>& mask, auto&& emit)
+            // Parameter is not named "emit": Qt defines that as an empty macro, and this target
+            // is built with AUTOMOC and unity builds, so a Qt-including translation unit batched
+            // into the same unity blob would silently delete the name.
+            const auto greedy = [&](AZStd::unordered_set<AZ::u64>& mask, auto&& emitQuad)
             {
                 AZStd::vector<AZStd::pair<int, int>> list;
                 list.reserve(mask.size());
@@ -511,7 +514,7 @@ namespace WhiteBox
                             mask.erase(packAB(aa, bb));
                         }
                     }
-                    emit(a, a1, b, b1);
+                    emitQuad(a, a1, b, b1);
                 }
             };
 

@@ -25,11 +25,13 @@
 #include <AzCore/std/optional.h>
 #include <AzFramework/Entity/EntityDebugDisplayBus.h>
 #include <AzFramework/Visibility/VisibleGeometryBus.h>
+#include <AzFramework/Render/GeometryIntersectionBus.h>
 #include <AzFramework/Visibility/BoundsBus.h>
 #include <AzToolsFramework/API/ComponentEntitySelectionBus.h>
 #include <AzToolsFramework/ComponentMode/ComponentModeDelegate.h>
 #include <AzToolsFramework/ToolsComponents/EditorComponentBase.h>
 #include <AzToolsFramework/ToolsComponents/EditorVisibilityBus.h>
+#include <SnapApi/VertexSnapBus.h>
 #include <WhiteBox/EditorWhiteBoxComponentBus.h>
 #include <WhiteBox/WhiteBoxToolApi.h>
 
@@ -61,7 +63,9 @@ namespace WhiteBox
         , public AzToolsFramework::EditorComponentSelectionRequestsBus::Handler
         , public AzFramework::BoundsRequestBus::Handler
         , public AzFramework::VisibleGeometryRequestBus::Handler
+        , public AzFramework::RenderGeometry::IntersectionRequestBus::Handler
         , public EditorWhiteBoxComponentRequestBus::Handler
+        , public SnapApi::VertexSourceRequestBus::Handler
         , private EditorWhiteBoxComponentNotificationBus::Handler
         , private AZ::TransformNotificationBus::Handler
         , private AzFramework::EntityDebugDisplayEventBus::Handler
@@ -137,6 +141,39 @@ namespace WhiteBox
         // AzFramework::VisibleGeometryRequestBus::Handler overrides ...
         void BuildVisibleGeometry(const AZ::Aabb& bounds, AzFramework::VisibleGeometryContainer& geometryContainer) const override;
 
+        // AzFramework::RenderGeometry::IntersectionRequestBus overrides ...
+        //! Ray test against this mesh for the editor's render geometry intersector.
+        //!
+        //! Upstream White Box never implemented this, so its meshes were invisible to every
+        //! system built on scene raycasts - vertex snapping's occlusion test among them, but also
+        //! surface snapping and anything else asking "what is under this ray". Implemented in
+        //! terms of the same cached face list EditorSelectionIntersectRayViewport uses.
+        AzFramework::RenderGeometry::RayResult RenderGeometryIntersect(
+            const AzFramework::RenderGeometry::RayRequest& ray) const override;
+
+        // SnapApi::VertexSourceRequestBus overrides ...
+        // Publishes this mesh's vertices to the editor-wide vertex snapper.
+        void CollectSnapVertices(
+            const SnapApi::SnapQueryVolume& volume, AZStd::vector<SnapApi::SnapVertex>& out) const override;
+        void CollectSnapEdges(
+            const SnapApi::SnapQueryVolume& volume, AZStd::vector<SnapApi::SnapEdge>& out) const override;
+        void CollectSnapEdgeMidpoints(
+            const SnapApi::SnapQueryVolume& volume, AZStd::vector<SnapApi::SnapVertex>& out) const override;
+        void CollectSnapFaceCenters(
+            const SnapApi::SnapQueryVolume& volume, AZStd::vector<SnapApi::SnapVertex>& out) const override;
+        AZ::Aabb GetSnapVertexBounds() const override;
+
+        //! Drop every cached snap candidate set. Must be called whenever the mesh geometry, the
+        //! entity transform or the non-uniform scale changes, or snapping will target stale
+        //! positions.
+        void InvalidateSnapVertexCache()
+        {
+            m_snapVertexCacheValid = false;
+            m_snapEdgeCacheValid = false;
+            m_snapEdgeMidpointCacheValid = false;
+            m_snapFaceCenterCacheValid = false;
+        }
+
         //! Returns if the component currently has an instance of RenderMeshInterface.
         bool HasRenderMesh() const;
         //! Returns if the component is currently using a White Box mesh asset to store its data.
@@ -156,6 +193,24 @@ namespace WhiteBox
         //! fails). Used to bake the "with boolean" variant when building the game entity.
         //! @note Uses the CSG API which is only available in the Editor.
         Api::WhiteBoxMeshPtr EvaluateBooleanMesh(bool physicsPass = false);
+        //! One overlapping global cutter, already baked into this entity's (target) UNSCALED local
+        //! space - including both entities' non-uniform scale - so the CSG uses an identity operand
+        //! transform. Owns its mesh clone.
+        struct ResolvedCutter
+        {
+            Api::WhiteBoxMeshPtr m_mesh;         //!< Cutter geometry baked into this target's local space.
+            Api::BooleanOperation m_operation = Api::BooleanOperation::Subtraction;
+        };
+        //! Gather every global cutter (m_booleanOthers) whose world AABB overlaps this entity's,
+        //! resolved into this entity's local space. Empty when this entity is excluded or nothing
+        //! overlaps. @p physicsPass selects the cutter's collision-filtered evaluated mesh.
+        AZStd::vector<ResolvedCutter> CollectOverlappingCutters(bool physicsPass);
+        //! Lightweight AABB-only test: is there at least one overlapping global cutter? Used to set
+        //! m_globalBooleanActive without doing any mesh/CSG work.
+        bool HasOverlappingCutter() const;
+        //! Whether this entity's evaluated (m_displayMesh) result should be shown/baked: either the
+        //! single-source live boolean is on, or it is an active global-boolean target.
+        bool BooleanDisplayActive() const { return m_boolean.m_live || m_globalBooleanActive; }
         //! The cached live-boolean result evaluated during editing (nullptr if the live
         //! boolean is off or no result). Unlike EvaluateBooleanMesh this does not touch the
         //! boolean source entity, so it is safe to read during the game-mode / spawnable
@@ -253,6 +308,13 @@ namespace WhiteBox
         bool GetMaterialUseTexture() const { return m_material.m_useTexture; }
 
         // Layers.
+        //! Vertex positions of layer @p index in ENTITY-local space, i.e. with that layer's own
+        //! position/rotation/scale already applied - the same space LayerMeta::m_position lives in.
+        //! Used by the layer gizmo to pick a snap anchor. Empty if @p index is out of range.
+        //! @note Not cheap (the non-active path deserialises and transforms the layer), so call it
+        //! once at the start of a drag rather than every frame.
+        AZStd::vector<AZ::Vector3> GetLayerVertexPositionsEntityLocal(int index);
+
         int GetLayerCount() const { return static_cast<int>(m_layers.size()); }
         int GetActiveLayerIndex() const { return m_activeLayerIndex; }
         void SetActiveLayer(int index)
@@ -294,6 +356,11 @@ namespace WhiteBox
         //! the shape parameters stop driving it).
         void BakeParametricLayer(int index);
         void DeleteActiveLayer() { OnDeleteLayer(); }
+        //! Move the layer at @p from so it ends up at index @p to (both are indices into the
+        //! CURRENT list). Layer order matters - it is the order the combine modes accumulate in -
+        //! so this is how the user restacks booleans. The active/loaded layer is tracked by its
+        //! stable id, so whichever layer was being edited stays the edit target after the move.
+        void MoveLayer(int from, int to);
         void ApplyActiveLayerTransform() { OnApplyLayerTransform(); }
         AZ::Crc32 CreateChildLayer(); //!< New child entity with its own White Box component; edit focus moves to it.
         LayerMeta GetLayerMeta(int index) const
@@ -366,6 +433,37 @@ namespace WhiteBox
         void SetSourceAfterApply(SourceAfterApply mode) { m_boolean.m_sourceAfterApply = mode; }
         void ApplyBoolean(); //!< One-shot CSG apply using the source entity's mesh.
 
+        // Global (scene-wide) boolean: cutter entities affect every overlapping non-excluded
+        // White Box entity, independent of the single-Source workflow above.
+        bool GetExcludeFromBoolean() const { return m_boolean.m_excludeFromBoolean; }
+        void SetExcludeFromBoolean(bool exclude)
+        {
+            m_boolean.m_excludeFromBoolean = exclude;
+            OnLiveBooleanChange(); // this entity's own result may change (it is/ isn't a target)
+        }
+        bool GetBooleanOthers() const { return m_boolean.m_booleanOthers; }
+        void SetBooleanOthers(bool booleanOthers)
+        {
+            m_boolean.m_booleanOthers = booleanOthers;
+            OnEdgesOnlyChange(); // a subtract cutter renders edges-only; refresh this entity's display
+        }
+        Api::BooleanOperation GetCutterOperation() const { return m_boolean.m_cutterOperation; }
+        void SetCutterOperation(Api::BooleanOperation operation)
+        {
+            m_boolean.m_cutterOperation = operation;
+            OnEdgesOnlyChange(); // edges-only display depends on the operation being Subtract
+        }
+        //! True when this entity should draw as a wireframe brush: either the explicit Edges Only
+        //! toggle, or it is a global cutter using the Subtract operation.
+        bool ShowEdgesOnly() const
+        {
+            return m_edgesOnly ||
+                (m_boolean.m_booleanOthers && m_boolean.m_cutterOperation == Api::BooleanOperation::Subtraction);
+        }
+        //! Recompute every non-excluded White Box entity in the level against the current set of
+        //! global cutters (manual "Refresh Global Booleans"). Static: it walks the whole scene.
+        static void RefreshGlobalBooleans();
+
         // CSG solver selection (applies to every boolean this component runs: the per-layer combine
         // modes and the entity boolean). Fast/BSP is face-based (brush-style) and handles inward
         // shells + inverted normals; Manifold is the volumetric, precision-first backend.
@@ -415,6 +513,11 @@ namespace WhiteBox
             bool m_live = false;             //!< Non-destructive: evaluate the boolean for display only.
             bool m_affectActiveOnly = false; //!< Cut only the active layer instead of the whole combined mesh.
             SourceAfterApply m_sourceAfterApply = SourceAfterApply::Keep; //!< Source entity fate after Apply.
+
+            //! Global (scene-wide) boolean settings. Independent of the single m_sourceEntity above.
+            bool m_excludeFromBoolean = false; //!< When true this entity is never cut by global cutters.
+            bool m_booleanOthers = false;      //!< When true this entity is a cutter: it booleans every overlapping non-excluded entity.
+            Api::BooleanOperation m_cutterOperation = Api::BooleanOperation::Subtraction; //!< Operation this cutter applies to its targets.
         };
         // ---- end Pane API ---------------------------------------------------------------
 
@@ -661,9 +764,45 @@ namespace WhiteBox
         Api::WhiteBoxMeshStream m_whiteBoxData; //!< Serialized White Box mesh data.
         //! Holds a reference to an optional WhiteBoxMeshAsset and manages the lifecycle of adding/removing an asset.
         EditorWhiteBoxMeshAsset* m_editorMeshAsset = nullptr;
+        //!@{
+        //! Rebuild a snap candidate set from the evaluated mesh. Each is built lazily on first use
+        //! after an invalidation, so a session that only ever uses vertex snapping never pays for
+        //! the edge or face sets.
+        void RebuildSnapVertexCache() const;
+        void RebuildSnapEdgeCache() const;
+        void RebuildSnapEdgeMidpointCache() const;
+        void RebuildSnapFaceCenterCache() const;
+        //!@}
+
+        //! World transform helper shared by the snap cache builders - folds in the Non-Uniform
+        //! Scale component the same way GetWorldBounds does.
+        AZ::Vector3 SnapWorldPosition(const AZ::Vector3& localPosition, const AZ::Vector3& nonUniformScale) const;
+
+        //!@{
+        //! Vertex snapping: this mesh's vertices in world space, cached because the snapper asks
+        //! for them on every mouse move of every drag. Rebuilding them per query (deserialising
+        //! handles, per-vertex API calls, a fresh allocation) was the bulk of the cost.
+        mutable AZStd::vector<SnapApi::SnapVertex> m_snapVertexCache;
+        mutable AZ::Aabb m_snapVertexCacheBounds = AZ::Aabb::CreateNull();
+        mutable bool m_snapVertexCacheValid = false;
+
+        //! Polygon border edges (the wireframe the user sees), not triangulation edges.
+        mutable AZStd::vector<SnapApi::SnapEdge> m_snapEdgeCache;
+        mutable bool m_snapEdgeCacheValid = false;
+
+        mutable AZStd::vector<SnapApi::SnapVertex> m_snapEdgeMidpointCache;
+        mutable bool m_snapEdgeMidpointCacheValid = false;
+
+        mutable AZStd::vector<SnapApi::SnapVertex> m_snapFaceCenterCache;
+        mutable bool m_snapFaceCenterCacheValid = false;
+        //!@}
+
         mutable AZStd::optional<AZ::Aabb> m_worldAabb; //!< Cached world aabb (used for selection/view determination).
         mutable AZStd::optional<AZ::Aabb> m_localAabb; //!< Cached local aabb (used for center pivot calculation).
-        AZStd::optional<Api::Faces> m_faces; //!< Cached faces (triangles of mesh used for intersection/selection).
+        //! Cached faces (triangles of mesh used for intersection/selection).
+        //! Mutable because it is a lazily built cache, like m_worldAabb / m_localAabb below, and
+        //! the const RenderGeometryIntersect needs to be able to populate it on first use.
+        mutable AZStd::optional<Api::Faces> m_faces;
         WhiteBoxRenderData m_renderData; //!< Cached render data constructed from the White Box mesh source data.
         WhiteBoxMaterial m_material = {
             DefaultMaterialTint, DefaultMaterialUseTexture}; //!< Render material for White Box mesh.
@@ -700,6 +839,11 @@ namespace WhiteBox
 
         Api::WhiteBoxMeshPtr m_displayMesh; //!< Evaluated (base [op] source) mesh used for display while live.
         Api::WhiteBoxMeshPtr m_physicsDisplayMesh;
+        //! This entity is a global-boolean TARGET with at least one overlapping cutter, so its
+        //! evaluated result (m_displayMesh) should be shown/baked like the live boolean. Set by
+        //! RefreshGlobalBooleans; cleared when no cutter overlaps. Serialized so the composed result
+        //! stays the default shown geometry after reload and in game mode.
+        bool m_globalBooleanActive = false;
         Api::WhiteBoxMeshPtr m_gridMesh; //!< Stamped cubes kept SEPARATE from the freeform mesh (appended for output).
         Api::WhiteBoxMeshPtr m_combinedMesh; //!< Non-serialized freeform+grid mesh used for render/collision/bounds/selection.
         Api::WhiteBoxMeshPtr m_physicsCombinedMesh; // <-- ADD THIS

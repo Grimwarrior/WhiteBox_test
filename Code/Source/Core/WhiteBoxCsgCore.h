@@ -62,11 +62,11 @@ namespace WhiteBox
             const TriangleMesh& meshA, const TriangleMesh& meshB, BooleanOperation operation, TriangleMesh& result);
 
         //! Perform a CSG boolean using a BSP-tree (brush-style) solver instead of Manifold.
-        //! Unlike MeshBoolean (which is volumetric and defines "solid" by triangle orientation, so
-        //! flipping normals yields a shape's complement), this solver is FACE-BASED: it splits
-        //! polygons against BSP planes and classifies front/back locally. That makes it tolerant of
-        //! open meshes, non-manifold input and INWARD-facing shells (rooms/corridors), matching the
-        //! behaviour of Blender's "Fast" (float) boolean solver. It is well suited to White Box's
+        //! Unlike MeshBoolean, this solver is FACE-BASED: it splits polygons against BSP planes and
+        //! classifies front/back locally. Closed inward-facing inputs are normalized for the boolean
+        //! and the result inherits meshA's orientation, allowing rooms/corridors to retain inward
+        //! presentation without becoming infinite complements. Open/non-manifold inputs retain their
+        //! supplied winding. This is similar to Blender's "Fast" (float) boolean solver and suits White Box's
         //! blocky, mostly-planar geometry. Trade-off: less numerically robust than Manifold on tiny
         //! slivers/degenerate overlaps, and it can emit non-manifold output.
         //! @param meshA The first operand (A).

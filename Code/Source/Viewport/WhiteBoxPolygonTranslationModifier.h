@@ -49,6 +49,15 @@ namespace WhiteBox
         void CreateView();
         bool PerformingAction() const;
 
+        //! Abandon the drag in progress: restore the mesh to its state at mouse down and ignore
+        //! any further mouse movement until the button is released. Driven by right click.
+        //! @param notify Raise the mesh-modified / intersection-dirty notifications. Pass false
+        //! when calling from the destructor - the surrounding component mode may already be part
+        //! way through its own teardown, and the rebuild those notifications trigger is redundant
+        //! there anyway.
+        //! @return True if there was a drag to cancel.
+        bool CancelDrag(bool notify = true);
+
     private:
         void CreateManipulator();
         void DestroyManipulator();
@@ -57,6 +66,16 @@ namespace WhiteBox
             m_entityComponentIdPair; //!< The entity and component id this modifier is associated with.
         AZStd::shared_ptr<AzToolsFramework::LinearManipulator>
             m_translationManipulator; //!< The manipulator used to modify the position of the polygon (triangles).
+        //! Copy of the mesh taken at mouse down, used to revert the drag when Escape is pressed.
+        //! Restores topology too, so it also undoes an extrude performed during the drag.
+        Api::WhiteBoxMeshPtr m_dragSnapshot;
+        //! The handles as they were at mouse down. An extrude during the drag repoints these at
+        //! newly created geometry, which the mesh restore then deletes - so they have to be put
+        //! back alongside it or the modifier is left referencing handles that no longer exist.
+        Api::PolygonHandle m_dragPolygonHandleSnapshot;
+        AZStd::vector<Api::VertexHandle> m_dragVertexHandlesSnapshot;
+        //! Set by CancelDrag - suppresses further movement until the mouse button is released.
+        bool m_dragCancelled = false;
         AZStd::vector<Api::VertexHandle> m_vertexHandles; //!< The vertex handles associated with this polygon.
         Api::PolygonHandle m_polygonHandle; //!< The polygon handle this modifier is associated with.
         AZStd::shared_ptr<ManipulatorViewPolygon>

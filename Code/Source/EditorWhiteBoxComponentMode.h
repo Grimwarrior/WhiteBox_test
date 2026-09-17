@@ -10,8 +10,10 @@
 
 #include <AzCore/Component/TransformBus.h>
 #include <AzCore/std/containers/variant.h>
+#include <AzCore/std/smart_ptr/shared_ptr.h>
 #include <AzToolsFramework/ComponentMode/EditorBaseComponentMode.h>
 #include <AzToolsFramework/ViewportUi/ViewportUiRequestBus.h>
+#include <SnapApi/DragCancelBus.h>
 #include <EditorWhiteBoxComponentModeBus.h>
 #include <EditorWhiteBoxComponentModeTypes.h>
 #include <WhiteBox/EditorWhiteBoxComponentBus.h>
@@ -38,6 +40,7 @@ namespace WhiteBox
         , private AZ::TransformNotificationBus::Handler
         , private EditorWhiteBoxComponentNotificationBus::Handler
         , public EditorWhiteBoxComponentModeRequestBus::Handler
+        , private SnapApi::DragCancelRequestBus::Handler
     {
     public:
         AZ_CLASS_ALLOCATOR_DECL
@@ -76,6 +79,11 @@ namespace WhiteBox
         void OverrideKeyboardModifierQuery(const KeyboardModifierQueryFn& keyboardModifierQueryFn) override;
 
     private:
+        // SnapApi::DragCancelRequestBus ...
+        //! Right click during a drag. Dispatched from the snapper gem's viewport selection decorator,
+        //! which sees the click before the manipulator manager swallows it.
+        bool CancelActiveDrag() override;
+
         // AzFramework::EntityDebugDisplayEventBus ...
         void DisplayEntityViewport(
             const AzFramework::ViewportInfo& viewportInfo, AzFramework::DebugDisplayRequests& debugDisplay) override;
@@ -116,6 +124,13 @@ namespace WhiteBox
 
         SubMode m_currentSubMode = SubMode::Default;
         bool m_restoreModifierHeld = false;
+
+        //! Lifetime token for deferred (queued) work. EnterDefaultMode has to set the action
+        //! context mode one event-loop turn late (see the comment there); this token lets that
+        //! callback detect that this component mode has since been destroyed - leaving component
+        //! mode and THEN applying a White Box sub-mode strands the editor in a mode where Play
+        //! and most editor actions are inactive. Captured as a weak_ptr by the deferred lambda.
+        AZStd::shared_ptr<bool> m_deferredWorkToken;
 
         AzToolsFramework::ViewportUi::ClusterId
             m_transformClusterId; 

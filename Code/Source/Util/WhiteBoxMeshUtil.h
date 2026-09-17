@@ -33,6 +33,16 @@ namespace WhiteBox
     //! working mesh and an asset-backed mesh).
     void ClearMeshInPlace(WhiteBoxMesh& mesh);
 
+    //! Overwrite @p target with the contents of @p snapshot (taken earlier with Api::CloneMesh).
+    //!
+    //! Used to revert a cancelled drag: the viewport tools clone the mesh at mouse-down and
+    //! restore it if the user presses Escape. Restores topology as well as positions, so it also
+    //! undoes an extrude/append that happened during the drag.
+    //!
+    //! @return False if @p snapshot could not be serialised or the write failed, in which case
+    //! @p target is left untouched.
+    bool RestoreMeshFromSnapshot(WhiteBoxMesh& target, const WhiteBoxMesh& snapshot);
+
     //! Build a copy of @p src with every face's winding REVERSED (normals point the other way).
     //! Used for a layer's "Invert Normals": flipping the actual mesh (rather than only the
     //! render faces) makes rendering, physics cooking and selection all agree - a room built

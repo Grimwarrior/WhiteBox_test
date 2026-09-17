@@ -13,6 +13,7 @@
 #include <AzCore/Math/Transform.h>
 #include <AzCore/Math/Vector3.h>
 #include <AzCore/std/functional.h>
+#include <AzCore/std/optional.h>
 #include <AzCore/std/smart_ptr/unique_ptr.h>
 
 namespace AzToolsFramework
@@ -67,6 +68,10 @@ namespace WhiteBox
         void BeginBatch(const char* label);
         void EndBatch();
 
+        //! Apply a translate drag, snapping the layer onto a nearby vertex when Snap to Vertex is
+        //! on. @p localPosition is the manipulator's unsnapped position (entity-local).
+        void ApplyPositionSnapped(const AZ::Vector3& localPosition);
+
         void ApplyPosition(const AZ::Vector3& localPosition);
         void ApplyRotation(const AZ::Quaternion& localOrientation);
         void ApplyScale(const AZ::Vector3& scale);
@@ -78,6 +83,13 @@ namespace WhiteBox
         AZStd::unique_ptr<AzToolsFramework::TranslationManipulators> m_translation;
         AZStd::unique_ptr<AzToolsFramework::RotationManipulators> m_rotation;
         AZStd::unique_ptr<AzToolsFramework::ScaleManipulators> m_scale;
+
+        //! Vertex snapping (translate only). Offset from the layer's origin to the vertex chosen as
+        //! the drag anchor, in entity-local space. Resolved on the first move of a drag and held,
+        //! so the anchor cannot flip mid-drag. Rotation and scale do not change during a translate,
+        //! so this stays valid for the whole drag.
+        AZStd::optional<AZ::Vector3> m_snapAnchorOffset;
+        bool m_snapAnchorResolved = false;
 
         AZ::Vector3 m_startScale = AZ::Vector3::CreateOne(); //!< Layer scale at scale-drag start.
         bool m_batchActive = false; //!< An undo batch is open (mouse drag in progress).

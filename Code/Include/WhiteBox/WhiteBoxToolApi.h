@@ -680,9 +680,10 @@ namespace WhiteBox
             //! closed two-manifold inputs and treats normal direction as the definition of "solid",
             //! so a mesh with inverted normals becomes its complement.
             Manifold,
-            //! Face/plane-based BSP (brush-style, like Blender's "Fast" solver). Tolerant of open,
-            //! non-manifold and INWARD-facing (shell/room) meshes and composes inverted-normal
-            //! operands intuitively. Best suited to White Box's blocky, mostly-planar geometry.
+            //! Face/plane-based BSP (brush-style, like Blender's "Fast" solver). Tolerant of open
+            //! and non-manifold meshes. Closed inward-facing (shell/room) inputs are normalized for
+            //! CSG classification and the result inherits the target orientation, so inverted rooms
+            //! compose without being treated as infinite complements. Best suited to blocky geometry.
             //! Less numerically robust than Manifold on tiny slivers, and may emit non-manifold output.
             Fast
         };

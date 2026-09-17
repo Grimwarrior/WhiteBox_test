@@ -11,6 +11,7 @@
 #include <algorithm>
 #include <cmath>
 #include <memory>
+#include <unordered_map>
 #include <utility>
 #include <vector>
 
@@ -18,11 +19,11 @@
 //
 // This is a self-contained, std-only implementation (no AZ/O3DE dependency, like the rest of the
 // CSG core) of the classic Naylor BSP boolean, the same algorithm popularised by Evan Wallace's
-// csg.js. It is a FACE/plane-based solid modeller: it never asks "is this point inside the volume"
-// via orientation/winding-number the way Manifold does, it splits polygons against BSP planes and
-// keeps/drops/flips them locally. Consequences that matter for White Box level design:
-//   * inward-facing shells (a box whose normals point in = a room) compose correctly, so merging
-//     rooms / carving corridors behaves like old brush editors (and like Blender's "Fast" solver),
+// csg.js. It is a FACE/plane-based solid modeller: it splits polygons against BSP planes and
+// keeps/drops/flips them locally. Closed inputs are first normalized to outward winding for the
+// front/back classification, then the result is restored to the target's original orientation.
+// Consequently an inward-facing box can represent a room visually without changing Union,
+// Subtraction or Intersection into operations on the box's infinite complement. Other consequences:
 //   * open and non-manifold meshes do not simply fail,
 //   * coplanar faces are handled explicitly (shared walls between abutting boxes).
 // The price is lower numerical robustness than Manifold on tiny slivers, and output that may be
@@ -384,6 +385,59 @@ namespace WhiteBox
                 return polygons;
             }
 
+            //! A classic csg.js BSP assumes that the back of every boundary plane is inside the
+            //! solid. Reversing every triangle would therefore turn a finite solid into its infinite
+            //! complement. White Box uses reversed winding to render rooms from the inside, so for a
+            //! closed mesh detect that presentation choice and normalize it before classification.
+            //! Open/non-manifold meshes deliberately keep their supplied winding because they have
+            //! no well-defined enclosed volume to normalize.
+            bool IsClosedMesh(const TriangleMesh& mesh)
+            {
+                std::unordered_map<uint64_t, uint32_t> edgeUses;
+                edgeUses.reserve(mesh.m_indices.size());
+                for (size_t triangle = 0; triangle < mesh.TriangleCount(); ++triangle)
+                {
+                    for (size_t edge = 0; edge < 3; ++edge)
+                    {
+                        const uint32_t a = mesh.m_indices[triangle * 3 + edge];
+                        const uint32_t b = mesh.m_indices[triangle * 3 + (edge + 1) % 3];
+                        const uint32_t low = std::min(a, b);
+                        const uint32_t high = std::max(a, b);
+                        const uint64_t key = (static_cast<uint64_t>(low) << 32) | high;
+                        ++edgeUses[key];
+                    }
+                }
+                return !edgeUses.empty() &&
+                    std::all_of(
+                        edgeUses.begin(), edgeUses.end(), [](const auto& edge) { return edge.second == 2; });
+            }
+
+            double SignedVolume(const TriangleMesh& mesh)
+            {
+                double volumeTimesSix = 0.0;
+                for (size_t triangle = 0; triangle < mesh.TriangleCount(); ++triangle)
+                {
+                    const Vec3 a = MeshVertex(mesh, mesh.m_indices[triangle * 3 + 0]);
+                    const Vec3 b = MeshVertex(mesh, mesh.m_indices[triangle * 3 + 1]);
+                    const Vec3 c = MeshVertex(mesh, mesh.m_indices[triangle * 3 + 2]);
+                    volumeTimesSix += a.Dot(b.Cross(c));
+                }
+                return volumeTimesSix / 6.0;
+            }
+
+            bool IsClosedInwardMesh(const TriangleMesh& mesh)
+            {
+                return IsClosedMesh(mesh) && SignedVolume(mesh) < 0.0;
+            }
+
+            void FlipPolygons(std::vector<Polygon>& polygons)
+            {
+                for (Polygon& polygon : polygons)
+                {
+                    polygon.Flip();
+                }
+            }
+
             //! Fan-triangulate the (convex, coplanar) result polygons back into the flat triangle mesh.
             void PolygonsToTriangleMesh(const std::vector<Polygon>& polygons, TriangleMesh& mesh)
             {
@@ -396,7 +450,10 @@ namespace WhiteBox
                     {
                         continue;
                     }
-                    const auto emit = [&mesh](const Vec3& v) -> uint32_t
+                    // Not named "emit": Qt defines that as an empty macro, and this target is
+                    // built with AUTOMOC and unity builds, so a Qt-including translation unit
+                    // batched into the same unity blob would silently delete the name.
+                    const auto emitVertex = [&mesh](const Vec3& v) -> uint32_t
                     {
                         const auto index = static_cast<uint32_t>(mesh.m_positions.size() / 3);
                         mesh.m_positions.push_back(v.m_x);
@@ -404,11 +461,11 @@ namespace WhiteBox
                         mesh.m_positions.push_back(v.m_z);
                         return index;
                     };
-                    const uint32_t i0 = emit(polygon.m_vertices[0]);
+                    const uint32_t i0 = emitVertex(polygon.m_vertices[0]);
                     for (size_t i = 1; i + 1 < count; ++i)
                     {
-                        const uint32_t i1 = emit(polygon.m_vertices[i]);
-                        const uint32_t i2 = emit(polygon.m_vertices[i + 1]);
+                        const uint32_t i1 = emitVertex(polygon.m_vertices[i]);
+                        const uint32_t i2 = emitVertex(polygon.m_vertices[i + 1]);
                         mesh.m_indices.push_back(i0);
                         mesh.m_indices.push_back(i1);
                         mesh.m_indices.push_back(i2);
@@ -430,6 +487,20 @@ namespace WhiteBox
             if (polygonsA.empty() || polygonsB.empty())
             {
                 return false;
+            }
+
+            // Treat winding as an output/presentation property for closed White Box solids, not as
+            // a request to boolean against infinite complement space. The target controls the final
+            // result orientation; the source's orientation never changes the requested geometry.
+            const bool targetWasInward = IsClosedInwardMesh(meshA);
+            const bool sourceWasInward = IsClosedInwardMesh(meshB);
+            if (targetWasInward)
+            {
+                FlipPolygons(polygonsA);
+            }
+            if (sourceWasInward)
+            {
+                FlipPolygons(polygonsB);
             }
 
             Node a;
@@ -486,6 +557,11 @@ namespace WhiteBox
                 a.Invert();
                 a.AllPolygons(out);
                 break;
+            }
+
+            if (targetWasInward)
+            {
+                FlipPolygons(out);
             }
 
             PolygonsToTriangleMesh(out, result);

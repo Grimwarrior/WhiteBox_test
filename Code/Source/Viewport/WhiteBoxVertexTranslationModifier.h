@@ -13,6 +13,7 @@
 #include <AzCore/Component/ComponentBus.h>
 #include <AzCore/Component/TickBus.h>
 #include <AzCore/Memory/Memory.h>
+#include <AzCore/std/optional.h>
 #include <AzCore/std/smart_ptr/shared_ptr.h>
 #include <AzFramework/Entity/EntityDebugDisplayBus.h>
 #include <WhiteBox/WhiteBoxToolApi.h>
@@ -57,6 +58,15 @@ namespace WhiteBox
         void CreateView();
         bool PerformingAction() const;
 
+        //! Abandon the drag in progress: restore the mesh to its state at mouse down and ignore
+        //! any further mouse movement until the button is released. Driven by right click.
+        //! @param notify Raise the mesh-modified / intersection-dirty notifications. Pass false
+        //! when calling from the destructor - the surrounding component mode may already be part
+        //! way through its own teardown, and the rebuild those notifications trigger is redundant
+        //! there anyway.
+        //! @return True if there was a drag to cancel.
+        bool CancelDrag(bool notify = true);
+
         static const int InvalidAxisIndex = -1;
 
     private:
@@ -82,6 +92,14 @@ namespace WhiteBox
             m_localPositionAtMouseDown; //!< The position of the modifier in local space at the time of mouse down.
         int m_actionIndex = InvalidAxisIndex; //!< Which action (axis) are we moving along for the given vertex.
         float m_pressTime = 0.0f; //!< Duration of press and hold of modifier.
+        //! World position of the vertex the drag is currently snapped to (vertex
+        //! snapping), or nothing when not snapped. Drawn as a highlight during the drag.
+        AZStd::optional<AZ::Vector3> m_snapTargetWorld;
+        //! Copy of the mesh taken at mouse down, used to revert the drag (Escape) and by the
+        //! manipulator invalidate path.
+        Api::WhiteBoxMeshPtr m_dragSnapshot;
+        //! Set by CancelDrag - suppresses further movement until the mouse button is released.
+        bool m_dragCancelled = false;
     };
 
     inline Api::VertexHandle VertexTranslationModifier::GetHandle() const

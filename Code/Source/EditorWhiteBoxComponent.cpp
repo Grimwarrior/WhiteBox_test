@@ -399,12 +399,15 @@ namespace WhiteBox
         if (auto serializeContext = azrtti_cast<AZ::SerializeContext*>(context))
         {
             serializeContext->Class<BooleanSettings>()
-                ->Version(1)
+                ->Version(2)
                 ->Field("Source", &BooleanSettings::m_sourceEntity)
                 ->Field("Operation", &BooleanSettings::m_operation)
                 ->Field("Live", &BooleanSettings::m_live)
                 ->Field("AffectActiveOnly", &BooleanSettings::m_affectActiveOnly)
-                ->Field("SourceAfterApply", &BooleanSettings::m_sourceAfterApply);
+                ->Field("SourceAfterApply", &BooleanSettings::m_sourceAfterApply)
+                ->Field("ExcludeFromBoolean", &BooleanSettings::m_excludeFromBoolean)
+                ->Field("BooleanOthers", &BooleanSettings::m_booleanOthers)
+                ->Field("CutterOperation", &BooleanSettings::m_cutterOperation);
         }
     }
 
@@ -436,6 +439,10 @@ namespace WhiteBox
                 ->Field("MaterialOverride", &EditorWhiteBoxComponent::m_materialOverrideAssetId)
                 ->Field("Voxel", &EditorWhiteBoxComponent::m_voxel)
                 ->Field("Boolean", &EditorWhiteBoxComponent::m_boolean)
+                // Persist whether this entity is an active global-boolean target so the composed
+                // result is the default shown geometry after reload and in game mode (the baked
+                // boolean render data carries the geometry; this flag says "show it by default").
+                ->Field("GlobalBooleanActive", &EditorWhiteBoxComponent::m_globalBooleanActive)
                 ->Field("CsgSolver", &EditorWhiteBoxComponent::m_csgSolver)
                 ->Field("BakedBooleanRenderData", &EditorWhiteBoxComponent::m_bakedBooleanRenderData)
                 ->Field("BakedBaseRenderData", &EditorWhiteBoxComponent::m_bakedBaseRenderData)
@@ -552,9 +559,17 @@ namespace WhiteBox
         AZ::TransformNotificationBus::Handler::BusConnect(entityId);
         AzFramework::BoundsRequestBus::Handler::BusConnect(entityId);
         AzFramework::VisibleGeometryRequestBus::Handler::BusConnect(entityId);
+        // Join the editor's render geometry intersector so White Box meshes answer scene
+        // raycasts. Connecting notifies the intersector automatically (see the bus's
+        // ConnectionPolicy); geometry changes are signalled from RebuildRenderMesh.
+        AzFramework::RenderGeometry::IntersectionRequestBus::Handler::BusConnect(
+            AzFramework::RenderGeometry::EntityIdAndContext(entityId, AzToolsFramework::GetEntityContextId()));
         AzFramework::EntityDebugDisplayEventBus::Handler::BusConnect(entityId);
         AzToolsFramework::EditorComponentSelectionRequestsBus::Handler::BusConnect(entityId);
         AzToolsFramework::EditorVisibilityNotificationBus::Handler::BusConnect(entityId);
+        // Offer this mesh's vertices to the editor-wide vertex snapper. Connecting is harmless
+        // when no snapper gem is installed - nothing will ever call us.
+        SnapApi::VertexSourceRequestBus::Handler::BusConnect(entityId);
         AZ::TickBus::Handler::BusConnect();
 
         m_componentModeDelegate.ConnectWithSingleComponentMode<EditorWhiteBoxComponent, EditorWhiteBoxComponentMode>(
@@ -577,6 +592,7 @@ namespace WhiteBox
             [this]([[maybe_unused]] const AZ::Vector3& scale)
             {
                 m_worldAabb.reset();
+                InvalidateSnapVertexCache(); // cached snap vertices fold in the non-uniform scale
                 // Full rebuild: RebuildCombinedMesh re-bakes the entity non-uniform scale into the
                 // physics mesh, RebuildRenderMesh re-applies the render transform (AtomRenderMesh reads
                 // the new scale), and the physics/baked passes re-cook the collider from the scaled mesh.
@@ -618,9 +634,11 @@ namespace WhiteBox
     {
         m_nonUniformScaleChangedHandler.Disconnect();
         AZ::TickBus::Handler::BusDisconnect();
+        SnapApi::VertexSourceRequestBus::Handler::BusDisconnect();
         AzToolsFramework::EditorVisibilityNotificationBus::Handler::BusDisconnect();
         AzToolsFramework::EditorComponentSelectionRequestsBus::Handler::BusDisconnect();
         AzFramework::EntityDebugDisplayEventBus::Handler::BusDisconnect();
+        AzFramework::RenderGeometry::IntersectionRequestBus::Handler::BusDisconnect();
         AzFramework::VisibleGeometryRequestBus::Handler::BusDisconnect();
         AzFramework::BoundsRequestBus::Handler::BusDisconnect();
         AZ::TransformNotificationBus::Handler::BusDisconnect();
@@ -806,7 +824,9 @@ namespace WhiteBox
         if (!booleanRenderData.m_faces.empty())
         {
             whiteBoxComponent->SetBooleanRenderData(booleanRenderData);
-            whiteBoxComponent->SetLiveBooleanState(true, m_boolean.m_live);
+            // A single-source target starts live only if its Live flag is set; a global-boolean
+            // target shows its composed result by default (the manual refresh is the "apply").
+            whiteBoxComponent->SetLiveBooleanState(true, m_boolean.m_live || m_globalBooleanActive);
 
             if (!m_bakedPhysicsBooleanRenderData.m_faces.empty()) {
                 whiteBoxComponent->SetBooleanPhysicsGeometryData(m_bakedPhysicsBooleanRenderData);

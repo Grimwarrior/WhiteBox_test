@@ -16,16 +16,19 @@
 #include "Rendering/WhiteBoxRenderMeshInterface.h"
 
 #include "Util/WhiteBoxMeshUtil.h"
+#include "Util/WhiteBoxSnapUtil.h"
 
 #include <AzCore/Component/NonUniformScaleBus.h>
 #include <AzCore/Component/TransformBus.h>
 #include <AzCore/Console/Console.h>
 #include <AzCore/Math/IntersectSegment.h>
 #include <AzCore/Serialization/EditContext.h>
+#include <AzCore/std/limits.h>
 #include <AzCore/std/numeric.h>
 #include <AzFramework/Visibility/BoundsBus.h>
 #include <cmath>
 #include <AzToolsFramework/Entity/EditorEntityHelpers.h>
+#include <AzToolsFramework/Maths/TransformUtils.h>
 #include <WhiteBox/EditorWhiteBoxColliderBus.h>
 #include <WhiteBox/WhiteBoxBus.h>
 
@@ -690,6 +693,13 @@ namespace WhiteBox
         m_worldAabb.reset();
         m_localAabb.reset();
         m_faces.reset();
+        InvalidateSnapVertexCache();
+
+        // Tell the render geometry intersector the triangles moved, or it will keep serving
+        // raycasts from its cached copy of the old shape.
+        AzFramework::RenderGeometry::IntersectionNotificationBus::Event(
+            AzToolsFramework::GetEntityContextId(),
+            &AzFramework::RenderGeometry::IntersectionNotifications::OnGeometryChanged, GetEntityId());
 
         AZ::Interface<AzFramework::IEntityBoundsUnion>::Get()->RefreshEntityLocalBoundsUnion(GetEntityId());
 
@@ -749,7 +759,12 @@ namespace WhiteBox
 
         m_worldAabb.reset();
         m_localAabb.reset();
+        InvalidateSnapVertexCache(); // cached snap vertices are in world space
         m_worldFromLocal = world;
+
+        AzFramework::RenderGeometry::IntersectionNotificationBus::Event(
+            AzToolsFramework::GetEntityContextId(),
+            &AzFramework::RenderGeometry::IntersectionNotifications::OnGeometryChanged, GetEntityId());
 
         if (m_renderMesh.has_value())
         {
@@ -816,7 +831,16 @@ namespace WhiteBox
 
         if (!m_localAabb.has_value())
         {
-            auto& whiteBoxMesh = *const_cast<EditorWhiteBoxComponent*>(this)->EvaluatedMesh();
+            // EvaluatedMesh() can be null while entities are still activating (e.g. a cutter whose
+            // mesh has not been deserialized yet is queried for its bounds by CollectOverlappingCutters).
+            // Dereferencing it here caused a null read (EXCEPTION_ACCESS_VIOLATION in MeshVertexHandles).
+            // Return an invalid AABB so callers such as Overlaps() simply cull this mesh until it is ready.
+            WhiteBoxMesh* evaluatedMesh = const_cast<EditorWhiteBoxComponent*>(this)->EvaluatedMesh();
+            if (evaluatedMesh == nullptr)
+            {
+                return AZ::Aabb::CreateNull();
+            }
+            auto& whiteBoxMesh = *evaluatedMesh;
 
             m_localAabb = CalculateAabb(
                 whiteBoxMesh,
@@ -899,6 +923,77 @@ namespace WhiteBox
         return intersection;
     }
 
+    AzFramework::RenderGeometry::RayResult EditorWhiteBoxComponent::RenderGeometryIntersect(
+        const AzFramework::RenderGeometry::RayRequest& ray) const
+    {
+        AZ_PROFILE_FUNCTION(AzToolsFramework);
+
+        AzFramework::RenderGeometry::RayResult result;
+
+        if (!m_faces.has_value())
+        {
+            // EvaluatedMesh is non-const (it can build the combined mesh on demand), but this
+            // whole path is a cache fill - m_faces is mutable for exactly this reason.
+            WhiteBoxMesh* evaluatedMesh = const_cast<EditorWhiteBoxComponent*>(this)->EvaluatedMesh();
+            if (evaluatedMesh == nullptr)
+            {
+                return result;
+            }
+
+            m_faces = Api::MeshFaces(*evaluatedMesh);
+        }
+
+        if (m_faces->empty())
+        {
+            return result;
+        }
+
+        // Fold in the Non-Uniform Scale component the same way the rendered geometry and the snap
+        // vertices do, so a raycast agrees with what is actually on screen. (The older
+        // EditorSelectionIntersectRayViewport path predates that and only uses m_worldFromLocal.)
+        const AZ::Vector3 nonUniformScale = EntityNonUniformScale();
+        const AZ::Transform localFromWorld = m_worldFromLocal.GetInverse();
+
+        const AZ::Vector3 localRayStart = localFromWorld.TransformPoint(ray.m_startWorldPosition) / nonUniformScale;
+        const AZ::Vector3 localRayEnd = localFromWorld.TransformPoint(ray.m_endWorldPosition) / nonUniformScale;
+
+        AZ::Intersect::SegmentTriangleHitTester hitTester(localRayStart, localRayEnd);
+
+        float closestNormalisedDistance = AZStd::numeric_limits<float>::max();
+        AZ::Vector3 closestLocalNormal = AZ::Vector3::CreateAxisZ();
+        bool hit = false;
+
+        for (const auto& face : m_faces.value())
+        {
+            float normalisedDistance = 0.0f;
+            AZ::Vector3 localNormal;
+            if (hitTester.IntersectSegmentTriangle(face[0], face[1], face[2], localNormal, normalisedDistance))
+            {
+                if (normalisedDistance < closestNormalisedDistance)
+                {
+                    closestNormalisedDistance = normalisedDistance;
+                    closestLocalNormal = localNormal;
+                    hit = true;
+                }
+            }
+        }
+
+        if (!hit)
+        {
+            return result;
+        }
+
+        // IntersectSegmentTriangle reports t along the segment, so scale back into world units.
+        const AZ::Vector3 worldRay = ray.m_endWorldPosition - ray.m_startWorldPosition;
+        result.m_worldPosition = ray.m_startWorldPosition + worldRay * closestNormalisedDistance;
+        result.m_worldNormal =
+            AzToolsFramework::TransformDirectionNoScaling(m_worldFromLocal, closestLocalNormal).GetNormalizedSafe();
+        result.m_distance = worldRay.GetLength() * closestNormalisedDistance;
+        result.m_entityAndComponent = AZ::EntityComponentIdPair(GetEntityId(), GetId());
+
+        return result;
+    }
+
     void EditorWhiteBoxComponent::OnEntityVisibilityChanged(const bool visibility)
     {
         if (visibility)
@@ -936,8 +1031,9 @@ namespace WhiteBox
     void EditorWhiteBoxComponent::OnEdgesOnlyChange()
     {
         // Edges-only hides the solid render mesh; the edges themselves are drawn in
-        // DisplayEntityViewport so the shape still reads as a wireframe.
-        if (m_edgesOnly)
+        // DisplayEntityViewport so the shape still reads as a wireframe. A global cutter using
+        // Subtract also renders edges-only (ShowEdgesOnly), so it reads as a boolean brush.
+        if (ShowEdgesOnly())
         {
             HideRenderMesh();
         }
@@ -948,9 +1044,28 @@ namespace WhiteBox
     }
 
     void EditorWhiteBoxComponent::DisplayEntityViewport(
-        [[maybe_unused]] const AzFramework::ViewportInfo& viewportInfo, AzFramework::DebugDisplayRequests& debugDisplay)
+        const AzFramework::ViewportInfo& viewportInfo, AzFramework::DebugDisplayRequests& debugDisplay)
     {
         AZ_PROFILE_FUNCTION(AzToolsFramework);
+
+        // Vertex snapping support outside component mode. EditorWhiteBoxComponentMode publishes
+        // the viewport and draws the snap marker while component mode is active, but the layer
+        // gizmo is driven from the White Box pane and can be used with component mode closed - so
+        // publish and draw here too. A wrong id in a multi-viewport layout only disables snapping
+        // (the cursor query returns nothing for a viewport the mouse is not over), it cannot
+        // produce a wrong snap. Drawing the marker from both places is harmless: it is the same
+        // ball at the same position.
+        SnapUtil::SetActiveViewportId(viewportInfo.m_viewportId);
+        SnapUtil::DrawActiveSnapTarget(debugDisplay);
+
+        // DebugDisplay receives world-space line endpoints directly. Unlike Atom's render-mesh
+        // path, m_worldFromLocal does not contain the optional Non-Uniform Scale component, so
+        // fold that scale into each local point before applying the entity transform.
+        const AZ::Vector3 entityNonUniformScale = EntityNonUniformScale();
+        const auto worldPoint = [this, &entityNonUniformScale](const AZ::Vector3& localPoint)
+        {
+            return m_worldFromLocal.TransformPoint(localPoint * entityNonUniformScale);
+        };
 
         if (DebugDrawingEnabled())
         {
@@ -960,18 +1075,24 @@ namespace WhiteBox
         }
 
         // Edges-only wireframe overlay: the solid render mesh is hidden, so draw the mesh's
-        // polygon edges here so the shape is still visible.
-        if (m_edgesOnly)
+        // polygon edges here so the shape is still visible. Covers both the explicit Edges Only
+        // toggle and a subtract cutter (ShowEdgesOnly).
+        if (ShowEdgesOnly())
         {
             if (WhiteBoxMesh* mesh = EvaluatedMesh())
             {
-                debugDisplay.SetColor(AZ::Color(0.30f, 0.90f, 1.0f, 1.0f));
+                // Tint a subtract cutter differently (warm) so it reads as a boolean brush rather
+                // than an ordinary edges-only mesh (cool cyan).
+                const bool isCutter =
+                    m_boolean.m_booleanOthers && m_boolean.m_cutterOperation == Api::BooleanOperation::Subtraction;
+                debugDisplay.SetColor(
+                    isCutter ? AZ::Color(1.0f, 0.55f, 0.15f, 1.0f) : AZ::Color(0.30f, 0.90f, 1.0f, 1.0f));
                 for (const Api::EdgeHandle& edgeHandle : Api::MeshPolygonEdgeHandles(*mesh))
                 {
                     const AZStd::array<Api::VertexHandle, 2> edgeVerts = Api::EdgeVertexHandles(*mesh, edgeHandle);
                     debugDisplay.DrawLine(
-                        m_worldFromLocal.TransformPoint(Api::VertexPosition(*mesh, edgeVerts[0])),
-                        m_worldFromLocal.TransformPoint(Api::VertexPosition(*mesh, edgeVerts[1])));
+                        worldPoint(Api::VertexPosition(*mesh, edgeVerts[0])),
+                        worldPoint(Api::VertexPosition(*mesh, edgeVerts[1])));
                 }
             }
         }
@@ -980,7 +1101,7 @@ namespace WhiteBox
         // BuildColoredRenderData), so draw their polygon edges here instead. Non-active layers
         // come from the layer mesh cache (already transformed + winding-flipped); the active
         // layer draws from the working mesh with its layer transform applied per point.
-        if (!m_edgesOnly) // the whole-component overlay above already covers everything
+        if (!ShowEdgesOnly()) // the whole-component overlay above already covers everything
         {
             const int layerCount = static_cast<int>(m_layers.size());
             const int activeIdx = m_layerRuntime.m_loadedIndex;
@@ -1005,8 +1126,7 @@ namespace WhiteBox
                     const auto layerPoint = [&](const AZ::Vector3& p)
                     {
                         // Same order as ApplyTransformToMesh: scale -> rotate -> translate.
-                        return m_worldFromLocal.TransformPoint(
-                            layerRotation.TransformVector(p * layer.m_scale) + layer.m_position);
+                        return worldPoint(layerRotation.TransformVector(p * layer.m_scale) + layer.m_position);
                     };
                     for (const Api::EdgeHandle& edgeHandle : Api::MeshPolygonEdgeHandles(*mesh))
                     {
@@ -1032,8 +1152,8 @@ namespace WhiteBox
                     {
                         const AZStd::array<Api::VertexHandle, 2> edgeVerts = Api::EdgeVertexHandles(*mesh, edgeHandle);
                         debugDisplay.DrawLine(
-                            m_worldFromLocal.TransformPoint(Api::VertexPosition(*mesh, edgeVerts[0])),
-                            m_worldFromLocal.TransformPoint(Api::VertexPosition(*mesh, edgeVerts[1])));
+                            worldPoint(Api::VertexPosition(*mesh, edgeVerts[0])),
+                            worldPoint(Api::VertexPosition(*mesh, edgeVerts[1])));
                     }
                 }
             }

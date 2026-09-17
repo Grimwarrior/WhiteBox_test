@@ -21,6 +21,56 @@
 
 namespace WhiteBox
 {
+    namespace
+    {
+        //! Bake an operand (boolean source or cutter) into the TARGET's unscaled local space so the
+        //! CSG can be run with an identity operand transform. An AZ::Transform cannot represent a
+        //! non-uniform scale, so both entities' non-uniform scales are applied to the vertices
+        //! directly. The full map for a vertex v is:
+        //!     v' = S_target^-1  *  ( T_target^-1 * T_operand )  *  ( S_operand * v )
+        //! i.e. scale by the operand's non-uniform scale, apply the rigid+uniform relative transform,
+        //! then apply the inverse of the target's non-uniform scale (the target mesh itself is in
+        //! unscaled local space and gets S_target re-applied downstream at render / physics bake).
+        Api::WhiteBoxMeshPtr BakeOperandIntoTargetSpace(
+            const WhiteBoxMesh& operandMesh, const AZ::Vector3& operandNonUniformScale,
+            const AZ::Transform& operandWorldTM, const AZ::Transform& targetWorldTM,
+            const AZ::Vector3& targetNonUniformScale)
+        {
+            Api::WhiteBoxMeshPtr baked = Api::CloneMesh(operandMesh);
+            if (!baked)
+            {
+                return nullptr;
+            }
+
+            const AZ::Transform relative = targetWorldTM.GetInverse() * operandWorldTM; // rigid + uniform
+            // Reciprocal of the target's non-uniform scale, guarded against zero components.
+            const AZ::Vector3 invTargetScale(
+                AZ::IsClose(targetNonUniformScale.GetX(), 0.0f) ? 1.0f : 1.0f / targetNonUniformScale.GetX(),
+                AZ::IsClose(targetNonUniformScale.GetY(), 0.0f) ? 1.0f : 1.0f / targetNonUniformScale.GetY(),
+                AZ::IsClose(targetNonUniformScale.GetZ(), 0.0f) ? 1.0f : 1.0f / targetNonUniformScale.GetZ());
+
+            for (const Api::VertexHandle vertexHandle : Api::MeshVertexHandles(*baked))
+            {
+                AZ::Vector3 p = Api::VertexPosition(*baked, vertexHandle);
+                p *= operandNonUniformScale;    // S_operand (component-wise)
+                p = relative.TransformPoint(p); // T_target^-1 * T_operand (rotation + uniform scale + translation)
+                p *= invTargetScale;            // S_target^-1 (component-wise)
+                Api::SetVertexPosition(*baked, vertexHandle, p);
+            }
+            Api::CalculateNormals(*baked);
+            Api::CalculatePlanarUVs(*baked);
+            return baked;
+        }
+
+        //! The entity's non-uniform scale (identity when it has no Non-Uniform Scale component).
+        AZ::Vector3 EntityNonUniformScaleFor(const AZ::EntityId entityId)
+        {
+            AZ::Vector3 scale = AZ::Vector3::CreateOne();
+            AZ::NonUniformScaleRequestBus::EventResult(scale, entityId, &AZ::NonUniformScaleRequests::GetScale);
+            return scale;
+        }
+    } // namespace
+
     void EditorWhiteBoxComponent::ApplyBoolean()
     {
         if (!m_boolean.m_sourceEntity.IsValid() || m_boolean.m_sourceEntity == GetEntityId())
@@ -69,17 +119,26 @@ namespace WhiteBox
             return;
         }
 
-        // Bring the source mesh from its local space into this entity's local space:
-        // operandTransform = thisWorldFromLocal^-1 * sourceWorldFromLocal.
+        // Bake the source into this entity's unscaled local space. AZ::Transform only carries
+        // uniform scale, so passing the relative transform directly to CSG would lose either
+        // entity's Non-Uniform Scale component.
         AZ::Transform thisWorldTM = AZ::Transform::CreateIdentity();
         AZ::TransformBus::EventResult(thisWorldTM, GetEntityId(), &AZ::TransformBus::Events::GetWorldTM);
         AZ::Transform sourceWorldTM = AZ::Transform::CreateIdentity();
         AZ::TransformBus::EventResult(sourceWorldTM, m_boolean.m_sourceEntity, &AZ::TransformBus::Events::GetWorldTM);
-        const AZ::Transform operandTransform = thisWorldTM.GetInverse() * sourceWorldTM;
+        Api::WhiteBoxMeshPtr sourceOperand = BakeOperandIntoTargetSpace(
+            *sourceMesh, EntityNonUniformScaleFor(m_boolean.m_sourceEntity), sourceWorldTM, thisWorldTM,
+            EntityNonUniformScaleFor(GetEntityId()));
+        if (!sourceOperand)
+        {
+            AZ_Warning("EditorWhiteBoxComponent", false, "Boolean Source mesh could not be cloned.");
+            return;
+        }
 
         AzToolsFramework::ScopedUndoBatch undoBatch("White Box Boolean");
 
-        if (!Api::ApplyMeshBoolean(*targetMesh, *sourceMesh, operandTransform, m_boolean.m_operation, m_csgSolver))
+        if (!Api::ApplyMeshBoolean(
+                *targetMesh, *sourceOperand, AZ::Transform::CreateIdentity(), m_boolean.m_operation, m_csgSolver))
         {
             AZ_Warning(
                 "EditorWhiteBoxComponent", false,
@@ -131,7 +190,19 @@ namespace WhiteBox
 
     Api::WhiteBoxMeshPtr EditorWhiteBoxComponent::EvaluateBooleanMesh(bool physicsPass)
     {
-        if (!m_boolean.m_sourceEntity.IsValid() || m_boolean.m_sourceEntity == GetEntityId())
+        const bool hasSingleSource =
+            m_boolean.m_sourceEntity.IsValid() && m_boolean.m_sourceEntity != GetEntityId();
+
+        // Global cutters that overlap this target (only while this entity is an active global-boolean
+        // target - RefreshGlobalBooleans sets m_globalBooleanActive and this entity is not excluded).
+        AZStd::vector<ResolvedCutter> cutters;
+        if (m_globalBooleanActive && !m_boolean.m_excludeFromBoolean)
+        {
+            cutters = CollectOverlappingCutters(physicsPass);
+        }
+
+        // Nothing to evaluate: no single source and no overlapping cutter.
+        if (!hasSingleSource && cutters.empty())
         {
             return nullptr;
         }
@@ -142,29 +213,39 @@ namespace WhiteBox
             return nullptr;
         }
 
-        AZ::Entity* sourceEntity = nullptr;
-        AZ::ComponentApplicationBus::BroadcastResult(
-            sourceEntity, &AZ::ComponentApplicationRequests::FindEntity, m_boolean.m_sourceEntity);
-        if (sourceEntity == nullptr)
-        {
-            return nullptr;
-        }
-        const auto sourceComponents = sourceEntity->FindComponents<EditorWhiteBoxComponent>();
-        if (sourceComponents.empty())
-        {
-            return nullptr;
-        }
-        WhiteBoxMesh* sourceMesh = sourceComponents[0]->GetEvaluatedWhiteBoxMesh();
-        if (sourceMesh == nullptr)
-        {
-            return nullptr;
-        }
-
+        // This target's world transform and non-uniform scale (operands are baked into this
+        // entity's UNSCALED local space; see BakeOperandIntoTargetSpace).
         AZ::Transform thisWorldTM = AZ::Transform::CreateIdentity();
         AZ::TransformBus::EventResult(thisWorldTM, GetEntityId(), &AZ::TransformBus::Events::GetWorldTM);
-        AZ::Transform sourceWorldTM = AZ::Transform::CreateIdentity();
-        AZ::TransformBus::EventResult(sourceWorldTM, m_boolean.m_sourceEntity, &AZ::TransformBus::Events::GetWorldTM);
-        const AZ::Transform operandTransform = thisWorldTM.GetInverse() * sourceWorldTM;
+        const AZ::Vector3 thisNonUniformScale = EntityNonUniformScaleFor(GetEntityId());
+
+        // Resolve the single-source operand (if any), baked into this target's local space. A
+        // missing/invalid single source is not fatal when global cutters still apply.
+        Api::WhiteBoxMeshPtr sourceOperand;
+        if (hasSingleSource)
+        {
+            AZ::Entity* sourceEntity = nullptr;
+            AZ::ComponentApplicationBus::BroadcastResult(
+                sourceEntity, &AZ::ComponentApplicationRequests::FindEntity, m_boolean.m_sourceEntity);
+            const auto sourceComponents =
+                sourceEntity ? sourceEntity->FindComponents<EditorWhiteBoxComponent>()
+                             : AZStd::vector<EditorWhiteBoxComponent*>{};
+            WhiteBoxMesh* sourceMesh = sourceComponents.empty() ? nullptr : sourceComponents[0]->GetEvaluatedWhiteBoxMesh();
+            if (sourceMesh != nullptr)
+            {
+                AZ::Transform sourceWorldTM = AZ::Transform::CreateIdentity();
+                AZ::TransformBus::EventResult(
+                    sourceWorldTM, m_boolean.m_sourceEntity, &AZ::TransformBus::Events::GetWorldTM);
+                sourceOperand = BakeOperandIntoTargetSpace(
+                    *sourceMesh, EntityNonUniformScaleFor(m_boolean.m_sourceEntity), sourceWorldTM, thisWorldTM,
+                    thisNonUniformScale);
+            }
+        }
+
+        if (sourceOperand == nullptr && cutters.empty())
+        {
+            return nullptr; // single source failed to resolve and no cutters -> nothing to do
+        }
 
         // Evaluate into a fresh mesh so the editable base is never modified. By default the cut
         // applies to the WHOLE combined geometry (every visible layer, its grid/stamps and its
@@ -187,14 +268,156 @@ namespace WhiteBox
         {
             return nullptr;
         }
-        if (Api::ApplyMeshBoolean(*evaluated, *sourceMesh, operandTransform, m_boolean.m_operation, m_csgSolver))
+
+        // Apply the single-source operand first (preserves the existing single-source behaviour),
+        // then every overlapping global cutter in turn. A cutter that produces no result (e.g. no
+        // real overlap) is skipped rather than aborting the whole evaluation.
+        bool anyApplied = false;
+        if (sourceOperand != nullptr &&
+            Api::ApplyMeshBoolean(
+                *evaluated, *sourceOperand, AZ::Transform::CreateIdentity(), m_boolean.m_operation, m_csgSolver))
+        {
+            anyApplied = true;
+        }
+        for (const ResolvedCutter& cutter : cutters)
+        {
+            if (cutter.m_mesh != nullptr &&
+                Api::ApplyMeshBoolean(
+                    *evaluated, *cutter.m_mesh, AZ::Transform::CreateIdentity(), cutter.m_operation, m_csgSolver))
+            {
+                anyApplied = true;
+            }
+        }
+
+        if (anyApplied)
         {
             Api::CalculateNormals(*evaluated);
             Api::CalculatePlanarUVs(*evaluated);
             return evaluated;
         }
-        // on failure (no overlap) return null -> callers fall back to the base mesh.
+        // nothing applied (no overlap) -> null so callers fall back to the base mesh.
         return nullptr;
+    }
+
+    AZStd::vector<EditorWhiteBoxComponent::ResolvedCutter> EditorWhiteBoxComponent::CollectOverlappingCutters(
+        bool physicsPass)
+    {
+        AZStd::vector<ResolvedCutter> cutters;
+
+        // This entity's world AABB and transform (targets are cut in their own local space).
+        const AZ::Aabb thisBounds = GetWorldBounds();
+        AZ::Transform thisWorldTM = AZ::Transform::CreateIdentity();
+        AZ::TransformBus::EventResult(thisWorldTM, GetEntityId(), &AZ::TransformBus::Events::GetWorldTM);
+        const AZ::Vector3 thisNonUniformScale = EntityNonUniformScaleFor(GetEntityId());
+
+        auto callback =
+            [this, &cutters, &thisBounds, &thisWorldTM, &thisNonUniformScale, physicsPass](AZ::Entity* entity)
+        {
+            if (entity == nullptr || entity->GetId() == GetEntityId())
+            {
+                return; // never cut with self
+            }
+            auto* cutter = entity->FindComponent<EditorWhiteBoxComponent>();
+            if (cutter == nullptr || !cutter->m_boolean.m_booleanOthers)
+            {
+                return; // only entities flagged as cutters participate
+            }
+            if (!thisBounds.Overlaps(cutter->GetWorldBounds()))
+            {
+                return; // AABB cull: a cutter that cannot touch this target does no work
+            }
+            // The cached physics mesh has already had the cutter entity's non-uniform scale baked
+            // into its vertices. The visual mesh has not, so only that path supplies S_operand to
+            // BakeOperandIntoTargetSpace. Using the strict physics accessor avoids accidentally
+            // falling back to an unfiltered visual mesh when collision is disabled.
+            WhiteBoxMesh* cutterMesh =
+                physicsPass ? cutter->GetPhysicsCombinedMeshStrict() : cutter->GetEvaluatedWhiteBoxMesh();
+            if (cutterMesh == nullptr || Api::MeshFaceHandles(*cutterMesh).empty())
+            {
+                return;
+            }
+            AZ::Transform cutterWorldTM = AZ::Transform::CreateIdentity();
+            AZ::TransformBus::EventResult(
+                cutterWorldTM, entity->GetId(), &AZ::TransformBus::Events::GetWorldTM);
+
+            ResolvedCutter resolved;
+            const AZ::Vector3 cutterScale =
+                physicsPass ? AZ::Vector3::CreateOne() : EntityNonUniformScaleFor(entity->GetId());
+            resolved.m_mesh = BakeOperandIntoTargetSpace(
+                *cutterMesh, cutterScale, cutterWorldTM, thisWorldTM, thisNonUniformScale);
+            if (!resolved.m_mesh)
+            {
+                return;
+            }
+            resolved.m_operation = cutter->m_boolean.m_cutterOperation;
+            cutters.push_back(AZStd::move(resolved));
+        };
+        AZ::ComponentApplicationBus::Broadcast(&AZ::ComponentApplicationRequests::EnumerateEntities, callback);
+
+        return cutters;
+    }
+
+    bool EditorWhiteBoxComponent::HasOverlappingCutter() const
+    {
+        if (m_boolean.m_excludeFromBoolean)
+        {
+            return false;
+        }
+        const AZ::Aabb thisBounds = GetWorldBounds();
+        bool found = false;
+        auto callback = [this, &thisBounds, &found](AZ::Entity* entity)
+        {
+            if (found || entity == nullptr || entity->GetId() == GetEntityId())
+            {
+                return;
+            }
+            auto* cutter = entity->FindComponent<EditorWhiteBoxComponent>();
+            if (cutter != nullptr && cutter->m_boolean.m_booleanOthers &&
+                thisBounds.Overlaps(cutter->GetWorldBounds()))
+            {
+                found = true;
+            }
+        };
+        AZ::ComponentApplicationBus::Broadcast(&AZ::ComponentApplicationRequests::EnumerateEntities, callback);
+        return found;
+    }
+
+    void EditorWhiteBoxComponent::RefreshGlobalBooleans()
+    {
+        // Walk every White Box entity in the level and recompute each non-excluded target against
+        // the current set of cutters. Manual (button-driven) so the scene-wide N x M cost is only
+        // paid on demand, never per edit or per frame.
+        AZStd::vector<EditorWhiteBoxComponent*> components;
+        auto collect = [&components](AZ::Entity* entity)
+        {
+            if (entity != nullptr)
+            {
+                if (auto* component = entity->FindComponent<EditorWhiteBoxComponent>())
+                {
+                    components.push_back(component);
+                }
+            }
+        };
+        AZ::ComponentApplicationBus::Broadcast(&AZ::ComponentApplicationRequests::EnumerateEntities, collect);
+
+        for (EditorWhiteBoxComponent* component : components)
+        {
+            // A cutter that overlaps a target now may not after this refresh (or vice versa), so
+            // recompute the active flag from scratch, then rebuild so the display/physics/bake all
+            // reflect the composed result (or revert to base when nothing overlaps).
+            const bool wasActive = component->m_globalBooleanActive;
+            component->m_globalBooleanActive = component->HasOverlappingCutter();
+            component->RebuildWhiteBox();
+
+            // Mark changed targets dirty so the prefab/undo captures the rebaked geometry and game
+            // mode reflects it. A target that is (or just stopped being) active had its baked data
+            // recomputed; leave untouched entities out so a refresh does not dirty the whole scene.
+            if (component->m_globalBooleanActive || wasActive)
+            {
+                AzToolsFramework::ToolsApplicationRequestBus::Broadcast(
+                    &AzToolsFramework::ToolsApplicationRequests::AddDirtyEntity, component->GetEntityId());
+            }
+        }
     }
 
     void EditorWhiteBoxComponent::EvaluateLiveBoolean()
