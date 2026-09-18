@@ -20,6 +20,7 @@
 #include <AzCore/Math/Vector3.h>
 #include <AzCore/std/containers/map.h>
 #include <AzCore/std/containers/vector.h>
+#include <AzCore/std/containers/unordered_set.h>
 #include <AzCore/std/functional.h>
 #include <AzCore/std/hash.h>
 #include <AzCore/std/numeric.h>
@@ -649,13 +650,17 @@ namespace WhiteBox
             const auto& polygonProps = whiteBox.mesh.property(polygonPropsHandle);
 
             AZStd::vector<PolygonHandle> polygonHandles;
+            // Every face in a polygon maps to the same ordered face list. Its first
+            // face is a unique representative. Preserve first-encounter order while
+            // avoiding a linear search through all previously emitted polygons.
+            AZStd::unordered_set<int> seenPolygons;
+            seenPolygons.reserve(polygonProps.size());
             for (const auto& polygonProp : polygonProps)
             {
-                // don't add duplicate polygons
-                PolygonHandle polygonHandle = PolygonHandleFromInternal(polygonProp.second);
-                if (AZStd::find(polygonHandles.begin(), polygonHandles.end(), polygonHandle) == polygonHandles.end())
+                const int representative = polygonProp.second.empty() ? -1 : polygonProp.second.front().idx();
+                if (seenPolygons.insert(representative).second)
                 {
-                    polygonHandles.push_back(AZStd::move(polygonHandle));
+                    polygonHandles.push_back(PolygonHandleFromInternal(polygonProp.second));
                 }
             }
 
@@ -3560,18 +3565,12 @@ namespace WhiteBox
         {
             AZ_PROFILE_FUNCTION(AzToolsFramework);
 
-            WhiteBoxMeshStream clonedData;
-            if (!WriteMesh(whiteBox, clonedData))
-            {
-                return nullptr;
-            }
-
-            WhiteBoxMeshPtr newMesh = CreateWhiteBoxMesh();
-            if (ReadMesh(*newMesh, clonedData) != ReadResult::Full)
-            {
-                return nullptr;
-            }
-
+            // OpenMesh copies connectivity and deep-copies all property containers,
+            // including polygon groups, UVs, hidden vertices, materials and paint.
+            // Live rebuilds clone meshes repeatedly; avoid a binary write/read
+            // round-trip and reconstruction of every face for each copy.
+            WhiteBoxMeshPtr newMesh(aznew WhiteBoxMesh());
+            newMesh->mesh = whiteBox.mesh;
             return newMesh;
         }
 

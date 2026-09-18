@@ -490,27 +490,37 @@ namespace WhiteBox
             {
                 continue; // Edges Only layers contribute no solid faces (edges drawn in DisplayEntityViewport)
             }
-            Api::WhiteBoxMeshPtr mesh;
+            // Borrow unchanged layer meshes. Only transformed/grid-combined active
+            // geometry needs an owned copy; render-data generation is read-only.
+            Api::WhiteBoxMeshPtr ownedMesh;
+            WhiteBoxMesh* mesh = nullptr;
             if (i == activeIdx)
             {
-                mesh = CombinedWithGrid(freeform);
-                if (!mesh && freeform != nullptr)
+                ownedMesh = CombinedWithGrid(freeform);
+                if (!ownedMesh && freeform != nullptr && (!activeIdentity || m_layers[i].m_invertNormals))
                 {
-                    mesh = Api::CloneMesh(*freeform);
+                    ownedMesh = Api::CloneMesh(*freeform);
                 }
-                if (mesh && !activeIdentity)
+                if (ownedMesh && !activeIdentity)
                 {
                     ApplyTransformToMesh(
-                        *mesh, m_layers[i].m_position, m_layers[i].m_rotation, m_layers[i].m_scale);
+                        *ownedMesh, m_layers[i].m_position, m_layers[i].m_rotation, m_layers[i].m_scale);
                 }
-                if (mesh && m_layers[i].m_invertNormals)
+                if (ownedMesh && m_layers[i].m_invertNormals)
                 {
-                    mesh = FlippedMeshWinding(*mesh); // mesh-level flip (matches BuildCombined/physics)
+                    ownedMesh = FlippedMeshWinding(*ownedMesh); // matches BuildCombined/physics
                 }
+                mesh = ownedMesh ? ownedMesh.get() : freeform;
             }
             else
             {
-                mesh = BuildLayerMesh(m_layers[i]); // already transformed + winding-flipped
+                const auto id = m_layers[i].m_id;
+                auto cached = m_layerRuntime.m_meshCache.find(id);
+                if (cached == m_layerRuntime.m_meshCache.end() || !cached->second)
+                {
+                    cached = m_layerRuntime.m_meshCache.insert_or_assign(id, BuildLayerMesh(m_layers[i])).first;
+                }
+                mesh = cached->second.get(); // already transformed + winding-flipped
             }
             if (!mesh)
             {
@@ -788,6 +798,48 @@ namespace WhiteBox
         EditorWhiteBoxComponentModeRequestBus::Event(
             AZ::EntityComponentIdPair{GetEntityId(), GetId()},
             &EditorWhiteBoxComponentModeRequests::MarkWhiteBoxIntersectionDataDirty);
+
+        // Mid-drag there is nothing to serialize into, and the committing rebuild that ends the drag
+        // re-packs anyway, so a streaming edit skips it.
+        if (!m_rebuild.m_streaming)
+        {
+            PackRenderDataBlob();
+        }
+    }
+
+    void EditorWhiteBoxComponent::PackRenderDataBlob()
+    {
+        m_renderDataBlob = PackWhiteBoxRenderData({ &m_renderData });
+    }
+
+    void EditorWhiteBoxComponent::PackBakedDataBlob()
+    {
+        m_bakedDataBlob = PackWhiteBoxRenderData({ &m_bakedBaseRenderData, &m_bakedPhysicsBaseRenderData,
+                                                   &m_bakedBooleanRenderData, &m_bakedPhysicsBooleanRenderData });
+    }
+
+    void EditorWhiteBoxComponent::EnsureRenderDataUnpacked()
+    {
+        // BuildGameEntity can run on a clone that was deserialized but never activated, so the live
+        // render data is still only in the blobs. When the members are all empty and a blob is not,
+        // that is exactly the case - unpack. An active component's members are already current (and
+        // can legitimately be empty), so it is left alone.
+        const bool haveFaces = !m_renderData.m_faces.empty() || !m_bakedBaseRenderData.m_faces.empty() ||
+            !m_bakedPhysicsBaseRenderData.m_faces.empty() || !m_bakedBooleanRenderData.m_faces.empty() ||
+            !m_bakedPhysicsBooleanRenderData.m_faces.empty();
+        if (!haveFaces && (!m_renderDataBlob.empty() || !m_bakedDataBlob.empty()))
+        {
+            UnpackRenderDataBlobs();
+        }
+    }
+
+    void EditorWhiteBoxComponent::UnpackRenderDataBlobs()
+    {
+        // Order must match PackRenderDataBlob / PackBakedDataBlob.
+        UnpackWhiteBoxRenderData(m_renderDataBlob, { &m_renderData });
+        UnpackWhiteBoxRenderData(
+            m_bakedDataBlob, { &m_bakedBaseRenderData, &m_bakedPhysicsBaseRenderData, &m_bakedBooleanRenderData,
+                               &m_bakedPhysicsBooleanRenderData });
     }
 
     void EditorWhiteBoxComponent::OnTransformChanged(
@@ -1105,6 +1157,28 @@ namespace WhiteBox
             return m_worldFromLocal.TransformPoint(localPoint * entityNonUniformScale);
         };
 
+        // One DrawLines per mesh rather than a DrawLine (a whole AuxGeom draw call) per edge - a dense
+        // shape has thousands of edges and this runs every frame. m_debugLineBuffer keeps its capacity
+        // across frames so the steady state does not allocate.
+        const auto drawMeshEdges = [this, &debugDisplay](
+                                       const WhiteBoxMesh& mesh, const AZ::Color& color, auto&& toWorld)
+        {
+            const Api::EdgeHandles edgeHandles = Api::MeshPolygonEdgeHandles(mesh);
+            m_debugLineBuffer.clear();
+            m_debugLineBuffer.reserve(edgeHandles.size() * 2);
+            for (const Api::EdgeHandle& edgeHandle : edgeHandles)
+            {
+                const AZStd::array<Api::VertexHandle, 2> edgeVerts = Api::EdgeVertexHandles(mesh, edgeHandle);
+                m_debugLineBuffer.push_back(toWorld(Api::VertexPosition(mesh, edgeVerts[0])));
+                m_debugLineBuffer.push_back(toWorld(Api::VertexPosition(mesh, edgeVerts[1])));
+            }
+            if (!m_debugLineBuffer.empty())
+            {
+                debugDisplay.SetColor(color);
+                debugDisplay.DrawLines(m_debugLineBuffer, color);
+            }
+        };
+
         if (DebugDrawingEnabled())
         {
             WhiteBoxDebugRendering(
@@ -1123,15 +1197,10 @@ namespace WhiteBox
                 // than an ordinary edges-only mesh (cool cyan).
                 const bool isCutter =
                     m_boolean.m_booleanOthers && m_boolean.m_cutterOperation == Api::BooleanOperation::Subtraction;
-                debugDisplay.SetColor(
-                    isCutter ? AZ::Color(1.0f, 0.55f, 0.15f, 1.0f) : AZ::Color(0.30f, 0.90f, 1.0f, 1.0f));
-                for (const Api::EdgeHandle& edgeHandle : Api::MeshPolygonEdgeHandles(*mesh))
-                {
-                    const AZStd::array<Api::VertexHandle, 2> edgeVerts = Api::EdgeVertexHandles(*mesh, edgeHandle);
-                    debugDisplay.DrawLine(
-                        worldPoint(Api::VertexPosition(*mesh, edgeVerts[0])),
-                        worldPoint(Api::VertexPosition(*mesh, edgeVerts[1])));
-                }
+                drawMeshEdges(
+                    *mesh,
+                    isCutter ? AZ::Color(1.0f, 0.55f, 0.15f, 1.0f) : AZ::Color(0.30f, 0.90f, 1.0f, 1.0f),
+                    worldPoint);
             }
         }
 
@@ -1166,13 +1235,7 @@ namespace WhiteBox
                         // Same order as ApplyTransformToMesh: scale -> rotate -> translate.
                         return worldPoint(layerRotation.TransformVector(p * layer.m_scale) + layer.m_position);
                     };
-                    for (const Api::EdgeHandle& edgeHandle : Api::MeshPolygonEdgeHandles(*mesh))
-                    {
-                        const AZStd::array<Api::VertexHandle, 2> edgeVerts = Api::EdgeVertexHandles(*mesh, edgeHandle);
-                        debugDisplay.DrawLine(
-                            layerPoint(Api::VertexPosition(*mesh, edgeVerts[0])),
-                            layerPoint(Api::VertexPosition(*mesh, edgeVerts[1])));
-                    }
+                    drawMeshEdges(*mesh, AZ::Color(0.30f, 0.90f, 1.0f, 1.0f), layerPoint);
                 }
                 else
                 {
@@ -1186,13 +1249,7 @@ namespace WhiteBox
                     {
                         continue;
                     }
-                    for (const Api::EdgeHandle& edgeHandle : Api::MeshPolygonEdgeHandles(*mesh))
-                    {
-                        const AZStd::array<Api::VertexHandle, 2> edgeVerts = Api::EdgeVertexHandles(*mesh, edgeHandle);
-                        debugDisplay.DrawLine(
-                            worldPoint(Api::VertexPosition(*mesh, edgeVerts[0])),
-                            worldPoint(Api::VertexPosition(*mesh, edgeVerts[1])));
-                    }
+                    drawMeshEdges(*mesh, AZ::Color(0.30f, 0.90f, 1.0f, 1.0f), worldPoint);
                 }
             }
         }
