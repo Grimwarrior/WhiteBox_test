@@ -12,6 +12,7 @@
 #include "Util/WhiteBoxEditorDrawUtil.h"
 #include "Util/WhiteBoxSnapUtil.h"
 
+#include <AzCore/std/algorithm.h>
 #include <AzCore/std/optional.h>
 #include <AzCore/std/smart_ptr/make_shared.h>
 #include <AzFramework/Viewport/ViewportColors.h>
@@ -675,14 +676,14 @@ namespace WhiteBox
 
         if (m_whiteBoxSelection)
         {
-            if (auto polygonSelection = AZStd::get_if<PolygonIntersection>(&m_whiteBoxSelection->m_selection))
+            if (AZStd::holds_alternative<PolygonIntersection>(m_whiteBoxSelection->m_selection))
             {
-                auto vertexHandles = Api::PolygonVertexHandles(*whiteBox, polygonSelection->GetHandle());
-                DrawPoints(debugDisplay, whiteBox, worldFromLocal, viewportInfo, vertexHandles, ed_whiteBoxVertexSelection);
-                if (m_polygonIntersection.value_or(PolygonIntersection{}).GetHandle() != polygonSelection->GetHandle())
+                DrawPoints(debugDisplay, whiteBox, worldFromLocal, viewportInfo,
+                    m_whiteBoxSelection->m_vertexHandles, ed_whiteBoxVertexSelection);
+                for (const Api::PolygonHandle& polygon : m_whiteBoxSelection->m_polygons)
                 {
-                    DrawFace(debugDisplay, whiteBox, polygonSelection->GetHandle(), ed_whiteBoxPolygonSelection);
-                    DrawOutline(debugDisplay, whiteBox, polygonSelection->GetHandle(), ed_whiteBoxOutlineSelection);
+                    DrawFace(debugDisplay, whiteBox, polygon, ed_whiteBoxPolygonSelection);
+                    DrawOutline(debugDisplay, whiteBox, polygon, ed_whiteBoxOutlineSelection);
                 }
             }
             else if (auto edgeSelection = AZStd::get_if<EdgeIntersection>(&m_whiteBoxSelection->m_selection))
@@ -771,9 +772,33 @@ namespace WhiteBox
             case GeometryIntersection::Polygon:
                 if (polygonIntersection.has_value())
                 {
-                    m_whiteBoxSelection = AZStd::make_shared<TransformMode::VertexTransformSelection>();
+                    const bool extend = mouseInteraction.m_mouseInteraction.m_keyboardModifiers.Ctrl();
+                    if (!extend || !m_whiteBoxSelection ||
+                        !AZStd::holds_alternative<PolygonIntersection>(m_whiteBoxSelection->m_selection))
+                    {
+                        m_whiteBoxSelection = AZStd::make_shared<TransformMode::VertexTransformSelection>();
+                    }
                     m_whiteBoxSelection->m_selection = polygonIntersection.value();
-                    RefreshManipulator();
+                    auto& polygons = m_whiteBoxSelection->m_polygons;
+                    const auto selected = AZStd::find(polygons.begin(), polygons.end(), polygonIntersection->GetHandle());
+                    if (selected == polygons.end())
+                    {
+                        polygons.push_back(polygonIntersection->GetHandle());
+                    }
+                    else
+                    {
+                        polygons.erase(selected);
+                    }
+                    m_numericInput.Reset();
+                    if (polygons.empty())
+                    {
+                        m_whiteBoxSelection.reset();
+                        DestroyManipulators();
+                    }
+                    else
+                    {
+                        RefreshManipulator();
+                    }
                 }
                 break;
             case GeometryIntersection::Edge:
@@ -792,14 +817,23 @@ namespace WhiteBox
                     RefreshManipulator();
                 }
                 break;
-            default: 
-                m_whiteBoxSelection.reset();
-                DestroyManipulators();
+            default:
+                if (!mouseOverManipulator && !mouseInteraction.m_mouseInteraction.m_keyboardModifiers.Ctrl())
+                {
+                    m_whiteBoxSelection.reset();
+                    m_numericInput.Reset();
+                    DestroyManipulators();
+                }
                 break;
             }
         }
 
         return false;
+    }
+
+    Api::PolygonHandles TransformMode::GetSelectedPolygons() const
+    {
+        return m_whiteBoxSelection ? m_whiteBoxSelection->m_polygons : Api::PolygonHandles{};
     }
 
     void TransformMode::RefreshManipulator()
@@ -839,11 +873,28 @@ namespace WhiteBox
 
     void TransformMode::UpdateTransformHandles(WhiteBoxMesh* mesh)
     {
-        if (auto polygonSelection = AZStd::get_if<PolygonIntersection>(&m_whiteBoxSelection->m_selection))
+        if (AZStd::holds_alternative<PolygonIntersection>(m_whiteBoxSelection->m_selection))
         {
-            m_whiteBoxSelection->m_vertexHandles = Api::PolygonVertexHandles(*mesh, polygonSelection->GetHandle());
-            m_whiteBoxSelection->m_vertexPositions = Api::VertexPositions(*mesh, m_whiteBoxSelection->m_vertexHandles);
-            m_whiteBoxSelection->m_localPosition = Api::PolygonMidpoint(*mesh, polygonSelection->GetHandle());
+            auto& handles = m_whiteBoxSelection->m_vertexHandles;
+            handles.clear();
+            for (const Api::PolygonHandle& polygon : m_whiteBoxSelection->m_polygons)
+            {
+                for (const Api::VertexHandle vertex : Api::PolygonVertexHandles(*mesh, polygon))
+                {
+                    if (AZStd::find(handles.begin(), handles.end(), vertex) == handles.end())
+                    {
+                        handles.push_back(vertex);
+                    }
+                }
+            }
+            m_whiteBoxSelection->m_vertexPositions = Api::VertexPositions(*mesh, handles);
+            AZ::Vector3 center = AZ::Vector3::CreateZero();
+            for (const AZ::Vector3& position : m_whiteBoxSelection->m_vertexPositions)
+            {
+                center += position;
+            }
+            m_whiteBoxSelection->m_localPosition = handles.empty()
+                ? AZ::Vector3::CreateZero() : center / static_cast<float>(handles.size());
         }
         else if (auto edgeSelection = AZStd::get_if<EdgeIntersection>(&m_whiteBoxSelection->m_selection))
         {

@@ -16,6 +16,8 @@
 #include "WhiteBox/EditorWhiteBoxComponentBus.h"
 #include "WhiteBoxTestFixtures.h"
 #include "WhiteBoxTestUtil.h"
+#include "SubComponentModes/EditorWhiteBoxTransformMode.h"
+#include "Util/WhiteBoxMeshUtil.h"
 
 #include <AZTestShared/Math/MathTestHelpers.h>
 #include <AzCore/Asset/AssetManager.h>
@@ -879,3 +881,139 @@ namespace UnitTest
         m_whiteBoxMeshAsset = nullptr;
     }
 } // namespace UnitTest
+
+namespace UnitTest
+{
+    TEST_F(EditorWhiteBoxModifierTestFixture, TransformPolygonSelectionSupportsCtrlToggleAndUniqueVertexMovement)
+    {
+        namespace Api = WhiteBox::Api;
+        namespace Viewport = AzToolsFramework::ViewportInteraction;
+        auto* mesh = m_whiteBoxComponent->GetWhiteBoxMesh();
+        ASSERT_NE(mesh, nullptr);
+        Api::InitializeAsUnitCube(*mesh);
+        const auto polygons = Api::MeshPolygonHandles(*mesh);
+        ASSERT_GE(polygons.size(), 3);
+        const AZ::EntityComponentIdPair pair(m_whiteBoxEntityId, m_whiteBoxComponent->GetId());
+        WhiteBox::TransformMode mode(pair);
+        WhiteBox::IntersectionAndRenderData intersectionData;
+        Viewport::MouseInteractionEvent event{};
+        event.m_mouseEvent = Viewport::MouseEvent::Down;
+        event.m_mouseInteraction.m_mouseButtons.m_mouseButtons = static_cast<AZ::u32>(Viewport::MouseButton::Left);
+        const auto click = [&](size_t polygon, bool ctrl)
+        {
+            event.m_mouseInteraction.m_keyboardModifiers.m_keyModifiers =
+                ctrl ? static_cast<AZ::u32>(Viewport::KeyboardModifier::Ctrl) : 0;
+            WhiteBox::PolygonIntersection hit;
+            hit.m_closestPolygonWithHandle.m_handle = polygons[polygon];
+            hit.m_intersection.m_closestDistance = 1.0f;
+            WhiteBox::ModeMouseInteraction mouse{
+                event, pair, AZ::Transform::CreateIdentity(), intersectionData, {}, hit, {}};
+            mode.HandleMouseInteraction(mouse);
+        };
+        click(0, false);
+        click(1, true);
+        ASSERT_EQ(mode.GetSelectedPolygons().size(), 2);
+        click(0, true);
+        ASSERT_EQ(mode.GetSelectedPolygons().size(), 1);
+        EXPECT_EQ(mode.GetSelectedPolygons().front(), polygons[1]);
+        click(2, false);
+        ASSERT_EQ(mode.GetSelectedPolygons().size(), 1);
+        EXPECT_EQ(mode.GetSelectedPolygons().front(), polygons[2]);
+        click(0, true);
+        click(1, true);
+        const auto selected = mode.GetSelectedPolygons();
+
+        const auto handles = Api::MeshVertexHandles(*mesh);
+        const auto before = Api::VertexPositions(*mesh, handles);
+        mode.NumericBeginMove();
+        mode.NumericSetAxisX();
+        mode.NumericAppendDigit('1');
+        mode.NumericConfirm();
+        for (size_t i = 0; i < handles.size(); ++i)
+        {
+            bool affected = false;
+            for (const auto& polygon : selected)
+            {
+                const auto vertices = Api::PolygonVertexHandles(*mesh, polygon);
+                affected |= AZStd::find(vertices.begin(), vertices.end(), handles[i]) != vertices.end();
+            }
+            const AZ::Vector3 expected = before[i] + (affected ? AZ::Vector3::CreateAxisX() : AZ::Vector3::CreateZero());
+            EXPECT_TRUE(Api::VertexPosition(*mesh, handles[i]).IsClose(expected));
+        }
+        mode.Refresh();
+        EXPECT_TRUE(mode.GetSelectedPolygons().empty());
+    }
+
+    TEST_F(EditorWhiteBoxComponentTestFixture, PolygonAndDefaultMaterialsAreBakedForGameModeAndCanBeReset)
+    {
+        namespace Api = WhiteBox::Api;
+        auto* mesh = m_whiteBoxComponent->GetWhiteBoxMesh();
+        Api::InitializeAsUnitCube(*mesh);
+        m_whiteBoxComponent->SerializeWhiteBox();
+        const auto polygons = Api::MeshPolygonHandles(*mesh);
+        const auto defaultMaterial = AZ::Data::AssetId::CreateString("{15214A10-CEAC-49D8-AB23-B7129F69B9F1}:6");
+        const auto polygonMaterial = AZ::Data::AssetId::CreateString("{15214A10-CEAC-49D8-AB23-B7129F69B9F1}:7");
+        m_whiteBoxComponent->SetMaterialOverride(defaultMaterial);
+        m_whiteBoxComponent->AssignPolygonMaterial({polygons.front(), polygons.back()}, polygonMaterial);
+        AZ::Entity gameEntity;
+        static_cast<AzToolsFramework::Components::EditorComponentBase*>(m_whiteBoxComponent)->BuildGameEntity(&gameEntity);
+        auto* runtime = gameEntity.FindComponent<WhiteBox::WhiteBoxComponent>();
+        ASSERT_NE(runtime, nullptr);
+        const auto& renderData = runtime->GetActiveRenderData();
+        EXPECT_EQ(renderData.m_material.m_materialAsset.GetId(), defaultMaterial);
+        size_t assigned = 0;
+        for (const auto& face : renderData.m_faces)
+        {
+            assigned += face.m_materialAsset.GetId() == polygonMaterial ? 1 : 0;
+        }
+        EXPECT_EQ(assigned, polygons.front().m_faceHandles.size() + polygons.back().m_faceHandles.size());
+        m_whiteBoxComponent->AssignPolygonMaterial({polygons.front()}, {});
+        for (const auto face : polygons.front().m_faceHandles)
+        {
+            EXPECT_FALSE(Api::FaceMaterial(*mesh, face).IsValid());
+        }
+        for (const auto face : polygons.back().m_faceHandles)
+        {
+            EXPECT_EQ(Api::FaceMaterial(*mesh, face), polygonMaterial);
+        }
+        m_whiteBoxComponent->SetMaterialOverride({});
+        EXPECT_FALSE(m_whiteBoxComponent->GetMaterialOverride().IsValid());
+    }
+}
+
+namespace UnitTest
+{
+    TEST_F(EditorWhiteBoxComponentTestFixture, PolygonMaterialAssignmentSupportsUndoAndRedo)
+    {
+        namespace Api = WhiteBox::Api;
+        {
+            AzToolsFramework::ScopedUndoBatch setup("Create material test mesh");
+            Api::InitializeAsUnitCube(*m_whiteBoxComponent->GetWhiteBoxMesh());
+            m_whiteBoxComponent->SerializeWhiteBox();
+            WhiteBox::EditorWhiteBoxComponentNotificationBus::Event(
+                AZ::EntityComponentIdPair(m_whiteBoxEntityId, m_whiteBoxComponent->GetId()),
+                &WhiteBox::EditorWhiteBoxComponentNotifications::OnWhiteBoxMeshModified);
+            setup.MarkEntityDirty(m_whiteBoxEntityId);
+        }
+        const auto polygon = Api::MeshPolygonHandles(*m_whiteBoxComponent->GetWhiteBoxMesh()).front();
+        const auto material = AZ::Data::AssetId::CreateString("{15214A10-CEAC-49D8-AB23-B7129F69B9F1}:8");
+        {
+            AzToolsFramework::ScopedUndoBatch assign("Assign polygon material");
+            m_whiteBoxComponent->AssignPolygonMaterial({polygon}, material);
+            assign.MarkEntityDirty(m_whiteBoxEntityId);
+        }
+        const auto currentMaterial = [&]()
+        {
+            AZ::Entity* entity = nullptr;
+            AZ::ComponentApplicationBus::BroadcastResult(
+                entity, &AZ::ComponentApplicationRequests::FindEntity, m_whiteBoxEntityId);
+            auto* component = entity->FindComponent<WhiteBox::EditorWhiteBoxComponent>();
+            return Api::FaceMaterial(*component->GetWhiteBoxMesh(), polygon.m_faceHandles.front());
+        };
+        EXPECT_EQ(currentMaterial(), material);
+        AzToolsFramework::ToolsApplicationRequestBus::Broadcast(&AzToolsFramework::ToolsApplicationRequests::UndoPressed);
+        EXPECT_FALSE(currentMaterial().IsValid());
+        AzToolsFramework::ToolsApplicationRequestBus::Broadcast(&AzToolsFramework::ToolsApplicationRequests::RedoPressed);
+        EXPECT_EQ(currentMaterial(), material);
+    }
+}

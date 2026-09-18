@@ -10,6 +10,7 @@
 
 #include <AzCore/Serialization/EditContext.h>
 #include <AzCore/Serialization/SerializeContext.h>
+#include <AzCore/Asset/AssetSerializer.h>
 
 namespace WhiteBox
 {
@@ -18,7 +19,8 @@ namespace WhiteBox
         if (auto serializeContext = azrtti_cast<AZ::SerializeContext*>(context))
         {
             serializeContext->Class<WhiteBoxMaterial>()
-                ->Version(2)
+                ->Version(3)
+                ->Field("MaterialAsset", &WhiteBoxMaterial::m_materialAsset)
                 ->Field("Tint", &WhiteBoxMaterial::m_tint)
                 ->Field("UseTexture", &WhiteBoxMaterial::m_useTexture)
                 ->Field("Visible", &WhiteBoxMaterial::m_visible)

@@ -80,6 +80,7 @@ namespace WhiteBox
 
         // EditorWhiteBoxTransformModeRequestBus overrides ...
         void ChangeTransformType(TransformType subModeType) override;
+        Api::PolygonHandles GetSelectedPolygons() const override;
 
         // Numeric input bus overrides
         void NumericBeginMove()         override { if (m_whiteBoxSelection) m_numericInput.Begin(NumericOpMode::Move);   }
@@ -117,6 +118,7 @@ namespace WhiteBox
             AZStd::vector<AZ::Vector3> m_vertexPositions;
             Api::VertexHandles m_vertexHandles;
             IntersectionSelection m_selection;
+            Api::PolygonHandles m_polygons;
 
             //! Vertex snapping (translate only). Which selected vertex leads the drag - resolved
             //! on the first mouse move of a drag (there is no mouse-down callback here) and held
