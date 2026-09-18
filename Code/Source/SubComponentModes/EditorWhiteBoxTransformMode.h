@@ -119,6 +119,8 @@ namespace WhiteBox
             Api::VertexHandles m_vertexHandles;
             IntersectionSelection m_selection;
             Api::PolygonHandles m_polygons;
+            Api::EdgeHandles m_edges;
+            Api::VertexHandles m_vertices;
 
             //! Vertex snapping (translate only). Which selected vertex leads the drag - resolved
             //! on the first mouse move of a drag (there is no mouse-down callback here) and held

@@ -884,6 +884,103 @@ namespace UnitTest
 
 namespace UnitTest
 {
+    TEST_F(EditorWhiteBoxModifierTestFixture, TransformVertexMultiselectTogglesAndScalesAroundSharedCenter)
+    {
+        namespace Api = WhiteBox::Api;
+        namespace Viewport = AzToolsFramework::ViewportInteraction;
+        auto* mesh = m_whiteBoxComponent->GetWhiteBoxMesh();
+        Api::InitializeAsUnitCube(*mesh);
+        const auto vertices = Api::MeshVertexHandles(*mesh);
+        ASSERT_GE(vertices.size(), 3);
+        const auto before = Api::VertexPositions(*mesh, vertices);
+        const AZ::EntityComponentIdPair pair(m_whiteBoxEntityId, m_whiteBoxComponent->GetId());
+        WhiteBox::TransformMode mode(pair);
+        WhiteBox::IntersectionAndRenderData data;
+        Viewport::MouseInteractionEvent event{};
+        event.m_mouseEvent = Viewport::MouseEvent::Down;
+        event.m_mouseInteraction.m_mouseButtons.m_mouseButtons = static_cast<AZ::u32>(Viewport::MouseButton::Left);
+        const auto click = [&](size_t vertex, bool ctrl)
+        {
+            event.m_mouseInteraction.m_keyboardModifiers.m_keyModifiers =
+                ctrl ? static_cast<AZ::u32>(Viewport::KeyboardModifier::Ctrl) : 0;
+            WhiteBox::VertexIntersection hit;
+            hit.m_closestVertexWithHandle.m_handle = vertices[vertex];
+            hit.m_intersection.m_closestDistance = 1.0f;
+            mode.HandleMouseInteraction({event, pair, AZ::Transform::CreateIdentity(), data, {}, {}, hit});
+        };
+        click(2, false);
+        click(0, false); // Replace the previous selection.
+        click(1, true);
+        click(2, true);
+        click(2, true); // Toggle it back off.
+        mode.ChangeTransformType(WhiteBox::TransformType::Scale);
+        mode.NumericBeginScale();
+        mode.NumericAppendDigit('2');
+        mode.NumericConfirm();
+        const AZ::Vector3 center = (before[0] + before[1]) * 0.5f;
+        for (size_t i = 0; i < vertices.size(); ++i)
+        {
+            const auto expected = i < 2 ? center + (before[i] - center) * 2.0f : before[i];
+            EXPECT_TRUE(Api::VertexPosition(*mesh, vertices[i]).IsClose(expected));
+        }
+        click(0, true);
+        click(1, true); // Removing the last vertex clears the selection.
+        const auto after = Api::VertexPositions(*mesh, vertices);
+        mode.NumericBeginMove();
+        mode.NumericSetAxisX();
+        mode.NumericAppendDigit('1');
+        mode.NumericConfirm();
+        for (size_t i = 0; i < vertices.size(); ++i)
+        {
+            EXPECT_TRUE(Api::VertexPosition(*mesh, vertices[i]).IsClose(after[i]));
+        }
+    }
+
+    TEST_F(EditorWhiteBoxModifierTestFixture, TransformEdgeMultiselectMovesSharedEndpointOnlyOnce)
+    {
+        namespace Api = WhiteBox::Api;
+        namespace Viewport = AzToolsFramework::ViewportInteraction;
+        auto* mesh = m_whiteBoxComponent->GetWhiteBoxMesh();
+        Api::InitializeAsUnitCube(*mesh);
+        const auto vertices = Api::MeshVertexHandles(*mesh);
+        const auto edges = Api::VertexEdgeHandles(*mesh, vertices.front());
+        ASSERT_GE(edges.size(), 3);
+        const auto before = Api::VertexPositions(*mesh, vertices);
+        const AZ::EntityComponentIdPair pair(m_whiteBoxEntityId, m_whiteBoxComponent->GetId());
+        WhiteBox::TransformMode mode(pair);
+        WhiteBox::IntersectionAndRenderData data;
+        Viewport::MouseInteractionEvent event{};
+        event.m_mouseEvent = Viewport::MouseEvent::Down;
+        event.m_mouseInteraction.m_mouseButtons.m_mouseButtons = static_cast<AZ::u32>(Viewport::MouseButton::Left);
+        const auto click = [&](size_t edge, bool ctrl)
+        {
+            event.m_mouseInteraction.m_keyboardModifiers.m_keyModifiers =
+                ctrl ? static_cast<AZ::u32>(Viewport::KeyboardModifier::Ctrl) : 0;
+            WhiteBox::EdgeIntersection hit;
+            hit.m_closestEdgeWithHandle.m_handle = edges[edge];
+            hit.m_intersection.m_closestDistance = 1.0f;
+            mode.HandleMouseInteraction({event, pair, AZ::Transform::CreateIdentity(), data, hit, {}, {}});
+        };
+        click(2, false);
+        click(0, false);
+        click(1, true);
+        click(2, true);
+        click(2, true);
+        mode.NumericBeginMove();
+        mode.NumericSetAxisX();
+        mode.NumericAppendDigit('1');
+        mode.NumericConfirm();
+        const auto first = Api::EdgeVertexHandles(*mesh, edges[0]);
+        const auto second = Api::EdgeVertexHandles(*mesh, edges[1]);
+        for (size_t i = 0; i < vertices.size(); ++i)
+        {
+            const bool selected = AZStd::find(first.begin(), first.end(), vertices[i]) != first.end() ||
+                AZStd::find(second.begin(), second.end(), vertices[i]) != second.end();
+            const auto expected = before[i] + (selected ? AZ::Vector3::CreateAxisX() : AZ::Vector3::CreateZero());
+            EXPECT_TRUE(Api::VertexPosition(*mesh, vertices[i]).IsClose(expected));
+        }
+    }
+
     TEST_F(EditorWhiteBoxModifierTestFixture, TransformPolygonSelectionSupportsCtrlToggleAndUniqueVertexMovement)
     {
         namespace Api = WhiteBox::Api;

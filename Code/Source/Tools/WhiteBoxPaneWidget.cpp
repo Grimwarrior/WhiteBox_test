@@ -504,6 +504,9 @@ namespace WhiteBox
         m_modeTransform = makeModeButton(tr("Transform"), SubMode::Transform);
         m_modeDrawShape = makeModeButton(tr("Draw Shape"), SubMode::DrawShape);
         m_modePaint = makeModeButton(tr("Vertex Paint"), SubMode::VertexPaint);
+        m_modeTransform->setToolTip(tr(
+            "Click a vertex, edge, or polygon to select it. Ctrl-click adds or removes elements of the same type. "
+            "Selected elements transform together around their shared center."));
 
         return group;
     }
