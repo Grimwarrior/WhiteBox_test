@@ -733,7 +733,8 @@ namespace WhiteBox
         AzToolsFramework::ViewportUi::ViewportUiRequestBus::EventResult(
             buttonId, AzToolsFramework::ViewportUi::DefaultViewportId,
             &AzToolsFramework::ViewportUi::ViewportUiRequestBus::Events::CreateClusterButton, clusterId,
-            AZStd::string::format(":/stylesheet/img/UI20/toolbar/%s.svg", iconName));
+            iconName[0] == ':' ? AZStd::string(iconName)
+                              : AZStd::string::format(":/stylesheet/img/UI20/toolbar/%s.svg", iconName));
 
         return buttonId;
     }
@@ -756,8 +757,8 @@ namespace WhiteBox
         // create and register the buttons
         m_defaultModeButtonId = RegisterClusterButton(m_modeSelectionClusterId, "SketchMode");
         m_edgeRestoreModeButtonId = RegisterClusterButton(m_modeSelectionClusterId, "RestoreMode");
-        m_drawShapeModeButtonId = RegisterClusterButton(m_modeSelectionClusterId, "AddComponent");
-        m_paintModeButtonId = RegisterClusterButton(m_modeSelectionClusterId, "SketchMode");
+        m_drawShapeModeButtonId = RegisterClusterButton(m_modeSelectionClusterId, ":/WhiteBox/Icons/Draw.svg");
+        m_paintModeButtonId = RegisterClusterButton(m_modeSelectionClusterId, ":/WhiteBox/Icons/VertexPaint.svg");
 
         m_transformModeButtonId = RegisterClusterButton(m_modeSelectionClusterId, "Align_to_Object");
         AzToolsFramework::ViewportUi::ViewportUiRequestBus::Event(
