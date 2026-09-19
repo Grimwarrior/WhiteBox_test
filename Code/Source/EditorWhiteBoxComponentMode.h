@@ -37,7 +37,7 @@ namespace WhiteBox
     //! The Component Mode responsible for handling all interactions with the White Box Tool.
     class EditorWhiteBoxComponentMode
         : public AzToolsFramework::ComponentModeFramework::EditorBaseComponentMode
-        , private AzFramework::EntityDebugDisplayEventBus::Handler
+        , private AzFramework::ViewportDebugDisplayEventBus::Handler
         , private AZ::TransformNotificationBus::Handler
         , private EditorWhiteBoxComponentNotificationBus::Handler
         , public EditorWhiteBoxComponentModeRequestBus::Handler
@@ -85,8 +85,9 @@ namespace WhiteBox
         //! which sees the click before the manipulator manager swallows it.
         bool CancelActiveDrag() override;
 
-        // AzFramework::EntityDebugDisplayEventBus ...
-        void DisplayEntityViewport(
+        // Active editing overlays must also render when entity helpers are hidden.
+        // AzFramework::ViewportDebugDisplayEventBus ...
+        void DisplayViewport(
             const AzFramework::ViewportInfo& viewportInfo, AzFramework::DebugDisplayRequests& debugDisplay) override;
 
         // TransformNotificationBus ...

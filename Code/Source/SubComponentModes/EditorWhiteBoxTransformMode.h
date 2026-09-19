@@ -14,6 +14,7 @@
 #include "Viewport/WhiteBoxManipulatorViews.h"
 
 #include <AzCore/Math/Quaternion.h>
+#include <AzCore/Math/Vector2.h>
 #include <AzCore/std/containers/variant.h>
 #include <AzCore/std/containers/vector.h>
 #include <AzCore/std/optional.h>
@@ -81,6 +82,10 @@ namespace WhiteBox
         // EditorWhiteBoxTransformModeRequestBus overrides ...
         void ChangeTransformType(TransformType subModeType) override;
         Api::PolygonHandles GetSelectedPolygons() const override;
+        Api::EdgeHandles GetSelectedEdges() const override;
+        Api::VertexHandles GetSelectedVertices() const override;
+        void ClearSelection() override;
+        void BeginLoopCut() override;
 
         // Numeric input bus overrides
         void NumericBeginMove()         override { if (m_whiteBoxSelection) m_numericInput.Begin(NumericOpMode::Move);   }
@@ -156,6 +161,17 @@ namespace WhiteBox
         AZStd::optional<PolygonIntersection> m_polygonIntersection = AZStd::nullopt;
         AZStd::optional<EdgeIntersection> m_edgeIntersection = AZStd::nullopt;
         AZStd::optional<VertexIntersection> m_vertexIntersection = AZStd::nullopt;
+
+        bool HandleLoopCut(const ModeMouseInteraction& mouse, WhiteBoxMesh& mesh);
+        bool m_loopCutActive = false;
+        bool m_loopCutSliding = false;
+        float m_loopCutSlide = 0.0f;
+        AZ::Vector2 m_loopCutMouseAnchor = AZ::Vector2::CreateZero();
+        AZ::Vector2 m_loopCutScreenAxis = AZ::Vector2::CreateZero();
+        int m_loopCutCount = 1;
+        Api::EdgeHandle m_loopCutSeed;
+        AZStd::vector<AZ::Vector3> m_loopCutLines;
+        AZStd::string m_loopCutError;
 
         TransformType m_transformType = TransformType::Translation;
 

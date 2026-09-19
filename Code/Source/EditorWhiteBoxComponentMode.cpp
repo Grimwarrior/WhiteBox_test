@@ -26,11 +26,14 @@
 #include <AzToolsFramework/ComponentMode/EditorComponentModeBus.h>
 #include <AzToolsFramework/Manipulators/ManipulatorSnapping.h>
 #include <AzToolsFramework/Viewport/ActionBus.h>
+#include <AzToolsFramework/Viewport/ViewportMessages.h>
 #include <AzToolsFramework/Manipulators/ManipulatorView.h>
 #include <AzToolsFramework/Maths/TransformUtils.h>
 #include <AzToolsFramework/ViewportSelection/EditorSelectionUtil.h>
 #include <QApplication> // required for querying modifier keys
 #include <QTimer>
+#include <QToolButton>
+#include <QToolBar>
 #include <QVBoxLayout>
 #include <WhiteBox/EditorWhiteBoxComponentBus.h>
 
@@ -76,7 +79,7 @@ namespace WhiteBox
         : EditorBaseComponentMode(entityComponentIdPair, componentType)
         , m_worldFromLocal(AZ::Transform::Identity())
     {
-        AzFramework::EntityDebugDisplayEventBus::Handler::BusConnect(entityComponentIdPair.GetEntityId());
+        AzFramework::ViewportDebugDisplayEventBus::Handler::BusConnect(AzToolsFramework::GetEntityContextId());
         EditorWhiteBoxComponentModeRequestBus::Handler::BusConnect(entityComponentIdPair);
         AZ::TransformNotificationBus::Handler::BusConnect(entityComponentIdPair.GetEntityId());
         EditorWhiteBoxComponentNotificationBus::Handler::BusConnect(entityComponentIdPair);
@@ -123,7 +126,7 @@ namespace WhiteBox
         EditorWhiteBoxComponentNotificationBus::Handler::BusDisconnect();
         AZ::TransformNotificationBus::Handler::BusDisconnect();
         EditorWhiteBoxComponentModeRequestBus::Handler::BusDisconnect();
-        AzFramework::EntityDebugDisplayEventBus::Handler::BusDisconnect();
+        AzFramework::ViewportDebugDisplayEventBus::Handler::BusDisconnect();
     }
 
     void EditorWhiteBoxComponentMode::Reflect(AZ::ReflectContext* context)
@@ -566,7 +569,7 @@ namespace WhiteBox
         }
     }
 
-    void EditorWhiteBoxComponentMode::DisplayEntityViewport(
+    void EditorWhiteBoxComponentMode::DisplayViewport(
         [[maybe_unused]] const AzFramework::ViewportInfo& viewportInfo, AzFramework::DebugDisplayRequests& debugDisplay)
     {
         AZ_PROFILE_FUNCTION(AzToolsFramework);
@@ -574,6 +577,8 @@ namespace WhiteBox
         // Vertex snapping highlight. Drawn here rather than in each tool because most of the
         // draggable tools are not viewport display handlers of their own; they publish their
         // snap target to SnapUtil and this draws whichever one is active.
+        const auto previousDisplayState = debugDisplay.GetState();
+        debugDisplay.DepthWriteOff();
         SnapUtil::DrawActiveSnapTarget(debugDisplay);
 
 
@@ -628,7 +633,7 @@ namespace WhiteBox
             },
             m_modes);
     
-        debugDisplay.DepthTestOff();
+        debugDisplay.SetState(previousDisplayState);
     }
 
     void EditorWhiteBoxComponentMode::MarkWhiteBoxIntersectionDataDirty()
@@ -814,5 +819,25 @@ namespace WhiteBox
             AzToolsFramework::ViewportUi::DefaultViewportId,
             &AzToolsFramework::ViewportUi::ViewportUiRequestBus::Events::SetClusterButtonTooltip,
             m_modeSelectionClusterId, m_paintModeButtonId, "Switch to Vertex Paint mode");
+
+        // The viewport toolbar constrains SVGs to its own icon size, regardless
+        // of their intrinsic dimensions. Resize just these two White Box tools
+        // after Qt has created their action widgets; do not change engine styles.
+        QTimer::singleShot(0, qApp, []()
+        {
+            for (auto* widget : QApplication::allWidgets())
+            {
+                auto* button = qobject_cast<QToolButton*>(widget);
+                if (!button || !qobject_cast<QToolBar*>(button->parentWidget())) { continue; }
+                if (button->toolTip() == QString::fromUtf8(WhiteboxModeClusterDrawShapeTooltip) ||
+                    button->toolTip() == QStringLiteral("Switch to Vertex Paint mode"))
+                {
+                    button->setIconSize(QSize(50, 50));
+                    button->setMinimumSize(QSize(40, 40));
+                    button->updateGeometry();
+                    button->parentWidget()->updateGeometry();
+                }
+            }
+        });
     }
 } // namespace WhiteBox

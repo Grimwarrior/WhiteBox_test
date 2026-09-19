@@ -256,6 +256,8 @@ namespace WhiteBox
         if (vertices.size() == 3)
         {
             debugDisplay.DepthTestOff();
+            debugDisplay.DepthWriteOff();
+            debugDisplay.SetDrawInFrontMode(true);
             debugDisplay.SetColor(AZ::Color(1.0f, 0.75f, 0.1f, 1.0f));
             debugDisplay.SetLineWidth(2.0f);
             for (size_t edge = 0; edge < 3; ++edge)

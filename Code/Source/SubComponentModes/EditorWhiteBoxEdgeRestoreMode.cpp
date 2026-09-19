@@ -31,7 +31,10 @@ namespace WhiteBox
 
     void EdgeRestoreMode::Refresh()
     {
-        // noop
+        // Layer changes invalidate both hover handles and partially restored edges.
+        m_edgeIntersection.reset();
+        m_vertexIntersection.reset();
+        m_edgeHandlesBeingRestored.clear();
     }
 
     void EdgeRestoreMode::RegisterActionUpdaters()
@@ -166,6 +169,8 @@ namespace WhiteBox
         // Depth test off so edges are always visible on top of the mesh surface
         // (with depth-test on, co-planar edges z-fight into invisibility).
         debugDisplay.DepthTestOff();
+        debugDisplay.DepthWriteOff();
+        debugDisplay.SetDrawInFrontMode(true);
 
         // draw user (polygon border) edges in the standard dark colour
         DrawEdges(
@@ -209,7 +214,7 @@ namespace WhiteBox
         }
 
         debugDisplay.PopMatrix();
-        debugDisplay.DepthTestOn(); // restore for vertex spheres
+        // Vertex markers are editing overlays too; keep them visible over the mesh.
 
         const AzFramework::CameraState cameraState = AzToolsFramework::GetCameraState(viewportInfo.m_viewportId);
 

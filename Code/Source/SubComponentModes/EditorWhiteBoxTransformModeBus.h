@@ -31,6 +31,12 @@ namespace WhiteBox
         //! Polygon selection on the active editable layer (empty for edge/vertex selection).
         virtual Api::PolygonHandles GetSelectedPolygons() const { return {}; }
 
+        virtual Api::EdgeHandles GetSelectedEdges() const { return {}; }
+        virtual Api::VertexHandles GetSelectedVertices() const { return {}; }
+        //! Drop cached topology handles after an operation replaces the mesh.
+        virtual void ClearSelection() {}
+        virtual void BeginLoopCut() {}
+
         // ------------------------------------------------------------------ //
         // Blender-style numeric input dispatch methods                       //
         // ------------------------------------------------------------------ //

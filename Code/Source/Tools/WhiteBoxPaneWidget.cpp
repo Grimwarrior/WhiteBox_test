@@ -20,6 +20,7 @@
 #include <AzCore/Component/NonUniformScaleBus.h>
 #include <AzCore/Component/TickBus.h>
 #include <AzCore/Math/Quaternion.h>
+#include <AzCore/std/algorithm.h>
 #include <AzToolsFramework/API/EntityCompositionRequestBus.h>
 #include <AzToolsFramework/ComponentMode/ComponentModeDelegate.h>
 #include <AzToolsFramework/ToolsComponents/EditorNonUniformScaleComponent.h>
@@ -183,6 +184,7 @@ namespace WhiteBox
         mainLayout->addWidget(BuildEntitySection());
         mainLayout->addWidget(BuildEntityTransformSection());
         mainLayout->addWidget(BuildModeSection());
+        mainLayout->addWidget(BuildModelingSection());
         mainLayout->addWidget(BuildVertexPaintSection());
         mainLayout->addWidget(BuildShapeSection());
         mainLayout->addWidget(BuildLayersSection());
@@ -1640,6 +1642,308 @@ namespace WhiteBox
         return group;
     }
 
+    QWidget* WhiteBoxPaneWidget::BuildModelingSection()
+    {
+        auto* group = new QGroupBox(tr("Modeling"));
+        auto* layout = new QVBoxLayout(group);
+        auto* help = new QLabel(tr(
+            "Transform mode: Ctrl-select two open boundary edges or two polygons, then Bridge. "
+            "Open surfaces connect at their nearest compatible edges; facing caps connect around their borders. "
+            "Both selections must be on the active layer."));
+        help->setWordWrap(true);
+        layout->addWidget(help);
+        m_bridgeButton = new QPushButton(tr("Bridge"));
+        m_bridgeButton->setEnabled(false);
+        m_bridgeButton->setToolTip(tr(
+            "Connect the selection. Open surface polygons are kept; facing caps with matching corner counts are replaced. "
+            "New faces inherit the first selection's material and paint. "
+            "Parametric layers become editable meshes. Undo restores the original mesh."));
+        layout->addWidget(m_bridgeButton);
+        m_bridgeStatus = new QLabel();
+        m_bridgeStatus->setWordWrap(true);
+        layout->addWidget(m_bridgeStatus);
+        connect(m_bridgeButton, &QPushButton::clicked, this, &WhiteBoxPaneWidget::BridgeSelectedGeometry);
+        auto* weldHelp = new QLabel(tr("Weld: Ctrl-select two or more vertices on the active layer."));
+        weldHelp->setWordWrap(true);
+        layout->addWidget(weldHelp);
+        auto* weldRow = new QHBoxLayout();
+        m_weldTarget = new QComboBox();
+        m_weldTarget->addItem(tr("At Selection Center"), false);
+        m_weldTarget->addItem(tr("At Last Selected Vertex"), true);
+        m_weldTarget->setToolTip(tr("Merge at the average position, or at the last vertex added to the selection."));
+        m_weldButton = new QPushButton(tr("Weld"));
+        m_weldButton->setEnabled(false);
+        m_weldButton->setToolTip(tr(
+            "Merge selected vertices into one. Connected corners collapse around the target; collapsed triangles are removed. "
+            "Invalid connections and folded faces are rejected. Parametric layers become editable meshes."));
+        weldRow->addWidget(m_weldTarget);
+        weldRow->addWidget(m_weldButton);
+        layout->addLayout(weldRow);
+        m_weldSelectionLabel = new QLabel(tr("0 vertices selected"));
+        layout->addWidget(m_weldSelectionLabel);
+        m_weldStatus = new QLabel();
+        m_weldStatus->setWordWrap(true);
+        layout->addWidget(m_weldStatus);
+        connect(m_weldButton, &QPushButton::clicked, this, &WhiteBoxPaneWidget::WeldSelectedVertices);
+        auto* loopHelp = new QLabel(tr(
+            "Loop Cut: hover over a face or edge to preview the cuts. "
+            "Scroll for the count, click to lock, move to slide, then click to cut. Esc cancels."));
+        loopHelp->setWordWrap(true);
+        layout->addWidget(loopHelp);
+        auto* loopRow = new QHBoxLayout();
+        m_insertLoopButton = new QPushButton(tr("Loop Cut"));
+        m_insertLoopButton->setToolTip(tr(
+            "Preview cuts across a strip of flat, convex quads. Scroll for multiple cuts. "
+            "First click locks the count; move to slide; second click cuts the mesh as one undoable edit."));
+        loopRow->addWidget(m_insertLoopButton);
+        layout->addLayout(loopRow);
+        m_loopStatus = new QLabel();
+        m_loopStatus->setWordWrap(true);
+        layout->addWidget(m_loopStatus);
+        connect(m_insertLoopButton, &QPushButton::clicked, this, &WhiteBoxPaneWidget::StartLoopCut);
+        auto* bevelHelp = new QLabel(tr(
+            "Bevel: select edges or polygons in Transform mode. Connected convex edges are joined at simple corners. "
+            "Width, Segments and Profile remain editable until Bake. Cancel restores the source mesh."));
+        bevelHelp->setWordWrap(true);
+        layout->addWidget(bevelHelp);
+        auto* bevelForm = new QFormLayout();
+        m_bevelWidth = new QDoubleSpinBox();
+        m_bevelWidth->setRange(0.001, 10000.0);
+        m_bevelWidth->setDecimals(3);
+        m_bevelWidth->setSingleStep(0.05);
+        m_bevelWidth->setValue(0.1);
+        m_bevelWidth->setToolTip(tr("Offset distance on each adjacent face, in mesh-local units."));
+        m_bevelSegments = new QSpinBox();
+        m_bevelSegments->setRange(1, 32);
+        m_bevelSegments->setValue(1);
+        m_bevelSegments->setToolTip(tr("One segment makes a flat chamfer; more segments create a rounded profile."));
+        bevelForm->addRow(tr("Bevel Width"), m_bevelWidth);
+        bevelForm->addRow(tr("Segments"), m_bevelSegments);
+        m_bevelProfile = new QDoubleSpinBox();
+        m_bevelProfile->setRange(0.05, 0.95);
+        m_bevelProfile->setDecimals(2);
+        m_bevelProfile->setSingleStep(0.05);
+        m_bevelProfile->setValue(0.5);
+        m_bevelProfile->setToolTip(tr("0.5 is round. Lower values approach a chamfer; higher values approach a square corner. Use multiple segments."));
+        bevelForm->addRow(tr("Profile"), m_bevelProfile);
+        layout->addLayout(bevelForm);
+        m_bevelButton = new QPushButton(tr("Start Bevel"));
+        m_bevelButton->setEnabled(false);
+        m_bevelButton->setToolTip(tr(
+            "Start an editable bevel from selected edges or polygon perimeters. Source and settings are saved with the layer. "
+            "One live bevel per layer. Direct mesh edits bake it automatically. Changed faces receive planar UVs."));
+        layout->addWidget(m_bevelButton);
+        m_bevelStatus = new QLabel();
+        m_bevelStatus->setWordWrap(true);
+        layout->addWidget(m_bevelStatus);
+        connect(m_bevelButton, &QPushButton::clicked, this, &WhiteBoxPaneWidget::BevelSelectedEdges);
+        auto* bevelActions = new QHBoxLayout();
+        m_bakeBevelButton = new QPushButton(tr("Bake Bevel"));
+        m_cancelBevelButton = new QPushButton(tr("Cancel Bevel"));
+        m_bakeBevelButton->setEnabled(false);
+        m_cancelBevelButton->setEnabled(false);
+        bevelActions->addWidget(m_bakeBevelButton);
+        bevelActions->addWidget(m_cancelBevelButton);
+        layout->addLayout(bevelActions);
+        connect(m_bevelWidth, QOverload<double>::of(&QDoubleSpinBox::valueChanged), this, [this](double) { UpdateLiveBevel(); });
+        connect(m_bevelSegments, QOverload<int>::of(&QSpinBox::valueChanged), this, [this](int) { UpdateLiveBevel(); });
+        connect(m_bevelProfile, QOverload<double>::of(&QDoubleSpinBox::valueChanged), this, [this](double) { UpdateLiveBevel(); });
+        const auto finishBevelEdit = [this]()
+        {
+            if (m_updating) { return; }
+            if (auto* component = CurrentComponent(); component && component->HasActiveBevel())
+            {
+                // Live changes defer collision and game output; commit those
+                // once the input gesture finishes before marking prefab state.
+                AzToolsFramework::ScopedUndoBatch undo("White Box Commit Bevel Parameters");
+                component->RebuildWhiteBox();
+                undo.MarkEntityDirty(m_currentEntityId);
+            }
+        };
+        connect(m_bevelWidth, &QDoubleSpinBox::editingFinished, this, finishBevelEdit);
+        connect(m_bevelSegments, &QSpinBox::editingFinished, this, finishBevelEdit);
+        connect(m_bevelProfile, &QDoubleSpinBox::editingFinished, this, finishBevelEdit);
+        connect(m_bakeBevelButton, &QPushButton::clicked, this, [this]()
+        {
+            if (auto* component = CurrentComponent(); component && component->HasActiveBevel())
+            {
+                AzToolsFramework::ScopedUndoBatch undo("White Box Bake Bevel");
+                component->BakeBevel();
+                undo.MarkEntityDirty(m_currentEntityId);
+                m_bevelStatus->setText(tr("Bevel baked. The mesh is ready for further modeling."));
+                RefreshFromComponent();
+                RefreshPolygonMaterialSelection();
+            }
+        });
+        connect(m_cancelBevelButton, &QPushButton::clicked, this, [this]()
+        {
+            if (auto* component = CurrentComponent(); component && component->HasActiveBevel())
+            {
+                AzToolsFramework::ScopedUndoBatch undo("White Box Cancel Bevel");
+                component->CancelBevel();
+                undo.MarkEntityDirty(m_currentEntityId);
+                m_bevelStatus->setText(tr("Bevel cancelled; original mesh restored."));
+                RefreshFromComponent();
+                RefreshPolygonMaterialSelection();
+            }
+        });
+        return group;
+    }
+
+    void WhiteBoxPaneWidget::BridgeSelectedGeometry()
+    {
+        auto* component = CurrentComponent();
+        if (!component || !component->GetWhiteBoxMesh()) { return; }
+        const AZ::EntityComponentIdPair id(m_currentEntityId, component->GetId());
+        Api::PolygonHandles polygons;
+        Api::EdgeHandles edges;
+        EditorWhiteBoxTransformModeRequestBus::EventResult(
+            polygons, id, &EditorWhiteBoxTransformModeRequests::GetSelectedPolygons);
+        EditorWhiteBoxTransformModeRequestBus::EventResult(
+            edges, id, &EditorWhiteBoxTransformModeRequests::GetSelectedEdges);
+        AZStd::string error;
+        {
+            AzToolsFramework::ScopedUndoBatch undoBatch("White Box Bridge");
+            if (!Api::BridgeSelection(*component->GetWhiteBoxMesh(), polygons, edges, error))
+            {
+                m_bridgeStatus->setText(QString::fromUtf8(error.c_str()));
+                return;
+            }
+            EditorWhiteBoxTransformModeRequestBus::Event(id, &EditorWhiteBoxTransformModeRequests::ClearSelection);
+            component->BakeParametricLayer(component->GetActiveLayerIndex());
+            component->SerializeWhiteBox();
+            EditorWhiteBoxComponentNotificationBus::Event(
+                id, &EditorWhiteBoxComponentNotifications::OnWhiteBoxMeshModified);
+            undoBatch.MarkEntityDirty(m_currentEntityId);
+        }
+        m_bridgeStatus->setText(tr("Bridge created. Undo to restore the original selection's geometry."));
+        RefreshFromComponent();
+        RefreshPolygonMaterialSelection();
+    }
+
+    void WhiteBoxPaneWidget::WeldSelectedVertices()
+    {
+        auto* component = CurrentComponent();
+        if (!component || !component->GetWhiteBoxMesh()) { return; }
+        const AZ::EntityComponentIdPair id(m_currentEntityId, component->GetId());
+        Api::VertexHandles vertices;
+        EditorWhiteBoxTransformModeRequestBus::EventResult(
+            vertices, id, &EditorWhiteBoxTransformModeRequests::GetSelectedVertices);
+        AZStd::string error;
+        {
+            AzToolsFramework::ScopedUndoBatch undoBatch("White Box Weld");
+            if (!Api::WeldVertices(*component->GetWhiteBoxMesh(), vertices, m_weldTarget->currentData().toBool(), error))
+            {
+                m_weldStatus->setText(QString::fromUtf8(error.c_str()));
+                return;
+            }
+            EditorWhiteBoxTransformModeRequestBus::Event(id, &EditorWhiteBoxTransformModeRequests::ClearSelection);
+            component->BakeParametricLayer(component->GetActiveLayerIndex());
+            component->SerializeWhiteBox();
+            EditorWhiteBoxComponentNotificationBus::Event(
+                id, &EditorWhiteBoxComponentNotifications::OnWhiteBoxMeshModified);
+            undoBatch.MarkEntityDirty(m_currentEntityId);
+        }
+        m_weldStatus->setText(tr("Vertices welded. Undo restores the original mesh."));
+        RefreshFromComponent();
+        RefreshPolygonMaterialSelection();
+    }
+
+    void WhiteBoxPaneWidget::BevelSelectedEdges()
+    {
+        auto* component = CurrentComponent();
+        if (!component || !component->GetWhiteBoxMesh() || component->HasActiveBevel()) { return; }
+        const AZ::EntityComponentIdPair id(m_currentEntityId, component->GetId());
+        Api::EdgeHandles edges;
+        Api::PolygonHandles polygons;
+        EditorWhiteBoxTransformModeRequestBus::EventResult(edges, id, &EditorWhiteBoxTransformModeRequests::GetSelectedEdges);
+        EditorWhiteBoxTransformModeRequestBus::EventResult(polygons, id, &EditorWhiteBoxTransformModeRequests::GetSelectedPolygons);
+        // Only perimeter edges of the selected polygon region; shared interior
+        // edges do not become unwanted cuts through that region.
+        auto* mesh = component->GetWhiteBoxMesh();
+        for (const auto edge : Api::MeshPolygonEdgeHandles(*mesh))
+        {
+            int selectedSides = 0;
+            for (const auto face : Api::EdgeFaceHandles(*mesh, edge))
+            {
+                const auto polygon = Api::FacePolygonHandle(*mesh, face);
+                if (AZStd::find(polygons.begin(), polygons.end(), polygon) != polygons.end()) { ++selectedSides; }
+            }
+            if (selectedSides == 1 && AZStd::find(edges.begin(), edges.end(), edge) == edges.end()) { edges.push_back(edge); }
+        }
+        AZStd::string error;
+        const EditorWhiteBoxComponent::BevelParams params{
+            static_cast<float>(m_bevelWidth->value()), m_bevelSegments->value(), static_cast<float>(m_bevelProfile->value())};
+        {
+            AzToolsFramework::ScopedUndoBatch undo("White Box Start Bevel");
+            if (!component->SetParametricBevel(edges, params, error))
+            {
+                m_bevelStatus->setText(QString::fromUtf8(error.c_str()));
+                return;
+            }
+            undo.MarkEntityDirty(m_currentEntityId);
+        }
+        m_bevelStatus->setText(tr("Live bevel: adjust Width, Segments and Profile, then Bake or Cancel."));
+        RefreshFromComponent();
+        RefreshPolygonMaterialSelection();
+    }
+
+    void WhiteBoxPaneWidget::UpdateLiveBevel()
+    {
+        if (m_updating) { return; }
+        auto* component = CurrentComponent();
+        if (!component || !component->HasActiveBevel()) { return; }
+        const EditorWhiteBoxComponent::BevelParams params{
+            static_cast<float>(m_bevelWidth->value()), m_bevelSegments->value(), static_cast<float>(m_bevelProfile->value())};
+        AZStd::string error;
+        AzToolsFramework::ScopedUndoBatch undo("White Box Bevel Parameters");
+        if (!component->SetParametricBevel({}, params, error))
+        {
+            m_bevelStatus->setText(QString::fromUtf8(error.c_str()));
+            RefreshFromComponent(); // show the last valid parameters
+            return;
+        }
+        undo.MarkEntityDirty(m_currentEntityId);
+        m_bevelStatus->setText(tr("Live bevel updated. Bake to finish, or Cancel to restore the source."));
+    }
+
+    void WhiteBoxPaneWidget::StartLoopCut()
+    {
+        auto* component = CurrentComponent();
+        if (!component || !component->GetWhiteBoxMesh()) { return; }
+        const AZ::EntityComponentIdPair id(m_currentEntityId, component->GetId());
+        namespace Cmf = AzToolsFramework::ComponentModeFramework;
+        bool inComponentMode = false;
+        Cmf::ComponentModeSystemRequestBus::BroadcastResult(
+            inComponentMode, &Cmf::ComponentModeSystemRequests::InComponentMode);
+        if (inComponentMode)
+        {
+            EditorWhiteBoxComponentModeRequestBus::Event(id, &EditorWhiteBoxComponentModeRequests::SetSubMode, SubMode::Transform);
+            EditorWhiteBoxTransformModeRequestBus::Event(id, &EditorWhiteBoxTransformModeRequests::BeginLoopCut);
+        }
+        else
+        {
+            const AZ::EntityId entityId = m_currentEntityId;
+            AzToolsFramework::ToolsApplicationRequestBus::Broadcast(
+                &AzToolsFramework::ToolsApplicationRequests::SetSelectedEntities, AzToolsFramework::EntityIdList{entityId});
+            AZ::TickBus::QueueFunction([entityId]()
+            {
+                if (auto* entity = FindEntity(entityId))
+                {
+                    if (auto* whiteBox = entity->FindComponent<EditorWhiteBoxComponent>())
+                    {
+                        whiteBox->EnterComponentMode();
+                        const AZ::EntityComponentIdPair pair(entityId, whiteBox->GetId());
+                        EditorWhiteBoxComponentModeRequestBus::Event(
+                            pair, &EditorWhiteBoxComponentModeRequests::SetSubMode, SubMode::Transform);
+                        EditorWhiteBoxTransformModeRequestBus::Event(pair, &EditorWhiteBoxTransformModeRequests::BeginLoopCut);
+                    }
+                }
+            });
+        }
+        m_loopStatus->setText(tr("Hover a face or edge. Wheel: count. Click: lock. Move: slide. Click again: cut. Esc / right-click: cancel."));
+    }
+
     void WhiteBoxPaneWidget::RefreshPolygonMaterialSelection()
     {
         if (!m_polygonSelectionLabel)
@@ -1647,13 +1951,36 @@ namespace WhiteBox
             return;
         }
         Api::PolygonHandles polygons;
+        Api::EdgeHandles edges;
+        Api::VertexHandles vertices;
         if (auto* component = CurrentComponent())
         {
             EditorWhiteBoxTransformModeRequestBus::EventResult(
                 polygons, AZ::EntityComponentIdPair(m_currentEntityId, component->GetId()),
                 &EditorWhiteBoxTransformModeRequests::GetSelectedPolygons);
+            EditorWhiteBoxTransformModeRequestBus::EventResult(
+                edges, AZ::EntityComponentIdPair(m_currentEntityId, component->GetId()),
+                &EditorWhiteBoxTransformModeRequests::GetSelectedEdges);
+            EditorWhiteBoxTransformModeRequestBus::EventResult(
+                vertices, AZ::EntityComponentIdPair(m_currentEntityId, component->GetId()),
+                &EditorWhiteBoxTransformModeRequests::GetSelectedVertices);
+        }
+        if (m_bridgeButton)
+        {
+            m_bridgeButton->setEnabled(
+                (polygons.size() == 2 && edges.empty()) || (edges.size() == 2 && polygons.empty()));
         }
         m_polygonSelectionLabel->setText(tr("%1 polygons selected").arg(static_cast<int>(polygons.size())));
+        if (m_weldButton)
+        {
+            m_weldButton->setEnabled(vertices.size() >= 2);
+            m_weldSelectionLabel->setText(tr("%1 vertices selected").arg(static_cast<int>(vertices.size())));
+        }
+        if (m_insertLoopButton) { m_insertLoopButton->setEnabled(CurrentComponent() != nullptr); }
+        const bool liveBevel = CurrentComponent() && CurrentComponent()->HasActiveBevel();
+        if (m_bevelButton) { m_bevelButton->setEnabled(!liveBevel && (!edges.empty() || !polygons.empty())); }
+        if (m_bakeBevelButton) { m_bakeBevelButton->setEnabled(liveBevel); }
+        if (m_cancelBevelButton) { m_cancelBevelButton->setEnabled(liveBevel); }
         m_assignPolygonMaterial->setEnabled(!polygons.empty() && m_polygonMaterial->GetSelectedAssetID().IsValid());
         m_resetPolygonMaterial->setEnabled(!polygons.empty());
     }
@@ -2071,6 +2398,14 @@ namespace WhiteBox
 
         EditorWhiteBoxComponent* component = CurrentComponent();
         const bool hasComponent = component != nullptr;
+        if (component && component->HasActiveBevel() && m_bevelProfile)
+        {
+            const auto params = component->GetBevelParams();
+            m_bevelWidth->setValue(params.m_width);
+            m_bevelSegments->setValue(params.m_segments);
+            m_bevelProfile->setValue(params.m_profile);
+        }
+
 
         // Follow the current entity's transform (for the Entity Transform section).
         if (m_transformBusEntityId != m_currentEntityId)

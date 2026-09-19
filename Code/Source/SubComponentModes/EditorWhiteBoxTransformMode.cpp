@@ -7,6 +7,10 @@
  */
 
 #include "EditorWhiteBoxTransformMode.h"
+#include "EditorWhiteBoxComponent.h"
+#include <AzCore/Component/ComponentApplicationBus.h>
+#include <AzCore/Component/Entity.h>
+#include <AzToolsFramework/API/ToolsApplicationAPI.h>
 #include "EditorWhiteBoxComponentModeCommon.h"
 #include "EditorWhiteBoxComponentModeTypes.h"
 #include "Util/WhiteBoxEditorDrawUtil.h"
@@ -16,6 +20,8 @@
 #include <AzCore/std/optional.h>
 #include <AzCore/std/smart_ptr/make_shared.h>
 #include <AzFramework/Viewport/ViewportColors.h>
+#include <AzFramework/Viewport/CameraState.h>
+#include <AzFramework/Viewport/ViewportScreen.h>
 #include <AzToolsFramework/ActionManager/Action/ActionManagerInterface.h>
 #include <AzToolsFramework/ActionManager/Menu/MenuManagerInterface.h>
 #include <AzToolsFramework/ActionManager/HotKey/HotKeyManagerInterface.h>
@@ -563,14 +569,28 @@ namespace WhiteBox
 
     void TransformMode::ChangeTransformType(TransformType subModeType)
     {
+        if (m_loopCutActive) { Refresh(); }
         m_transformType = subModeType;
         RefreshManipulator();
     }
 
     void TransformMode::Refresh()
     {
+        m_loopCutActive = false;
+        m_loopCutSliding = false;
+        m_loopCutSlide = 0.0f;
+        m_loopCutSeed = Api::EdgeHandle{};
+        m_loopCutLines.clear();
+        m_loopCutError.clear();
+        // Refresh is also called after replacing the active layer's working mesh.
+        // Hover handles belong to that old mesh just as selection handles do.
         m_whiteBoxSelection.reset();
         DestroyManipulators();
+        m_polygonIntersection.reset();
+        m_edgeIntersection.reset();
+        m_vertexIntersection.reset();
+        m_numericInput.Reset();
+        SnapUtil::ClearActiveSnapTarget();
     }
 
     AZStd::vector<AzToolsFramework::ActionOverride> TransformMode::PopulateActions(
@@ -651,8 +671,31 @@ namespace WhiteBox
         EditorWhiteBoxComponentRequestBus::EventResult(
             whiteBox, m_entityComponentIdPair, &EditorWhiteBoxComponentRequests::GetWhiteBoxMesh);
 
-        debugDisplay.DepthTestOn();
+        // Editing overlays remain visible over the shaded surface, including back faces.
+        debugDisplay.DepthTestOff();
+        debugDisplay.DepthWriteOff();
+        debugDisplay.SetDrawInFrontMode(true);
+        debugDisplay.CullOff();
         debugDisplay.PushMatrix(worldFromLocal);
+
+        if (m_loopCutActive)
+        {
+            debugDisplay.SetLineWidth(3.0f);
+            debugDisplay.DrawLines(m_loopCutLines, AZ::Color(1.0f, 0.8f, 0.1f, 1.0f));
+            debugDisplay.SetLineWidth(1.0f);
+            debugDisplay.PopMatrix();
+            debugDisplay.SetColor(AZ::Color(1.0f, 0.8f, 0.1f, 1.0f));
+            const auto label = AZStd::string::format(
+                m_loopCutSliding
+                    ? "Loop Slide: %d | Move mouse: position | Click: cut mesh | Esc / right-click: cancel"
+                    : "Loop Cut: %d | Wheel: cuts | Click: lock count | Esc / right-click: cancel", m_loopCutCount);
+            debugDisplay.Draw2dTextLabel(20.0f, 80.0f, 1.3f, label.c_str());
+            if (!m_loopCutError.empty())
+            {
+                debugDisplay.Draw2dTextLabel(20.0f, 105.0f, 1.1f, m_loopCutError.c_str());
+            }
+            return;
+        }
 
         if (m_polygonIntersection.has_value())
         {
@@ -735,6 +778,11 @@ namespace WhiteBox
         WhiteBoxMesh* whiteBox = nullptr;
         EditorWhiteBoxComponentRequestBus::EventResult(
             whiteBox, m_entityComponentIdPair, &EditorWhiteBoxComponentRequests::GetWhiteBoxMesh);
+
+        if (m_loopCutActive && whiteBox)
+        {
+            return HandleLoopCut(mouse, *whiteBox);
+        }
 
         bool mouseOverManipulator = false;
         if (m_manipulator)
@@ -866,6 +914,21 @@ namespace WhiteBox
         return m_whiteBoxSelection ? m_whiteBoxSelection->m_polygons : Api::PolygonHandles{};
     }
 
+    Api::EdgeHandles TransformMode::GetSelectedEdges() const
+    {
+        return m_whiteBoxSelection ? m_whiteBoxSelection->m_edges : Api::EdgeHandles{};
+    }
+
+    Api::VertexHandles TransformMode::GetSelectedVertices() const
+    {
+        return m_whiteBoxSelection ? m_whiteBoxSelection->m_vertices : Api::VertexHandles{};
+    }
+
+    void TransformMode::ClearSelection()
+    {
+        Refresh();
+    }
+
     void TransformMode::RefreshManipulator()
     {
         TransformType activeTransformType = m_transformType;
@@ -950,6 +1013,11 @@ namespace WhiteBox
 
     bool TransformMode::HandleEscape()
     {
+        if (m_loopCutActive)
+        {
+            Refresh();
+            return true;
+        }
         if (CancelActiveDrag())
         {
             return true;
@@ -962,6 +1030,128 @@ namespace WhiteBox
         }
 
         return false;
+    }
+
+    void TransformMode::BeginLoopCut()
+    {
+        CancelActiveDrag();
+        Refresh();
+        m_loopCutCount = 1;
+        m_loopCutActive = true;
+    }
+
+    bool TransformMode::HandleLoopCut(const ModeMouseInteraction& mouse, WhiteBoxMesh& mesh)
+    {
+        namespace Viewport = AzToolsFramework::ViewportInteraction;
+        const auto& event = mouse.m_mouseInteraction;
+        const auto& buttons = event.m_mouseInteraction.m_mouseButtons;
+        if (event.m_mouseInteraction.m_keyboardModifiers.Alt() || buttons.Middle()) { return false; }
+        if (event.m_mouseEvent == Viewport::MouseEvent::Down && buttons.Right())
+        {
+            Refresh();
+            return true;
+        }
+        // Once locked, wheel input must not alter either count or slide position.
+        if (event.m_mouseEvent == Viewport::MouseEvent::Wheel && m_loopCutSliding) { return true; }
+        bool changed = false;
+        if (event.m_mouseEvent == Viewport::MouseEvent::Wheel)
+        {
+            const float delta = Viewport::MouseWheelDelta(event);
+            const int count = AZStd::clamp(m_loopCutCount + (delta > 0.0f ? 1 : delta < 0.0f ? -1 : 0), 1, 64);
+            changed = count != m_loopCutCount;
+            m_loopCutCount = count;
+        }
+        Api::EdgeHandle seed = m_loopCutSeed;
+        if (m_loopCutSliding)
+        {
+            const auto cursor = event.m_mouseInteraction.m_mousePick.m_screenCoordinates;
+            const AZ::Vector2 point(static_cast<float>(cursor.m_x), static_cast<float>(cursor.m_y));
+            const float slide = AZStd::clamp((point - m_loopCutMouseAnchor).Dot(m_loopCutScreenAxis), -1.0f, 1.0f);
+            changed = AZStd::abs(slide - m_loopCutSlide) > 1e-5f;
+            m_loopCutSlide = slide;
+        }
+        else
+        {
+            seed = Api::EdgeHandle{};
+            if (mouse.m_edgeIntersection &&
+                (!mouse.m_polygonIntersection ||
+                 mouse.m_edgeIntersection->m_intersection.m_closestDistance <=
+                     mouse.m_polygonIntersection->m_intersection.m_closestDistance + 0.01f))
+            {
+                seed = mouse.m_edgeIntersection->GetHandle();
+            }
+            else if (mouse.m_polygonIntersection)
+            {
+                // Choose the face boundary nearest the hit point, so moving across a
+                // quad changes the direction of the preview without selecting it.
+                const auto& hit = *mouse.m_polygonIntersection;
+                const auto borders = Api::PolygonBorderHalfedgeHandles(mesh, hit.GetHandle());
+                float closest = AZ::Constants::FloatMax;
+                for (const auto& border : borders)
+                {
+                    for (const auto halfedge : border)
+                    {
+                        const auto edge = Api::HalfedgeEdgeHandle(mesh, halfedge);
+                        const auto points = Api::EdgeVertexPositions(mesh, edge);
+                        const auto direction = points[1] - points[0];
+                        const float lengthSq = direction.GetLengthSq();
+                        if (lengthSq <= 1e-10f) { continue; }
+                        const float t = AZStd::clamp(
+                            (hit.m_intersection.m_localIntersectionPoint - points[0]).Dot(direction) / lengthSq, 0.0f, 1.0f);
+                        const float distance = (hit.m_intersection.m_localIntersectionPoint - points[0].Lerp(points[1], t)).GetLengthSq();
+                        if (distance < closest) { closest = distance; seed = edge; }
+                    }
+                }
+            }
+        }
+        if (seed != m_loopCutSeed || changed)
+        {
+            m_loopCutSeed = seed;
+            m_loopCutLines.clear();
+            m_loopCutError.clear();
+            if (seed.IsValid())
+            {
+                Api::PreviewEdgeLoops(mesh, seed, m_loopCutCount, m_loopCutLines, m_loopCutError, m_loopCutSlide);
+            }
+        }
+        if (event.m_mouseEvent == Viewport::MouseEvent::Down && buttons.Left() && !m_loopCutLines.empty())
+        {
+            if (!m_loopCutSliding)
+            {
+                m_loopCutSliding = true;
+                const auto& interaction = event.m_mouseInteraction;
+                const auto cursor = interaction.m_mousePick.m_screenCoordinates;
+                m_loopCutMouseAnchor = AZ::Vector2(static_cast<float>(cursor.m_x), static_cast<float>(cursor.m_y));
+                const auto endpoints = Api::EdgeVertexPositions(mesh, seed);
+                const auto camera = AzToolsFramework::GetCameraState(interaction.m_interactionId.m_viewportId);
+                const auto start = AzFramework::WorldToScreen(mouse.m_worldFromLocal.TransformPoint(endpoints[0]), camera);
+                const auto end = AzFramework::WorldToScreen(mouse.m_worldFromLocal.TransformPoint(endpoints[1]), camera);
+                const AZ::Vector2 direction(static_cast<float>(end.m_x - start.m_x), static_cast<float>(end.m_y - start.m_y));
+                // Follow the seed edge's projected direction. For an edge viewed
+                // end-on, use a horizontal gesture rather than divide by zero.
+                m_loopCutScreenAxis = direction.GetLengthSq() >= 16.0f
+                    ? direction * (static_cast<float>(m_loopCutCount + 1) / (0.98f * direction.GetLengthSq()))
+                    : AZ::Vector2(1.0f / 200.0f, 0.0f);
+                return true;
+            }
+            AZ::Entity* entity = nullptr;
+            AZ::ComponentApplicationBus::BroadcastResult(
+                entity, &AZ::ComponentApplicationRequests::FindEntity, m_entityComponentIdPair.GetEntityId());
+            auto* component = entity
+                ? azrtti_cast<EditorWhiteBoxComponent*>(entity->FindComponent(m_entityComponentIdPair.GetComponentId())) : nullptr;
+            if (!component) { return true; }
+            AzToolsFramework::ScopedUndoBatch undoBatch("White Box Loop Cut");
+            if (!Api::InsertEdgeLoops(mesh, seed, m_loopCutCount, m_loopCutError, m_loopCutSlide)) { return true; }
+            Refresh();
+            component->BakeParametricLayer(component->GetActiveLayerIndex());
+            component->SerializeWhiteBox();
+            EditorWhiteBoxComponentNotificationBus::Event(
+                m_entityComponentIdPair, &EditorWhiteBoxComponentNotifications::OnWhiteBoxMeshModified);
+            undoBatch.MarkEntityDirty(m_entityComponentIdPair.GetEntityId());
+        }
+        // Retain viewport orbit/pan while consuming cut and wheel input.
+        return event.m_mouseEvent == Viewport::MouseEvent::Wheel || buttons.Left() ||
+            event.m_mouseEvent == Viewport::MouseEvent::Move;
     }
 
     bool TransformMode::CancelActiveDrag()

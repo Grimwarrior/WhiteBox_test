@@ -385,6 +385,18 @@ namespace WhiteBox
         //! Freeze a parametric layer into an ordinary mesh layer (enables vertex editing;
         //! the shape parameters stop driving it).
         void BakeParametricLayer(int index);
+        struct BevelParams
+        {
+            float m_width = 0.1f;
+            int m_segments = 1;
+            float m_profile = 0.5f;
+        };
+        bool HasActiveBevel() const;
+        BevelParams GetBevelParams() const;
+        //! Empty selection updates the existing modifier from its saved source mesh.
+        bool SetParametricBevel(const Api::EdgeHandles& edges, const BevelParams& params, AZStd::string& error);
+        void BakeBevel();
+        void CancelBevel();
         void DeleteActiveLayer() { OnDeleteLayer(); }
         //! Move the layer at @p from so it ends up at index @p to (both are indices into the
         //! CURRENT list). Layer order matters - it is the order the combine modes accumulate in -
@@ -643,6 +655,13 @@ namespace WhiteBox
             float m_paramSweepAngle = 270.0f;
             float m_paramHoleRatio = 0.5f;
             int m_paramTubeSides = DefaultTubeSides;
+
+            bool m_bevelSourceParametric = false;
+            Api::WhiteBoxMeshStream m_bevelSource;
+            AZStd::vector<int> m_bevelEdges;
+            float m_bevelWidth = 0.1f;
+            int m_bevelSegments = 1;
+            float m_bevelProfile = 0.5f;
 
             Api::WhiteBoxMeshStream m_freeformData;   //!< Serialized freeform (drawable) mesh.
             Api::WhiteBoxMeshStream m_gridData;       //!< Serialized stamped-cube grid mesh.
