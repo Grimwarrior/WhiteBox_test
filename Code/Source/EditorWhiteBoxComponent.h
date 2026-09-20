@@ -109,12 +109,19 @@ namespace WhiteBox
         void SetMaterialOverride(const AZ::Data::AssetId& materialAssetId) override;
         AZ::Data::AssetId GetMaterialOverride() override;
         void AssignPolygonMaterial(const Api::PolygonHandles& polygons, const AZ::Data::AssetId& materialAssetId);
+        //! Latched Extrude / Inset. Dragging a polygon while one is on behaves as if Ctrl were held, so
+        //! the gesture is reachable without knowing about the modifier key. Ctrl still works either way.
+        bool GetStickyExtrude() override { return m_stickyExtrude; }
+        void SetStickyExtrude(bool sticky) { m_stickyExtrude = sticky; }
+        bool GetStickyInset() override { return m_stickyInset; }
+        void SetStickyInset(bool sticky) { m_stickyInset = sticky; }
         FacePaintSettings GetFacePaintSettings() const { return m_facePaintSettings; }
         void SetFacePaintSettings(const FacePaintSettings& settings) { m_facePaintSettings = settings; }
         int GetDrawSides() override { return m_drawShapeData.m_sides; }
         float GetDrawHoleRatio() override { return m_drawShapeData.m_holeRatio; }
         int GetDrawTubeSides() override { return m_drawShapeData.m_tubeSides; }
         DrawShapeType GetDrawShape() override { return m_drawShapeData.m_shape; }
+        void SetDrawShapeType(DrawShapeType shape) override { SetDrawShape(shape); }
         DrawStairInfo GetDrawStairInfo() override
         {
             const DrawStairData& stair = m_drawShapeData.m_stair;
@@ -334,6 +341,12 @@ namespace WhiteBox
 
         int GetLayerCount() const { return static_cast<int>(m_layers.size()); }
         int GetActiveLayerIndex() const { return m_activeLayerIndex; }
+        //! Stable identity for floating tools; an index can be reused after layer removal/reordering.
+        AZ::u64 GetActiveLayerId() const
+        {
+            return m_activeLayerIndex >= 0 && m_activeLayerIndex < GetLayerCount()
+                ? m_layers[m_activeLayerIndex].m_id : 0;
+        }
         void SetActiveLayer(int index)
         {
             if (index >= 0 && index < GetLayerCount() && index != m_activeLayerIndex)
@@ -392,7 +405,10 @@ namespace WhiteBox
             float m_profile = 0.5f;
         };
         bool HasActiveBevel() const;
+        //! The live bevel's parameters while one is running, otherwise the ones the next bevel will
+        //! start with. Shared so the pane's spin boxes and the viewport cluster agree on the values.
         BevelParams GetBevelParams() const;
+        void SetBevelParams(const BevelParams& params) { m_pendingBevelParams = params; }
         //! Empty selection updates the existing modifier from its saved source mesh.
         bool SetParametricBevel(const Api::EdgeHandles& edges, const BevelParams& params, AZStd::string& error);
         void BakeBevel();
@@ -895,6 +911,12 @@ namespace WhiteBox
         bool m_useGlobalTint = true; //!< When set, every layer renders with the global material tint; otherwise each layer uses its own tint.
         AZ::Data::AssetId m_materialOverrideAssetId; //!< External material asset override (invalid = built-in material).
         FacePaintSettings m_facePaintSettings; //!< Transient brush settings, not scene data.
+        //! Latched Extrude / Inset, transient like the brush settings above.
+        bool m_stickyExtrude = false;
+        bool m_stickyInset = false;
+        //! What the next bevel starts with. Transient tool state like the brush settings above, not
+        //! scene data - a running bevel keeps its own values on the layer.
+        BevelParams m_pendingBevelParams;
         //! Scratch storage for the batched viewport debug lines, kept so drawing does not reallocate
         //! every frame. Never serialized; contents are meaningless between draws.
         AZStd::vector<AZ::Vector3> m_debugLineBuffer;

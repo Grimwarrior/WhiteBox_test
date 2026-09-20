@@ -153,6 +153,30 @@ namespace WhiteBox
         return false;
     }
 
+    bool EdgeRestoreMode::FlipHoveredEdge(const AZ::EntityComponentIdPair& entityComponentIdPair)
+    {
+        if (!m_edgeIntersection.has_value())
+        {
+            return false;
+        }
+
+        WhiteBoxMesh* whiteBox = nullptr;
+        EditorWhiteBoxComponentRequestBus::EventResult(
+            whiteBox, entityComponentIdPair, &EditorWhiteBoxComponentRequests::GetWhiteBoxMesh);
+        if (whiteBox == nullptr)
+        {
+            return false;
+        }
+
+        if (!Api::FlipEdge(*whiteBox, m_edgeIntersection->m_closestEdgeWithHandle.m_handle))
+        {
+            return false;
+        }
+
+        RecordWhiteBoxAction(*whiteBox, entityComponentIdPair, FlipEdgeUndoRedoDesc);
+        return true;
+    }
+
     void EdgeRestoreMode::Display(
         const AZ::EntityComponentIdPair& entityComponentIdPair, const AZ::Transform& worldFromLocal,
         const IntersectionAndRenderData& renderData, const AzFramework::ViewportInfo& viewportInfo,

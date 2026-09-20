@@ -14,6 +14,7 @@
 #include <AzCore/Math/IntersectSegment.h>
 #include <AzCore/Math/Quaternion.h>
 #include <AzCore/std/algorithm.h>
+#include <AzCore/std/containers/vector.h>
 #include <AzCore/std/smart_ptr/unique_ptr.h>
 #include <AzFramework/Entity/EntityDebugDisplayBus.h>
 #include <AzToolsFramework/API/ToolsApplicationAPI.h>
@@ -145,7 +146,20 @@ namespace WhiteBox
         }
         if (m_snapshot && m_hover.IsValid())
         {
-            Paint(*component, m_hover);
+            if (m_settings.m_wholePolygon)
+            {
+                // The hovered triangle is one of the polygon's; paint the whole face so a quad does not
+                // end up half-coloured. Paint() skips faces already done this stroke, so overlap is free.
+                const Api::PolygonHandle polygon = Api::FacePolygonHandle(*m_strokeMesh, m_hover);
+                for (const Api::FaceHandle face : polygon.m_faceHandles)
+                {
+                    Paint(*component, face);
+                }
+            }
+            else
+            {
+                Paint(*component, m_hover);
+            }
         }
         return m_snapshot != nullptr;
     }
@@ -252,18 +266,39 @@ namespace WhiteBox
         {
             return;
         }
-        const auto vertices = Api::FaceVertexPositions(*mesh, m_hover);
-        if (vertices.size() == 3)
+        // Outline what the next click will actually affect. With Whole Polygon on that is the polygon's
+        // border, drawn the way Sketch mode draws it, not the triangle under the cursor - a highlight
+        // that disagrees with what gets painted is worse than none. Read live rather than from
+        // m_settings, which is only sampled when a stroke begins, so toggling updates the hover at once.
+        AZStd::vector<AZ::Vector3> outline;
+        if (component->GetFacePaintSettings().m_wholePolygon)
         {
+            const Api::PolygonHandle polygon = Api::FacePolygonHandle(*mesh, m_hover);
+            for (const Api::EdgeHandle edgeHandle : Api::PolygonBorderEdgeHandlesFlattened(*mesh, polygon))
+            {
+                const auto edgeVertices = Api::EdgeVertexPositions(*mesh, edgeHandle);
+                outline.push_back(WorldPoint(*component, edgeVertices[0]));
+                outline.push_back(WorldPoint(*component, edgeVertices[1]));
+            }
+        }
+        else if (const auto vertices = Api::FaceVertexPositions(*mesh, m_hover); vertices.size() == 3)
+        {
+            for (size_t edge = 0; edge < 3; ++edge)
+            {
+                outline.push_back(WorldPoint(*component, vertices[edge]));
+                outline.push_back(WorldPoint(*component, vertices[(edge + 1) % 3]));
+            }
+        }
+
+        if (!outline.empty())
+        {
+            const AZ::Color highlight(1.0f, 0.75f, 0.1f, 1.0f);
             debugDisplay.DepthTestOff();
             debugDisplay.DepthWriteOff();
             debugDisplay.SetDrawInFrontMode(true);
-            debugDisplay.SetColor(AZ::Color(1.0f, 0.75f, 0.1f, 1.0f));
+            debugDisplay.SetColor(highlight);
             debugDisplay.SetLineWidth(2.0f);
-            for (size_t edge = 0; edge < 3; ++edge)
-            {
-                debugDisplay.DrawLine(WorldPoint(*component, vertices[edge]), WorldPoint(*component, vertices[(edge + 1) % 3]));
-            }
+            debugDisplay.DrawLines(outline, highlight);
             debugDisplay.DepthTestOn();
         }
     }

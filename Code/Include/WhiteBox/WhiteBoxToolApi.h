@@ -861,6 +861,12 @@ namespace WhiteBox
         //! Position is measured from the selected edge's first endpoint (0 < fraction < 1).
         //! The strip must close or terminate at open mesh boundaries; failure leaves the mesh unchanged.
         bool InsertEdgeLoop(WhiteBoxMesh& whiteBox, EdgeHandle edge, float fraction, AZStd::string& error);
+        //! Expand edge seeds along regular quad loops, or along unambiguous open borders.
+        //! Invalid handles and internal triangulation edges are ignored. Does not modify the mesh.
+        EdgeHandles FindEdgeLoop(const WhiteBoxMesh& whiteBox, const EdgeHandles& seeds);
+        //! Expand across opposite quad edges, stopping at non-quads and ambiguous topology.
+        EdgeHandles FindEdgeRing(const WhiteBoxMesh& whiteBox, const EdgeHandles& seeds);
+
         //! Bevel convex edges, including connected selections at simple corners. Width is the face offset.
         //! Segments (1-32) controls the rounded profile. Failure leaves the mesh unchanged.
         bool BevelEdges(WhiteBoxMesh& whiteBox, const EdgeHandles& edges, float width, int segments, AZStd::string& error, float profile = 0.5f);

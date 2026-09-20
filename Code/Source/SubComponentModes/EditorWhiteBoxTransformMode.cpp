@@ -924,6 +924,30 @@ namespace WhiteBox
         return m_whiteBoxSelection ? m_whiteBoxSelection->m_vertices : Api::VertexHandles{};
     }
 
+    bool TransformMode::ExpandEdgeSelection(const bool ring)
+    {
+        if (m_loopCutActive || !m_whiteBoxSelection || m_whiteBoxSelection->m_edges.empty() ||
+            (m_manipulator && m_manipulator->PerformingAction()))
+        {
+            return false;
+        }
+        WhiteBoxMesh* mesh = nullptr;
+        EditorWhiteBoxComponentRequestBus::EventResult(
+            mesh, m_entityComponentIdPair, &EditorWhiteBoxComponentRequests::GetWhiteBoxMesh);
+        if (!mesh) { return false; }
+        auto edges = ring ? Api::FindEdgeRing(*mesh, m_whiteBoxSelection->m_edges)
+                          : Api::FindEdgeLoop(*mesh, m_whiteBoxSelection->m_edges);
+        if (edges.empty()) { return false; }
+        Refresh();
+        m_whiteBoxSelection = AZStd::make_shared<VertexTransformSelection>();
+        EdgeIntersection selection{};
+        selection.m_closestEdgeWithHandle.m_handle = edges.front();
+        m_whiteBoxSelection->m_selection = selection;
+        m_whiteBoxSelection->m_edges = AZStd::move(edges);
+        RefreshManipulator();
+        return true;
+    }
+
     void TransformMode::ClearSelection()
     {
         Refresh();

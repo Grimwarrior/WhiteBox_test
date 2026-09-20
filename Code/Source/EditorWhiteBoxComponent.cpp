@@ -416,6 +416,8 @@ namespace WhiteBox
                     ->EnumAttribute(DrawShapeType::Cone, "Cone")
                     ->EnumAttribute(DrawShapeType::Sphere, "Sphere")
                     ->EnumAttribute(DrawShapeType::Staircase, "Staircase")
+                    // Room, Door and Circular Stairs are parametric-only - they are created as a layer,
+                    // never dragged out as a brush - so they are not offered here.
                     ->EnumAttribute(DrawShapeType::Plane, "Plane")
                     ->EnumAttribute(DrawShapeType::Torus, "Torus")
                     ->EnumAttribute(DrawShapeType::Pipe, "Pipe")
@@ -472,6 +474,40 @@ namespace WhiteBox
                 ->Field("ExcludeFromBoolean", &BooleanSettings::m_excludeFromBoolean)
                 ->Field("BooleanOthers", &BooleanSettings::m_booleanOthers)
                 ->Field("CutterOperation", &BooleanSettings::m_cutterOperation);
+
+            if (AZ::EditContext* editContext = serializeContext->GetEditContext())
+            {
+                editContext->Class<BooleanSettings>("Boolean", "Cut this mesh with another entity's.")
+                    ->ClassElement(AZ::Edit::ClassElements::EditorData, "")
+                    ->Attribute(AZ::Edit::Attributes::AutoExpand, true)
+                    ->DataElement(
+                        AZ::Edit::UIHandlers::Default, &BooleanSettings::m_sourceEntity, "Source",
+                        "Another entity whose White Box mesh is the operand.")
+                    ->DataElement(
+                        AZ::Edit::UIHandlers::ComboBox, &BooleanSettings::m_operation, "Operation",
+                        "How the source mesh combines with this one.")
+                    ->EnumAttribute(Api::BooleanOperation::Subtraction, "Subtract")
+                    ->EnumAttribute(Api::BooleanOperation::Union, "Union")
+                    ->EnumAttribute(Api::BooleanOperation::Intersection, "Intersect")
+                    ->DataElement(
+                        AZ::Edit::UIHandlers::CheckBox, &BooleanSettings::m_live, "Live",
+                        "Evaluate for display only; the editable mesh underneath is left alone.")
+                    ->DataElement(
+                        AZ::Edit::UIHandlers::CheckBox, &BooleanSettings::m_affectActiveOnly, "Active Layer Only",
+                        "Cut only the active layer instead of the whole combined mesh.")
+                    ->DataElement(
+                        AZ::Edit::UIHandlers::CheckBox, &BooleanSettings::m_booleanOthers, "Cut Others",
+                        "Make this entity a cutter: it booleans every overlapping entity that is not excluded.")
+                    ->DataElement(
+                        AZ::Edit::UIHandlers::ComboBox, &BooleanSettings::m_cutterOperation, "Cutter Operation",
+                        "The operation this entity applies to the meshes it cuts.")
+                    ->EnumAttribute(Api::BooleanOperation::Subtraction, "Subtract")
+                    ->EnumAttribute(Api::BooleanOperation::Union, "Union")
+                    ->EnumAttribute(Api::BooleanOperation::Intersection, "Intersect")
+                    ->DataElement(
+                        AZ::Edit::UIHandlers::CheckBox, &BooleanSettings::m_excludeFromBoolean, "Never Cut This",
+                        "Keep this entity out of every other entity's global boolean.");
+            }
         }
     }
 
@@ -532,9 +568,70 @@ namespace WhiteBox
                     ->Attribute(AZ::Edit::Attributes::AutoExpand, true)
                     ->UIElement(
                         AZ::Edit::UIHandlers::Button, "",
-                        "Open the White Box pane - all White Box editing lives there.")
+                        "Open the White Box pane, which holds the layer stack.")
                     ->Attribute(AZ::Edit::Attributes::ChangeNotify, &EditorWhiteBoxComponent::OnOpenPane)
                     ->Attribute(AZ::Edit::Attributes::ButtonText, "Open White Box Pane")
+
+                    // Everything below is set-once-per-entity state rather than per-gesture modelling, so
+                    // it belongs on the card: the Inspector gives it search, collapsing and prefab
+                    // override marks for free, and the pane is left to the layer stack.
+                    ->DataElement(
+                        AZ::Edit::UIHandlers::ComboBox, &EditorWhiteBoxComponent::m_defaultShape, "Default Shape",
+                        "The shape a new or reset White Box mesh starts as.")
+                    ->EnumAttribute(DefaultShapeType::Cube, "Cube")
+                    ->EnumAttribute(DefaultShapeType::Tetrahedron, "Tetrahedron")
+                    ->EnumAttribute(DefaultShapeType::Icosahedron, "Icosahedron")
+                    ->EnumAttribute(DefaultShapeType::Cylinder, "Cylinder")
+                    ->EnumAttribute(DefaultShapeType::Sphere, "Sphere")
+                    ->EnumAttribute(DefaultShapeType::Asset, "Asset")
+                    ->Attribute(AZ::Edit::Attributes::ChangeNotify, &EditorWhiteBoxComponent::OnDefaultShapeChange)
+
+                    ->ClassElement(AZ::Edit::ClassElements::Group, "Material / Display")
+                    ->Attribute(AZ::Edit::Attributes::AutoExpand, false)
+                    ->DataElement(
+                        AZ::Edit::UIHandlers::CheckBox, &EditorWhiteBoxComponent::m_useGlobalTint, "Use Global Tint",
+                        "Render every layer with the material tint below. Turn off to let each layer use its own.")
+                    ->Attribute(AZ::Edit::Attributes::ChangeNotify, &EditorWhiteBoxComponent::OnGlobalTintChange)
+                    ->DataElement(
+                        AZ::Edit::UIHandlers::Default, &EditorWhiteBoxComponent::m_material, "Material",
+                        "Tint, texture and game-mode visibility for this White Box.")
+                    ->Attribute(AZ::Edit::Attributes::Visibility, &EditorWhiteBoxComponent::GlobalTintVisibility)
+                    ->Attribute(AZ::Edit::Attributes::ChangeNotify, &EditorWhiteBoxComponent::OnMaterialChange)
+                    ->DataElement(
+                        AZ::Edit::UIHandlers::CheckBox, &EditorWhiteBoxComponent::m_edgesOnly, "Edges Only",
+                        "Hide the solid render mesh and draw only the mesh edges.")
+                    ->Attribute(AZ::Edit::Attributes::ChangeNotify, &EditorWhiteBoxComponent::OnEdgesOnlyChange)
+
+                    ->ClassElement(AZ::Edit::ClassElements::Group, "Boolean")
+                    ->Attribute(AZ::Edit::Attributes::AutoExpand, false)
+                    ->DataElement(
+                        AZ::Edit::UIHandlers::Default, &EditorWhiteBoxComponent::m_boolean, "",
+                        "Cut this mesh with another entity's mesh.")
+                    ->Attribute(AZ::Edit::Attributes::Visibility, AZ::Edit::PropertyVisibility::ShowChildrenOnly)
+                    ->Attribute(AZ::Edit::Attributes::ChangeNotify, &EditorWhiteBoxComponent::OnLiveBooleanChange)
+
+                    ->ClassElement(AZ::Edit::ClassElements::Group, "Mesh / Asset")
+                    ->Attribute(AZ::Edit::Attributes::AutoExpand, false)
+                    ->UIElement(AZ::Edit::UIHandlers::Button, "", "Weld coincident vertices and regroup coplanar faces so the whole mesh is a clean manifold.")
+                    ->Attribute(AZ::Edit::Attributes::ChangeNotify, &EditorWhiteBoxComponent::FixNonManifoldMesh)
+                    ->Attribute(AZ::Edit::Attributes::ButtonText, "Fix Non-Manifold")
+                    ->UIElement(AZ::Edit::UIHandlers::Button, "", "Remove every cube placed with the Cube Stamp tool.")
+                    ->Attribute(AZ::Edit::Attributes::ChangeNotify, &EditorWhiteBoxComponent::ClearVoxelCubes)
+                    ->Attribute(AZ::Edit::Attributes::ButtonText, "Clear Cube Stamp")
+                    ->UIElement(AZ::Edit::UIHandlers::Button, "", "Add a White Box collider component to this entity.")
+                    ->Attribute(AZ::Edit::Attributes::ChangeNotify, &EditorWhiteBoxComponent::OnAddCollision)
+                    ->Attribute(AZ::Edit::Attributes::ButtonText, "Add Collision")
+                    ->UIElement(AZ::Edit::UIHandlers::Button, "", "Save this mesh as a shareable White Box asset.")
+                    ->Attribute(AZ::Edit::Attributes::ChangeNotify, &EditorWhiteBoxComponent::SaveAsAsset)
+                    ->Attribute(AZ::Edit::Attributes::ButtonText, "Save As Asset...")
+                    ->UIElement(AZ::Edit::UIHandlers::Button, "", "Export this mesh to an obj file.")
+                    ->Attribute(AZ::Edit::Attributes::ChangeNotify, &EditorWhiteBoxComponent::ExportToFile)
+                    ->Attribute(AZ::Edit::Attributes::ButtonText, "Export")
+                    ->DataElement(
+                        AZ::Edit::UIHandlers::CheckBox, &EditorWhiteBoxComponent::m_flipYZForExport, "Flip Y and Z",
+                        "Swap Y and Z on export, for tools that use a different up axis.")
+
+                    ->ClassElement(AZ::Edit::ClassElements::Group, "")
                     ->DataElement(
                         AZ::Edit::UIHandlers::Default, &EditorWhiteBoxComponent::m_editorMeshAsset, "Editor Mesh Asset",
                         "Editor Mesh Asset")

@@ -108,6 +108,10 @@ namespace WhiteBox
             WhiteBoxMesh& mesh, const AZ::Transform& localFromWorld, const AZ::Vector3& center,
             const AZ::Vector3& uAxis, const AZ::Vector3& vAxis, const AZ::Vector3& up, float baseUp, float topUp,
             DrawShapeType shapeType, int sidesIn, int steps = 8, float holeRatio = 0.5f,
-            int tubeSides = DefaultTubeSides);
+            int tubeSides = DefaultTubeSides,
+            //! Only read by the parametric shells (Room, Door, Circular Stairs); ignored by the rest.
+            float wallThickness = 0.15f, float cavityGap = 0.1f, bool floor = true, bool ceiling = false,
+            bool doorFrame = true, float archHeight = 0.0f, float innerRadius = 0.5f,
+            float sweepAngle = 270.0f);
     } // namespace Detail
 } // namespace WhiteBox

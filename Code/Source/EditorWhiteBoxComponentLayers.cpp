@@ -494,7 +494,7 @@ namespace WhiteBox
 
     EditorWhiteBoxComponent::BevelParams EditorWhiteBoxComponent::GetBevelParams() const
     {
-        if (!HasActiveBevel()) { return {}; }
+        if (!HasActiveBevel()) { return m_pendingBevelParams; }
         const auto& layer = m_layers[m_activeLayerIndex];
         return {layer.m_bevelWidth, layer.m_bevelSegments, layer.m_bevelProfile};
     }

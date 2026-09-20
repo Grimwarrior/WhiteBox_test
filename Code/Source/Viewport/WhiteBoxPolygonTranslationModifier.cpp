@@ -127,14 +127,22 @@ namespace WhiteBox
                 sharedState->m_moved = sharedState->m_moved ||
                     action.LocalPositionOffset().GetLength() >= cl_whiteBoxMouseClickDeltaThreshold;
 
+                // Extrude is either Ctrl held, or the Sketch cluster's latched Extrude. Holding Ctrl
+                // keeps working for anyone who already knows the gesture; the toggle is what makes it
+                // findable for anyone who does not.
+                bool stickyExtrude = false;
+                EditorWhiteBoxComponentRequestBus::EventResult(
+                    stickyExtrude, m_entityComponentIdPair, &EditorWhiteBoxComponentRequests::GetStickyExtrude);
+                const bool extruding = action.m_modifiers.Ctrl() || stickyExtrude;
+
                 // reset append
-                if (!action.m_modifiers.Ctrl() && sharedState->m_appendStage != AppendStage::None)
+                if (!extruding && sharedState->m_appendStage != AppendStage::None)
                 {
                     sharedState->m_appendStage = AppendStage::None;
                 }
 
                 // start trying to extrude
-                if (action.m_modifiers.Ctrl() && sharedState->m_appendStage == AppendStage::None)
+                if (extruding && sharedState->m_appendStage == AppendStage::None)
                 {
                     sharedState->m_appendStage = AppendStage::Initiated;
                     sharedState->m_initiateAppendPosition = action.LocalPosition();

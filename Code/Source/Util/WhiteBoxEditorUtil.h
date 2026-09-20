@@ -8,10 +8,20 @@
 
 #pragma once
 
+#include <AzCore/Component/ComponentBus.h>
+
 struct IEditor;
 
 namespace WhiteBox
 {
+    class EditorWhiteBoxComponent;
+
+    //! The White Box component named by @p entityComponentIdPair, or null when the entity is gone or
+    //! the id names something else. Shared because the floating tool windows and the modeling
+    //! operations all need it - and because four private copies in anonymous namespaces collide the
+    //! moment two of them land in the same unity build translation unit.
+    EditorWhiteBoxComponent* FindWhiteBoxComponent(const AZ::EntityComponentIdPair& entityComponentIdPair);
+
     //! Small wrapper around an EBus call to request the file at the given path be added to source control.
     void RequestEditSourceControl(const char* absoluteFilePath);
 

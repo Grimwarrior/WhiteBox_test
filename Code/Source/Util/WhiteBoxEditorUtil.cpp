@@ -6,11 +6,24 @@
  *
  */
 
+#include "EditorWhiteBoxComponent.h"
+
+#include <AzCore/Component/ComponentApplicationBus.h>
 #include <AzToolsFramework/API/ToolsApplicationAPI.h>
 #include <AzToolsFramework/SourceControl/SourceControlAPI.h>
 
 namespace WhiteBox
 {
+    EditorWhiteBoxComponent* FindWhiteBoxComponent(const AZ::EntityComponentIdPair& entityComponentIdPair)
+    {
+        AZ::Entity* entity = nullptr;
+        AZ::ComponentApplicationBus::BroadcastResult(
+            entity, &AZ::ComponentApplicationRequests::FindEntity, entityComponentIdPair.GetEntityId());
+        return entity != nullptr
+            ? azrtti_cast<EditorWhiteBoxComponent*>(entity->FindComponent(entityComponentIdPair.GetComponentId()))
+            : nullptr;
+    }
+
     void RequestEditSourceControl(const char* absoluteFilePath)
     {
         bool active = false;

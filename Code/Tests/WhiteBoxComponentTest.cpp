@@ -982,6 +982,49 @@ namespace UnitTest
         }
     }
 
+    TEST_F(EditorWhiteBoxModifierTestFixture, RingSelectionRebuildsManipulatorWithoutChangingMesh)
+    {
+        namespace Api = WhiteBox::Api;
+        namespace Viewport = AzToolsFramework::ViewportInteraction;
+        auto* mesh = m_whiteBoxComponent->GetWhiteBoxMesh();
+        ASSERT_NE(mesh, nullptr);
+        Api::InitializeAsUnitCube(*mesh);
+        const AZ::EntityComponentIdPair pair(m_whiteBoxEntityId, m_whiteBoxComponent->GetId());
+        WhiteBox::TransformMode mode(pair);
+        WhiteBox::IntersectionAndRenderData data;
+        Viewport::MouseInteractionEvent event{};
+        event.m_mouseEvent = Viewport::MouseEvent::Down;
+        event.m_mouseInteraction.m_mouseButtons.m_mouseButtons = static_cast<AZ::u32>(Viewport::MouseButton::Left);
+        WhiteBox::EdgeIntersection edge;
+        edge.m_closestEdgeWithHandle.m_handle = Api::MeshPolygonEdgeHandles(*mesh).front();
+        edge.m_intersection.m_closestDistance = 1.0f;
+        mode.HandleMouseInteraction({event, pair, AZ::Transform::CreateIdentity(), data, edge, AZStd::nullopt, AZStd::nullopt});
+        Api::WhiteBoxMeshStream before;
+        ASSERT_TRUE(Api::WriteMesh(*mesh, before));
+        ASSERT_TRUE(mode.ExpandEdgeSelection(true));
+        EXPECT_EQ(mode.GetSelectedEdges().size(), 4);
+        EXPECT_TRUE(mode.GetSelectedVertices().empty());
+        EXPECT_TRUE(mode.GetSelectedPolygons().empty());
+        Api::WhiteBoxMeshStream after;
+        ASSERT_TRUE(Api::WriteMesh(*mesh, after));
+        EXPECT_EQ(before, after);
+        const auto vertices = Api::MeshVertexHandles(*mesh);
+        AZStd::vector<AZ::Vector3> positions;
+        for (const auto vertex : vertices) { positions.push_back(Api::VertexPosition(*mesh, vertex)); }
+        mode.NumericBeginMove();
+        mode.NumericSetAxisX();
+        mode.NumericAppendDigit('1');
+        mode.NumericConfirm();
+        for (size_t i = 0; i < vertices.size(); ++i)
+        {
+            EXPECT_TRUE(Api::VertexPosition(*mesh, vertices[i]).IsClose(positions[i] + AZ::Vector3::CreateAxisX()));
+        }
+        Api::Clear(*mesh);
+        mode.Refresh();
+        EXPECT_FALSE(mode.ExpandEdgeSelection(false));
+        EXPECT_TRUE(mode.GetSelectedEdges().empty());
+    }
+
     TEST_F(EditorWhiteBoxModifierTestFixture, TransformRefreshDropsHoverHandlesBeforeDrawingReplacementMesh)
     {
         namespace Api = WhiteBox::Api;

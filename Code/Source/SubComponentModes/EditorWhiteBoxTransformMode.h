@@ -86,6 +86,7 @@ namespace WhiteBox
         Api::VertexHandles GetSelectedVertices() const override;
         void ClearSelection() override;
         void BeginLoopCut() override;
+        bool ExpandEdgeSelection(bool ring) override;
 
         // Numeric input bus overrides
         void NumericBeginMove()         override { if (m_whiteBoxSelection) m_numericInput.Begin(NumericOpMode::Move);   }

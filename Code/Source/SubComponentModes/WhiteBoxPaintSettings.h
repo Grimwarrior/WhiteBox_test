@@ -22,5 +22,9 @@ namespace WhiteBox
         FacePaintOperation m_operation = FacePaintOperation::Material;
         AZ::Data::AssetId m_material;
         AZ::u32 m_color = 0xFFFFFFFF; //!< Opaque RGBA, R in the low byte.
+        //! Paint every triangle of the hovered polygon rather than the one under the cursor. A drawn
+        //! quad is two triangles, so painting per-triangle leaves half-painted faces unless you are
+        //! careful; this is what you want whenever the mesh reads as quads and n-gons.
+        bool m_wholePolygon = true;
     };
 }

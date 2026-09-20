@@ -36,6 +36,8 @@ namespace WhiteBox
         //! Drop cached topology handles after an operation replaces the mesh.
         virtual void ClearSelection() {}
         virtual void BeginLoopCut() {}
+        //! Expand the current edge selection. False selects loops, true selects rings.
+        virtual bool ExpandEdgeSelection(bool /*ring*/) { return false; }
 
         // ------------------------------------------------------------------ //
         // Blender-style numeric input dispatch methods                       //

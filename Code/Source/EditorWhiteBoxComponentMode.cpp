@@ -7,16 +7,27 @@
  */
 
 #include "EditorWhiteBoxComponentMode.h"
+#include "EditorWhiteBoxComponent.h"
 #include "SubComponentModes/EditorWhiteBoxDefaultMode.h"
+#include "SubComponentModes/EditorWhiteBoxDefaultModeBus.h"
 #include "SubComponentModes/EditorWhiteBoxEdgeRestoreMode.h"
 #include "SubComponentModes/EditorWhiteBoxTransformMode.h"
 #include "SubComponentModes/EditorWhiteBoxPaintMode.h"
+#include "Util/WhiteBoxEditorUtil.h"
+#include "Util/WhiteBoxModelingOps.h"
+#include "Tools/WhiteBoxBevelWindow.h"
+#include "Tools/WhiteBoxPaintWindow.h"
+#include "Tools/WhiteBoxShapeOptionsWindow.h"
+#include "Tools/WhiteBoxWeldWindow.h"
+#include <AzToolsFramework/API/ToolsApplicationAPI.h>
 #include "Util/WhiteBoxSnapUtil.h"
 #include "Viewport/WhiteBoxViewportConstants.h"
 
+#include <AzCore/Component/TickBus.h>
 #include <AzCore/Component/TransformBus.h>
 #include <AzCore/std/smart_ptr/make_shared.h>
 #include <AzCore/std/smart_ptr/weak_ptr.h>
+#include <AzCore/std/algorithm.h>
 #include <AzCore/std/sort.h>
 
 #include <AzToolsFramework/ActionManager/Action/ActionManagerInterface.h>
@@ -378,6 +389,11 @@ namespace WhiteBox
             },
             m_modes);
 
+        if (mouseInteraction.m_mouseEvent == AzToolsFramework::ViewportInteraction::MouseEvent::Up)
+        {
+            RefreshModelingClusterState(); // the selection is what gates these buttons
+        }
+
         if (mouseInteraction.m_mouseInteraction.m_mouseButtons.Left() &&
             mouseInteraction.m_mouseEvent == AzToolsFramework::ViewportInteraction::MouseEvent::Up &&
             (edgeIntersection || polygonIntersection || vertexIntersection))
@@ -386,6 +402,24 @@ namespace WhiteBox
         }
 
         return interactionHandled;
+    }
+
+    AZStd::vector<AzToolsFramework::ViewportUi::ClusterId> EditorWhiteBoxComponentMode::PopulateViewportUiImpl()
+    {
+        auto clusterIds = EditorBaseComponentMode::PopulateViewportUiImpl();
+
+        // EditorBaseComponentMode::PopulateViewportUi creates the border AFTER this returns, and puts it
+        // back on every refresh, so removing it here would be undone immediately. Queue the removal for
+        // the next tick instead, once the framework has finished putting it up.
+        AZ::TickBus::QueueFunction(
+            []()
+            {
+                AzToolsFramework::ViewportUi::ViewportUiRequestBus::Event(
+                    AzToolsFramework::ViewportUi::DefaultViewportId,
+                    &AzToolsFramework::ViewportUi::ViewportUiRequestBus::Events::RemoveViewportBorder);
+            });
+
+        return clusterIds;
     }
 
     AZStd::string EditorWhiteBoxComponentMode::GetComponentModeName() const
@@ -433,6 +467,16 @@ namespace WhiteBox
             "Cancel the current operation, or return to normal viewport editing",
             [this]()
             {
+                if (m_weldWindow && m_weldWindow->isVisible())
+                {
+                    m_weldWindow->reject();
+                    return;
+                }
+                if (m_bevelWindow && m_bevelWindow->isVisible())
+                {
+                    m_bevelWindow->reject();
+                    return;
+                }
                 const bool consumed = AZStd::visit(
                     [](auto& mode)
                     {
@@ -480,6 +524,11 @@ namespace WhiteBox
         m_intersectionAndRenderData = {};
         m_currentSubMode = SubMode::VertexPaint;
         SetViewportUiClusterActiveButton(m_modeSelectionClusterId, m_paintModeButtonId);
+        RemoveModelingCluster();
+        RemoveShapeSwitcher();
+        RemoveSketchCluster();
+        RemoveEdgeRestoreCluster();
+        CreatePaintCluster();
         if (auto* actionManager = AZ::Interface<AzToolsFramework::ActionManagerInterface>::Get())
         {
             actionManager->SetActiveActionContextMode(
@@ -493,6 +542,11 @@ namespace WhiteBox
         m_intersectionAndRenderData = {};
         m_currentSubMode = SubMode::DrawShape;
         SetViewportUiClusterActiveButton(m_modeSelectionClusterId, m_drawShapeModeButtonId);
+        RemoveModelingCluster();
+        RemoveEdgeRestoreCluster();
+        CreateShapeSwitcher();
+        RemovePaintCluster();
+        RemoveSketchCluster();
         auto actionManagerInterface = AZ::Interface<AzToolsFramework::ActionManagerInterface>::Get();
         if (actionManagerInterface)
         {
@@ -508,6 +562,11 @@ namespace WhiteBox
         m_intersectionAndRenderData = {};
         m_currentSubMode = SubMode::Default;
         SetViewportUiClusterActiveButton(m_modeSelectionClusterId, m_defaultModeButtonId);
+        RemoveModelingCluster();
+        RemoveShapeSwitcher();
+        RemovePaintCluster();
+        RemoveEdgeRestoreCluster();
+        CreateSketchCluster();
         // Change sub-mode to default at the next frame to go after the automated mode switching in ComponentModeActionHandler.
         //
         // Because it is deferred it can outlive the reason for it: if component mode ends before
@@ -547,6 +606,11 @@ namespace WhiteBox
         m_intersectionAndRenderData = {};
         m_currentSubMode = SubMode::EdgeRestore;
         SetViewportUiClusterActiveButton(m_modeSelectionClusterId, m_edgeRestoreModeButtonId);
+        RemoveModelingCluster();
+        RemoveShapeSwitcher();
+        RemovePaintCluster();
+        RemoveSketchCluster();
+        CreateEdgeRestoreCluster();
         // Set the Action Context Mode in the Action Manager, if enabled.
         auto actionManagerInterface = AZ::Interface<AzToolsFramework::ActionManagerInterface>::Get();
         if (actionManagerInterface)
@@ -561,6 +625,11 @@ namespace WhiteBox
         m_intersectionAndRenderData = {};
         m_currentSubMode = SubMode::Transform;
         SetViewportUiClusterActiveButton(m_modeSelectionClusterId, m_transformModeButtonId);
+        RemoveShapeSwitcher();
+        RemovePaintCluster();
+        RemoveSketchCluster();
+        RemoveEdgeRestoreCluster();
+        CreateModelingCluster();
         // Set the Action Context Mode in the Action Manager, if enabled.
         auto actionManagerInterface = AZ::Interface<AzToolsFramework::ActionManagerInterface>::Get();
         if (actionManagerInterface)
@@ -618,6 +687,11 @@ namespace WhiteBox
             RecalculateWhiteBoxIntersectionData(DecideEdgeSelectionMode(m_currentSubMode));
         }
     
+        // Selection changes arrive through the manipulator manager, not through this class's mouse
+        // handler, so the gated buttons are re-evaluated here. Both refreshes early-out unless the
+        // answer changed, so this costs two bus queries a frame.
+        RefreshSketchClusterState();
+
         debugDisplay.DepthTestOn();
         debugDisplay.SetColor(ed_whiteBoxEdgeDefault);
         debugDisplay.SetLineWidth(4.0f);
@@ -744,8 +818,707 @@ namespace WhiteBox
         return buttonId;
     }
 
+    void EditorWhiteBoxComponentMode::CreateEdgeRestoreCluster()
+    {
+        namespace ViewportUi = AzToolsFramework::ViewportUi;
+        if (m_edgeRestoreClusterId != ViewportUi::InvalidClusterId)
+        {
+            return;
+        }
+
+        ViewportUi::ViewportUiRequestBus::EventResult(
+            m_edgeRestoreClusterId, ViewportUi::DefaultViewportId,
+            &ViewportUi::ViewportUiRequestBus::Events::CreateCluster, ViewportUi::Alignment::TopRight);
+
+        ViewportUi::ViewportUiRequestBus::EventResult(
+            m_flipEdgeButtonId, ViewportUi::DefaultViewportId,
+            &ViewportUi::ViewportUiRequestBus::Events::CreateClusterButton, m_edgeRestoreClusterId,
+            AZStd::string(":/WhiteBox/Icons/FlipEdge.svg"));
+        ViewportUi::ViewportUiRequestBus::Event(
+            ViewportUi::DefaultViewportId, &ViewportUi::ViewportUiRequestBus::Events::SetClusterButtonTooltip,
+            m_edgeRestoreClusterId, m_flipEdgeButtonId,
+            AZStd::string("Flip Edge - split the hovered quad across its other diagonal (or right-click it)"));
+
+        m_edgeRestoreHandler = AZ::Event<ViewportUi::ButtonId>::Handler(
+            [this](const ViewportUi::ButtonId buttonId)
+            {
+                if (buttonId != m_flipEdgeButtonId)
+                {
+                    return;
+                }
+                // Edge Restore has no request bus; the mode object lives in m_modes, so reach it there.
+                if (auto* mode = AZStd::get_if<AZStd::unique_ptr<EdgeRestoreMode>>(&m_modes))
+                {
+                    (*mode)->FlipHoveredEdge(GetEntityComponentIdPair());
+                }
+            });
+
+        ViewportUi::ViewportUiRequestBus::Event(
+            ViewportUi::DefaultViewportId, &ViewportUi::ViewportUiRequestBus::Events::RegisterClusterEventHandler,
+            m_edgeRestoreClusterId, m_edgeRestoreHandler);
+    }
+
+    void EditorWhiteBoxComponentMode::RemoveEdgeRestoreCluster()
+    {
+        namespace ViewportUi = AzToolsFramework::ViewportUi;
+        if (m_edgeRestoreClusterId == ViewportUi::InvalidClusterId)
+        {
+            return;
+        }
+
+        m_edgeRestoreHandler.Disconnect();
+        ViewportUi::ViewportUiRequestBus::Event(
+            ViewportUi::DefaultViewportId, &ViewportUi::ViewportUiRequestBus::Events::RemoveCluster,
+            m_edgeRestoreClusterId);
+        m_edgeRestoreClusterId = ViewportUi::InvalidClusterId;
+    }
+
+    void EditorWhiteBoxComponentMode::CreateSketchCluster()
+    {
+        namespace ViewportUi = AzToolsFramework::ViewportUi;
+        if (m_sketchClusterId != ViewportUi::InvalidClusterId)
+        {
+            RefreshSketchClusterState();
+            return;
+        }
+
+        ViewportUi::ViewportUiRequestBus::EventResult(
+            m_sketchClusterId, ViewportUi::DefaultViewportId,
+            &ViewportUi::ViewportUiRequestBus::Events::CreateCluster, ViewportUi::Alignment::TopRight);
+
+        const auto addButton = [this](const char* icon, const char* tooltip)
+        {
+            namespace ViewportUi = AzToolsFramework::ViewportUi;
+            ViewportUi::ButtonId buttonId;
+            ViewportUi::ViewportUiRequestBus::EventResult(
+                buttonId, ViewportUi::DefaultViewportId,
+                &ViewportUi::ViewportUiRequestBus::Events::CreateClusterButton, m_sketchClusterId,
+                AZStd::string::format(":/WhiteBox/Icons/%s.svg", icon));
+            ViewportUi::ViewportUiRequestBus::Event(
+                ViewportUi::DefaultViewportId, &ViewportUi::ViewportUiRequestBus::Events::SetClusterButtonTooltip,
+                m_sketchClusterId, buttonId, AZStd::string(tooltip));
+            return buttonId;
+        };
+
+        // Latched drag modifiers - click to turn on, click again to turn off.
+        m_extrudeButtonId = addButton("Extrude", "Extrude - drag a face or edge to pull new geometry from it (or hold Ctrl)");
+        m_insetButtonId = addButton("Inset", "Inset - drag a face's scale handle to inset it (or hold Ctrl)");
+        // Momentary verbs on whatever is selected.
+        m_hideEdgeButtonId = addButton("HideEdge", "Hide Edge - merge the two polygons either side of the selected edge");
+        m_hideVertexButtonId = addButton("HideVertex", "Hide Vertex - remove the selected vertex from its polygon");
+
+        m_sketchHandler = AZ::Event<ViewportUi::ButtonId>::Handler(
+            [this](const ViewportUi::ButtonId buttonId)
+            {
+                auto* component = FindWhiteBoxComponent(GetEntityComponentIdPair());
+                if (component == nullptr)
+                {
+                    return;
+                }
+
+                if (buttonId == m_extrudeButtonId || buttonId == m_insetButtonId)
+                {
+                    // Toggle: pressing the latched one turns it off. They stay mutually exclusive, so a
+                    // drag always does exactly one thing.
+                    const bool extrude = buttonId == m_extrudeButtonId && !component->GetStickyExtrude();
+                    const bool inset = buttonId == m_insetButtonId && !component->GetStickyInset();
+                    component->SetStickyExtrude(extrude);
+                    component->SetStickyInset(inset);
+                }
+                else if (buttonId == m_hideEdgeButtonId)
+                {
+                    EditorWhiteBoxDefaultModeRequestBus::Event(
+                        GetEntityComponentIdPair(), &EditorWhiteBoxDefaultModeRequests::HideSelectedEdge);
+                }
+                else if (buttonId == m_hideVertexButtonId)
+                {
+                    EditorWhiteBoxDefaultModeRequestBus::Event(
+                        GetEntityComponentIdPair(), &EditorWhiteBoxDefaultModeRequests::HideSelectedVertex);
+                }
+                else
+                {
+                    return;
+                }
+
+                RefreshSketchClusterState();
+            });
+
+        ViewportUi::ViewportUiRequestBus::Event(
+            ViewportUi::DefaultViewportId, &ViewportUi::ViewportUiRequestBus::Events::RegisterClusterEventHandler,
+            m_sketchClusterId, m_sketchHandler);
+
+        RefreshSketchClusterState();
+    }
+
+    void EditorWhiteBoxComponentMode::RemoveSketchCluster()
+    {
+        namespace ViewportUi = AzToolsFramework::ViewportUi;
+        if (m_sketchClusterId == ViewportUi::InvalidClusterId)
+        {
+            return;
+        }
+
+        m_sketchHandler.Disconnect();
+        ViewportUi::ViewportUiRequestBus::Event(
+            ViewportUi::DefaultViewportId, &ViewportUi::ViewportUiRequestBus::Events::RemoveCluster,
+            m_sketchClusterId);
+        m_sketchClusterId = ViewportUi::InvalidClusterId;
+        m_sketchEdgeSelected.reset();
+        m_sketchVertexSelected.reset();
+    }
+
+    void EditorWhiteBoxComponentMode::RefreshSketchClusterState()
+    {
+        namespace ViewportUi = AzToolsFramework::ViewportUi;
+        if (m_sketchClusterId == ViewportUi::InvalidClusterId)
+        {
+            return;
+        }
+
+        auto* component = FindWhiteBoxComponent(GetEntityComponentIdPair());
+        if (component == nullptr)
+        {
+            return;
+        }
+
+        if (component->GetStickyExtrude() || component->GetStickyInset())
+        {
+            ViewportUi::ViewportUiRequestBus::Event(
+                ViewportUi::DefaultViewportId, &ViewportUi::ViewportUiRequestBus::Events::SetClusterActiveButton,
+                m_sketchClusterId, component->GetStickyExtrude() ? m_extrudeButtonId : m_insetButtonId);
+        }
+        else
+        {
+            ViewportUi::ViewportUiRequestBus::Event(
+                ViewportUi::DefaultViewportId,
+                &ViewportUi::ViewportUiRequestBus::Events::ClearClusterActiveButton, m_sketchClusterId);
+        }
+
+        // Ask the same question the Hide Edge / Hide Vertex shortcuts ask. An earlier attempt tested the
+        // sub-mode's selected-modifier variant directly and never reported a selection.
+        Api::EdgeHandles edges;
+        Api::VertexHandles vertices;
+        EditorWhiteBoxDefaultModeRequestBus::EventResult(
+            edges, GetEntityComponentIdPair(), &EditorWhiteBoxDefaultModeRequests::SelectedEdgeHandles);
+        EditorWhiteBoxDefaultModeRequestBus::EventResult(
+            vertices, GetEntityComponentIdPair(), &EditorWhiteBoxDefaultModeRequests::SelectedVertexHandles);
+
+        // Selecting geometry means clicking its manipulator, and the manipulator manager consumes that
+        // before HandleMouseInteraction ever runs - which is why refreshing on mouse-up never saw it.
+        // This runs per frame instead, and only talks to the widget when the answer actually changes.
+        const bool hasEdge = !edges.empty();
+        const bool hasVertex = !vertices.empty();
+        const auto enable = [this](const ViewportUi::ButtonId buttonId, const bool usable)
+        {
+            namespace ViewportUi = AzToolsFramework::ViewportUi;
+            ViewportUi::ViewportUiRequestBus::Event(
+                ViewportUi::DefaultViewportId, &ViewportUi::ViewportUiRequestBus::Events::SetClusterDisableButton,
+                m_sketchClusterId, buttonId, !usable);
+        };
+        if (m_sketchEdgeSelected != hasEdge)
+        {
+            m_sketchEdgeSelected = hasEdge;
+            enable(m_hideEdgeButtonId, hasEdge);
+        }
+        if (m_sketchVertexSelected != hasVertex)
+        {
+            m_sketchVertexSelected = hasVertex;
+            enable(m_hideVertexButtonId, hasVertex);
+        }
+    }
+
+    void EditorWhiteBoxComponentMode::CreatePaintCluster()
+    {
+        namespace ViewportUi = AzToolsFramework::ViewportUi;
+        if (m_paintClusterId != ViewportUi::InvalidClusterId)
+        {
+            RefreshPaintClusterActive();
+            return;
+        }
+
+        ViewportUi::ViewportUiRequestBus::EventResult(
+            m_paintClusterId, ViewportUi::DefaultViewportId,
+            &ViewportUi::ViewportUiRequestBus::Events::CreateCluster, ViewportUi::Alignment::TopRight);
+
+        const AZStd::pair<FacePaintOperation, AZStd::pair<const char*, const char*>> operations[] = {
+            { FacePaintOperation::Material, { "PaintMaterial", "Paint Material - assign the chosen material to faces" } },
+            { FacePaintOperation::Color, { "PaintColor", "Paint Color - assign the chosen colour to faces" } },
+            { FacePaintOperation::ResetMaterial, { "ResetMaterial", "Reset Material - drop a face's material override" } },
+            { FacePaintOperation::ResetColor, { "ResetColor", "Reset Color - drop a face's painted colour" } },
+        };
+
+        m_paintButtons.clear();
+        m_paintButtons.reserve(AZ_ARRAY_SIZE(operations));
+        for (const auto& operation : operations)
+        {
+            ViewportUi::ButtonId buttonId;
+            ViewportUi::ViewportUiRequestBus::EventResult(
+                buttonId, ViewportUi::DefaultViewportId,
+                &ViewportUi::ViewportUiRequestBus::Events::CreateClusterButton, m_paintClusterId,
+                AZStd::string::format(":/WhiteBox/Icons/%s.svg", operation.second.first));
+
+            ViewportUi::ViewportUiRequestBus::Event(
+                ViewportUi::DefaultViewportId,
+                &ViewportUi::ViewportUiRequestBus::Events::SetClusterButtonTooltip, m_paintClusterId, buttonId,
+                AZStd::string(operation.second.second));
+
+            m_paintButtons.push_back({ buttonId, operation.first });
+        }
+
+        m_paintHandler = AZ::Event<ViewportUi::ButtonId>::Handler(
+            [this](const ViewportUi::ButtonId buttonId)
+            {
+                const auto found = AZStd::find_if(
+                    m_paintButtons.begin(), m_paintButtons.end(),
+                    [buttonId](const auto& entry)
+                    {
+                        return entry.first == buttonId;
+                    });
+                if (found == m_paintButtons.end())
+                {
+                    return;
+                }
+                auto* component = FindWhiteBoxComponent(GetEntityComponentIdPair());
+                if (component == nullptr)
+                {
+                    return;
+                }
+
+                // Brush settings are transient tool state, not scene data, so no undo step here - the
+                // paint stroke itself is what gets recorded.
+                FacePaintSettings settings = component->GetFacePaintSettings();
+                settings.m_operation = found->second;
+                component->SetFacePaintSettings(settings);
+
+                RefreshPaintClusterActive();
+                if (m_paintWindow)
+                {
+                    m_paintWindow->RefreshValues(); // different verb, different payload
+                }
+            });
+
+        ViewportUi::ViewportUiRequestBus::Event(
+            ViewportUi::DefaultViewportId, &ViewportUi::ViewportUiRequestBus::Events::RegisterClusterEventHandler,
+            m_paintClusterId, m_paintHandler);
+
+        RefreshPaintClusterActive();
+
+        if (!m_paintWindow)
+        {
+            QWidget* mainWindow = nullptr;
+            AzToolsFramework::EditorRequests::Bus::BroadcastResult(
+                mainWindow, &AzToolsFramework::EditorRequests::GetMainWindow);
+            m_paintWindow = new WhiteBoxPaintWindow(GetEntityComponentIdPair(), mainWindow);
+        }
+        m_paintWindow->ShowNearCursor();
+    }
+
+    void EditorWhiteBoxComponentMode::RemovePaintCluster()
+    {
+        namespace ViewportUi = AzToolsFramework::ViewportUi;
+        if (m_paintClusterId == ViewportUi::InvalidClusterId)
+        {
+            return;
+        }
+
+        m_paintHandler.Disconnect();
+        ViewportUi::ViewportUiRequestBus::Event(
+            ViewportUi::DefaultViewportId, &ViewportUi::ViewportUiRequestBus::Events::RemoveCluster,
+            m_paintClusterId);
+        m_paintClusterId = ViewportUi::InvalidClusterId;
+        m_paintButtons.clear();
+
+        if (m_paintWindow)
+        {
+            m_paintWindow->Dismiss();
+            m_paintWindow.clear();
+        }
+    }
+
+    void EditorWhiteBoxComponentMode::RefreshPaintClusterActive()
+    {
+        namespace ViewportUi = AzToolsFramework::ViewportUi;
+        if (m_paintClusterId == ViewportUi::InvalidClusterId)
+        {
+            return;
+        }
+
+        auto* component = FindWhiteBoxComponent(GetEntityComponentIdPair());
+        if (component == nullptr)
+        {
+            return;
+        }
+
+        const FacePaintOperation current = component->GetFacePaintSettings().m_operation;
+        const auto found = AZStd::find_if(
+            m_paintButtons.begin(), m_paintButtons.end(),
+            [current](const auto& entry)
+            {
+                return entry.second == current;
+            });
+        if (found != m_paintButtons.end())
+        {
+            ViewportUi::ViewportUiRequestBus::Event(
+                ViewportUi::DefaultViewportId, &ViewportUi::ViewportUiRequestBus::Events::SetClusterActiveButton,
+                m_paintClusterId, found->first);
+        }
+    }
+
+    void EditorWhiteBoxComponentMode::CreateShapeSwitcher()
+    {
+        namespace ViewportUi = AzToolsFramework::ViewportUi;
+        if (m_shapeSwitcherId != ViewportUi::InvalidClusterId)
+        {
+            RefreshShapeSwitcherActive();
+            return;
+        }
+
+        // Top-right, its own column: a cluster is vertical, so putting it under the mode and modeling
+        // clusters would leave it nothing to grow into. Cluster rather than switcher because its buttons
+        // are checkable - the active primitive gets the same highlight the mode cluster uses - and
+        // because a cluster overflows into the toolbar's arrow when the viewport is too short for it.
+        ViewportUi::ViewportUiRequestBus::EventResult(
+            m_shapeSwitcherId, ViewportUi::DefaultViewportId,
+            &ViewportUi::ViewportUiRequestBus::Events::CreateCluster, ViewportUi::Alignment::TopRight);
+
+        // Ordered the way someone reaches for them, the click-defined polygon last. Room, Door and
+        // Circular Stairs are deliberately absent: they are parametric-only, created as a layer rather
+        // than dragged out as a brush.
+        const AZStd::pair<DrawShapeType, AZStd::pair<const char*, const char*>> shapes[] = {
+            { DrawShapeType::Box, { "ShapeBox", "Box" } },
+            { DrawShapeType::Cylinder, { "ShapeCylinder", "Cylinder" } },
+            { DrawShapeType::Pyramid, { "ShapePyramid", "Pyramid" } },
+            { DrawShapeType::Cone, { "ShapeCone", "Cone" } },
+            { DrawShapeType::Sphere, { "ShapeSphere", "Sphere" } },
+            { DrawShapeType::Plane, { "ShapePlane", "Plane" } },
+            { DrawShapeType::Torus, { "ShapeTorus", "Torus" } },
+            { DrawShapeType::Pipe, { "ShapePipe", "Pipe" } },
+            { DrawShapeType::Staircase, { "ShapeStaircase", "Staircase" } },
+            { DrawShapeType::Polygon, { "ShapePolygon", "Freeform Polygon" } },
+        };
+
+        m_shapeButtons.clear();
+        m_shapeButtons.reserve(AZ_ARRAY_SIZE(shapes));
+        for (const auto& shape : shapes)
+        {
+            ViewportUi::ButtonId buttonId;
+            ViewportUi::ViewportUiRequestBus::EventResult(
+                buttonId, ViewportUi::DefaultViewportId,
+                &ViewportUi::ViewportUiRequestBus::Events::CreateClusterButton, m_shapeSwitcherId,
+                AZStd::string::format(":/WhiteBox/Icons/%s.svg", shape.second.first));
+
+            // The cluster shows no label, so the name only survives in the tooltip and in the Shape
+            // Options window's title.
+            ViewportUi::ViewportUiRequestBus::Event(
+                ViewportUi::DefaultViewportId,
+                &ViewportUi::ViewportUiRequestBus::Events::SetClusterButtonTooltip, m_shapeSwitcherId, buttonId,
+                AZStd::string::format("Draw a %s", shape.second.second));
+
+            m_shapeButtons.push_back({ buttonId, shape.first });
+        }
+
+        // The cube stamp: same cluster, because picking it changes what a click produces just as much
+        // as picking a primitive does.
+        ViewportUi::ViewportUiRequestBus::EventResult(
+            m_cubeStampButtonId, ViewportUi::DefaultViewportId,
+            &ViewportUi::ViewportUiRequestBus::Events::CreateClusterButton, m_shapeSwitcherId,
+            AZStd::string(":/WhiteBox/Icons/ShapeCubeStamp.svg"));
+        ViewportUi::ViewportUiRequestBus::Event(
+            ViewportUi::DefaultViewportId, &ViewportUi::ViewportUiRequestBus::Events::SetClusterButtonTooltip,
+            m_shapeSwitcherId, m_cubeStampButtonId,
+            AZStd::string("Cube Stamp - click to place grid-snapped cubes instead of dragging a footprint"));
+
+        m_shapeSwitcherHandler = AZ::Event<ViewportUi::ButtonId>::Handler(
+            [this](const ViewportUi::ButtonId buttonId)
+            {
+                auto* component = FindWhiteBoxComponent(GetEntityComponentIdPair());
+                if (component == nullptr)
+                {
+                    return;
+                }
+
+                const bool cubeStamp = buttonId == m_cubeStampButtonId;
+                const auto found = AZStd::find_if(
+                    m_shapeButtons.begin(), m_shapeButtons.end(),
+                    [buttonId](const auto& entry)
+                    {
+                        return entry.first == buttonId;
+                    });
+                if (!cubeStamp && found == m_shapeButtons.end())
+                {
+                    return;
+                }
+
+                // Both are serialized component state, so the change is undoable - picking from here
+                // behaves exactly like picking in the pane used to. The stamp flag and the primitive are
+                // mutually exclusive: whichever button was pressed is what a click now produces.
+                {
+                    AzToolsFramework::ScopedUndoBatch undoBatch("White Box Draw Shape");
+                    component->SetDrawUnitCube(cubeStamp);
+                    if (!cubeStamp)
+                    {
+                        component->SetDrawShapeType(found->second);
+                    }
+                    undoBatch.MarkEntityDirty(GetEntityComponentIdPair().GetEntityId());
+                }
+                RefreshShapeSwitcherActive();
+                if (m_shapeOptionsWindow)
+                {
+                    m_shapeOptionsWindow->RefreshValues(); // different primitive, different rows
+                }
+            });
+
+        ViewportUi::ViewportUiRequestBus::Event(
+            ViewportUi::DefaultViewportId,
+            &ViewportUi::ViewportUiRequestBus::Events::RegisterClusterEventHandler, m_shapeSwitcherId,
+            m_shapeSwitcherHandler);
+
+        RefreshShapeSwitcherActive();
+
+        // The cluster picks the primitive; its settings belong beside it, not back in the pane.
+        if (!m_shapeOptionsWindow)
+        {
+            QWidget* mainWindow = nullptr;
+            AzToolsFramework::EditorRequests::Bus::BroadcastResult(
+                mainWindow, &AzToolsFramework::EditorRequests::GetMainWindow);
+            m_shapeOptionsWindow = new WhiteBoxShapeOptionsWindow(GetEntityComponentIdPair(), mainWindow);
+        }
+        m_shapeOptionsWindow->ShowNearCursor();
+    }
+
+    void EditorWhiteBoxComponentMode::RemoveShapeSwitcher()
+    {
+        namespace ViewportUi = AzToolsFramework::ViewportUi;
+        if (m_shapeSwitcherId == ViewportUi::InvalidClusterId)
+        {
+            return;
+        }
+
+        m_shapeSwitcherHandler.Disconnect();
+        ViewportUi::ViewportUiRequestBus::Event(
+            ViewportUi::DefaultViewportId, &ViewportUi::ViewportUiRequestBus::Events::RemoveCluster,
+            m_shapeSwitcherId);
+        m_shapeSwitcherId = ViewportUi::InvalidClusterId;
+        m_shapeButtons.clear();
+
+        if (m_shapeOptionsWindow)
+        {
+            m_shapeOptionsWindow->Dismiss();
+            m_shapeOptionsWindow.clear();
+        }
+    }
+
+    void EditorWhiteBoxComponentMode::RefreshShapeSwitcherActive()
+    {
+        namespace ViewportUi = AzToolsFramework::ViewportUi;
+        if (m_shapeSwitcherId == ViewportUi::InvalidClusterId)
+        {
+            return;
+        }
+
+        auto* component = FindWhiteBoxComponent(GetEntityComponentIdPair());
+        if (component == nullptr)
+        {
+            return;
+        }
+
+        if (component->GetDrawUnitCube())
+        {
+            ViewportUi::ViewportUiRequestBus::Event(
+                ViewportUi::DefaultViewportId, &ViewportUi::ViewportUiRequestBus::Events::SetClusterActiveButton,
+                m_shapeSwitcherId, m_cubeStampButtonId);
+            return;
+        }
+
+        const DrawShapeType current = component->GetDrawShape();
+        const auto found = AZStd::find_if(
+            m_shapeButtons.begin(), m_shapeButtons.end(),
+            [current](const auto& entry)
+            {
+                return entry.second == current;
+            });
+        if (found != m_shapeButtons.end())
+        {
+            ViewportUi::ViewportUiRequestBus::Event(
+                ViewportUi::DefaultViewportId,
+                &ViewportUi::ViewportUiRequestBus::Events::SetClusterActiveButton, m_shapeSwitcherId,
+                found->first);
+        }
+    }
+
+    void EditorWhiteBoxComponentMode::CreateModelingCluster()
+    {
+        namespace ViewportUi = AzToolsFramework::ViewportUi;
+        if (m_modelingClusterId != ViewportUi::InvalidClusterId)
+        {
+            RefreshModelingClusterState();
+            return; // already up, e.g. re-entering Transform from Transform
+        }
+
+        ViewportUi::ViewportUiRequestBus::EventResult(
+            m_modelingClusterId, ViewportUi::DefaultViewportId,
+            &ViewportUi::ViewportUiRequestBus::Events::CreateCluster, ViewportUi::Alignment::TopLeft);
+
+        m_edgeLoopButtonId = RegisterClusterButton(m_modelingClusterId, ":/WhiteBox/Icons/EdgeLoop.svg");
+        m_edgeRingButtonId = RegisterClusterButton(m_modelingClusterId, ":/WhiteBox/Icons/EdgeRing.svg");
+        m_bridgeButtonId = RegisterClusterButton(m_modelingClusterId, ":/WhiteBox/Icons/Bridge.svg");
+        m_weldButtonId = RegisterClusterButton(m_modelingClusterId, ":/WhiteBox/Icons/Weld.svg");
+        m_loopCutButtonId = RegisterClusterButton(m_modelingClusterId, ":/WhiteBox/Icons/LoopCut.svg");
+        m_bevelButtonId = RegisterClusterButton(m_modelingClusterId, ":/WhiteBox/Icons/Bevel.svg");
+
+        const auto tooltip = [this](const ViewportUi::ButtonId buttonId, const char* text)
+        {
+            ViewportUi::ViewportUiRequestBus::Event(
+                ViewportUi::DefaultViewportId, &ViewportUi::ViewportUiRequestBus::Events::SetClusterButtonTooltip,
+                m_modelingClusterId, buttonId, AZStd::string(text));
+        };
+        tooltip(m_edgeLoopButtonId, "Select Edge Loop: follow connected edges from the selection");
+        tooltip(m_edgeRingButtonId, "Select Edge Ring: cross opposite edges of quads");
+        tooltip(m_bridgeButtonId, WhiteboxModelingClusterBridgeTooltip);
+        tooltip(m_weldButtonId, WhiteboxModelingClusterWeldTooltip);
+        tooltip(m_loopCutButtonId, WhiteboxModelingClusterLoopCutTooltip);
+        tooltip(m_bevelButtonId, WhiteboxModelingClusterBevelTooltip);
+
+        m_modelingHandler = AZ::Event<ViewportUi::ButtonId>::Handler(
+            [this](const ViewportUi::ButtonId buttonId)
+            {
+                const AZ::EntityComponentIdPair pair = GetEntityComponentIdPair();
+                ModelingOps::Result result;
+                if (buttonId == m_edgeLoopButtonId || buttonId == m_edgeRingButtonId)
+                {
+                    result = ModelingOps::SelectEdgePattern(pair, buttonId == m_edgeRingButtonId);
+                }
+                else if (buttonId == m_bridgeButtonId)
+                {
+                    result = ModelingOps::Bridge(pair);
+                }
+                else if (buttonId == m_weldButtonId)
+                {
+                    if (m_bevelWindow)
+                    {
+                        m_bevelWindow->Dismiss();
+                        m_bevelWindow.clear();
+                    }
+                    if (m_weldWindow && !m_weldWindow->HasCurrentLayer())
+                    {
+                        m_weldWindow->Dismiss();
+                        m_weldWindow.clear();
+                    }
+                    if (!m_weldWindow || !m_weldWindow->isVisible())
+                    {
+                        QWidget* mainWindow = nullptr;
+                        AzToolsFramework::EditorRequests::Bus::BroadcastResult(
+                            mainWindow, &AzToolsFramework::EditorRequests::GetMainWindow);
+                        m_weldWindow = new WhiteBoxWeldWindow(pair, mainWindow);
+                    }
+                    m_weldWindow->ShowNearCursor();
+                    result = {true, {}};
+                }
+                else if (buttonId == m_loopCutButtonId)
+                {
+                    result = ModelingOps::BeginLoopCut(pair);
+                }
+                else if (buttonId == m_bevelButtonId)
+                {
+                    result = ModelingOps::HasLiveBevel(pair)
+                        ? ModelingOps::Result{true, {}} : ModelingOps::BeginBevel(pair);
+                    if (result.m_success)
+                    {
+                        if (m_bevelWindow && !m_bevelWindow->HasCurrentBevel())
+                        {
+                            m_bevelWindow->Dismiss();
+                            m_bevelWindow.clear();
+                        }
+                        if (!m_bevelWindow || !m_bevelWindow->isVisible())
+                        {
+                            QWidget* mainWindow = nullptr;
+                            AzToolsFramework::EditorRequests::Bus::BroadcastResult(
+                                mainWindow, &AzToolsFramework::EditorRequests::GetMainWindow);
+                            m_bevelWindow = new WhiteBoxBevelWindow(pair, mainWindow);
+                        }
+                        if (m_weldWindow)
+                        {
+                            m_weldWindow->Dismiss();
+                            m_weldWindow.clear();
+                        }
+                        m_bevelWindow->ShowNearCursor();
+                    }
+                }
+                else
+                {
+                    return;
+                }
+
+                // A viewport button has nowhere to put a status line, so a refusal goes to the console
+                // rather than failing silently; the pane shows the same message inline.
+                AZ_Warning("White Box", result.m_success, "%s", result.m_message.c_str());
+                RefreshModelingClusterState();
+            });
+
+        ViewportUi::ViewportUiRequestBus::Event(
+            ViewportUi::DefaultViewportId, &ViewportUi::ViewportUiRequestBus::Events::RegisterClusterEventHandler,
+            m_modelingClusterId, m_modelingHandler);
+
+        RefreshModelingClusterState();
+    }
+
+    void EditorWhiteBoxComponentMode::RemoveModelingCluster()
+    {
+        if (m_weldWindow)
+        {
+            m_weldWindow->Dismiss();
+            m_weldWindow.clear();
+        }
+        if (m_bevelWindow)
+        {
+            m_bevelWindow->Dismiss();
+            m_bevelWindow.clear();
+        }
+        namespace ViewportUi = AzToolsFramework::ViewportUi;
+        if (m_modelingClusterId == ViewportUi::InvalidClusterId)
+        {
+            return;
+        }
+
+        m_modelingHandler.Disconnect();
+        ViewportUi::ViewportUiRequestBus::Event(
+            ViewportUi::DefaultViewportId, &ViewportUi::ViewportUiRequestBus::Events::RemoveCluster,
+            m_modelingClusterId);
+        m_modelingClusterId = ViewportUi::InvalidClusterId;
+    }
+
+    void EditorWhiteBoxComponentMode::RefreshModelingClusterState()
+    {
+        namespace ViewportUi = AzToolsFramework::ViewportUi;
+        if (m_modelingClusterId == ViewportUi::InvalidClusterId)
+        {
+            return;
+        }
+
+        const AZ::EntityComponentIdPair pair = GetEntityComponentIdPair();
+        const auto enable = [this](const ViewportUi::ButtonId buttonId, const bool usable)
+        {
+            ViewportUi::ViewportUiRequestBus::Event(
+                ViewportUi::DefaultViewportId, &ViewportUi::ViewportUiRequestBus::Events::SetClusterDisableButton,
+                m_modelingClusterId, buttonId, !usable);
+        };
+        const bool edgeSelection = ModelingOps::CanSelectEdgePattern(pair);
+        enable(m_edgeLoopButtonId, edgeSelection);
+        enable(m_edgeRingButtonId, edgeSelection);
+        enable(m_bridgeButtonId, ModelingOps::CanBridge(pair));
+        enable(m_weldButtonId, ModelingOps::CanWeld(pair));
+        enable(m_loopCutButtonId, ModelingOps::CanLoopCut(pair));
+        enable(m_bevelButtonId, ModelingOps::CanBevel(pair) || ModelingOps::HasLiveBevel(pair));
+    }
+
     void EditorWhiteBoxComponentMode::RemoveSubModeSelectionCluster()
     {
+        RemoveModelingCluster();
+        RemoveShapeSwitcher();
+        RemovePaintCluster();
+        RemoveSketchCluster();
+        RemoveEdgeRestoreCluster();
+
         AzToolsFramework::ViewportUi::ViewportUiRequestBus::Event(
             AzToolsFramework::ViewportUi::DefaultViewportId, &AzToolsFramework::ViewportUi::ViewportUiRequestBus::Events::RemoveCluster,
             m_modeSelectionClusterId);

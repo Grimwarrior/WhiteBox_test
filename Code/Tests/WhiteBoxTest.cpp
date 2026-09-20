@@ -6,11 +6,13 @@
  *
  */
 
+#include <cmath>
 #include "WhiteBoxTestFixtures.h"
 #include "WhiteBoxTestUtil.h"
 #include "Util/WhiteBoxMeshUtil.h"
 #include "Viewport/WhiteBoxShapeBuilders.h"
 #include "Core/WhiteBoxCsgCore.h"
+#include "Rendering/WhiteBoxRenderData.h"
 
 #include <AzCore/Math/Transform.h>
 #include <AzCore/Memory/SystemAllocator.h>
@@ -2359,6 +2361,117 @@ IMPLEMENT_TEST_EXECUTABLE_MAIN();
 
 namespace UnitTest
 {
+    TEST_F(WhiteBoxTestFixture, EdgePatternsFollowQuadTopologyAndIgnoreTriangleDiagonals)
+    {
+        namespace Api = WhiteBox::Api;
+        auto mesh = Api::CreateWhiteBoxMesh();
+        Api::VertexHandles vertices;
+        for (int y = 0; y <= 3; ++y)
+        {
+            for (int x = 0; x <= 3; ++x)
+            {
+                vertices.push_back(Api::AddVertex(*mesh, AZ::Vector3(static_cast<float>(x), static_cast<float>(y), 0)));
+            }
+        }
+        for (int y = 0; y < 3; ++y)
+        {
+            for (int x = 0; x < 3; ++x)
+            {
+                const int i = y * 4 + x;
+                Api::AddQuadPolygon(*mesh, vertices[i], vertices[i + 1], vertices[i + 5], vertices[i + 4]);
+            }
+        }
+        const auto edgeBetween = [&](int a, int b)
+        {
+            for (const auto edge : Api::MeshEdgeHandles(*mesh))
+            {
+                const auto pair = Api::EdgeVertexHandles(*mesh, edge);
+                if ((pair[0] == vertices[a] && pair[1] == vertices[b]) ||
+                    (pair[1] == vertices[a] && pair[0] == vertices[b])) { return edge; }
+            }
+            return Api::EdgeHandle{};
+        };
+        const auto seed = edgeBetween(5, 6);
+        const auto otherRow = edgeBetween(9, 10);
+        const auto border = edgeBetween(0, 1);
+        const auto diagonal = edgeBetween(0, 5);
+        ASSERT_TRUE(seed.IsValid());
+        ASSERT_TRUE(diagonal.IsValid());
+        Api::WhiteBoxMeshStream before;
+        ASSERT_TRUE(Api::WriteMesh(*mesh, before));
+        const auto loop = Api::FindEdgeLoop(*mesh, {seed});
+        ASSERT_EQ(loop.size(), 3);
+        for (const auto edge : loop)
+        {
+            const auto points = Api::EdgeVertexPositions(*mesh, edge);
+            EXPECT_FLOAT_EQ(points[0].GetY(), 1);
+            EXPECT_FLOAT_EQ(points[1].GetY(), 1);
+        }
+        const auto ring = Api::FindEdgeRing(*mesh, {seed});
+        ASSERT_EQ(ring.size(), 4);
+        for (const auto edge : ring)
+        {
+            const auto points = Api::EdgeVertexPositions(*mesh, edge);
+            EXPECT_FLOAT_EQ(points[0].GetY(), points[1].GetY());
+            EXPECT_FLOAT_EQ(AZStd::min(points[0].GetX(), points[1].GetX()), 1);
+            EXPECT_FLOAT_EQ(AZStd::max(points[0].GetX(), points[1].GetX()), 2);
+        }
+        EXPECT_EQ(Api::FindEdgeLoop(*mesh, {border}).size(), 12);
+        EXPECT_EQ(Api::FindEdgeLoop(*mesh, {seed, otherRow, seed}).size(), 6);
+        EXPECT_EQ(Api::FindEdgeRing(*mesh, {seed, otherRow, seed}).size(), 4);
+        EXPECT_TRUE(Api::FindEdgeLoop(*mesh, {diagonal, Api::EdgeHandle{999999}}).empty());
+        EXPECT_TRUE(Api::FindEdgeRing(*mesh, {diagonal, Api::EdgeHandle{999999}}).empty());
+        Api::WhiteBoxMeshStream after;
+        ASSERT_TRUE(Api::WriteMesh(*mesh, after));
+        EXPECT_EQ(before, after);
+    }
+
+    TEST_F(WhiteBoxTestFixture, EdgePatternsCloseWithoutBranchingAtPoles)
+    {
+        namespace Api = WhiteBox::Api;
+        Api::InitializeAsUnitCube(*m_whiteBox);
+        const auto seed = Api::MeshPolygonEdgeHandles(*m_whiteBox).front();
+        EXPECT_EQ(Api::FindEdgeRing(*m_whiteBox, {seed}).size(), 4);
+        EXPECT_EQ(Api::FindEdgeLoop(*m_whiteBox, {seed}).size(), 1); // valence-three corners
+        AZStd::string error;
+        ASSERT_TRUE(Api::InsertEdgeLoop(*m_whiteBox, seed, 0.5f, error)) << error.c_str();
+        Api::EdgeHandle cut;
+        for (const auto edge : Api::MeshPolygonEdgeHandles(*m_whiteBox))
+        {
+            const auto pair = Api::EdgeVertexHandles(*m_whiteBox, edge);
+            if (pair[0].Index() >= 8 && pair[1].Index() >= 8) { cut = edge; break; }
+        }
+        ASSERT_TRUE(cut.IsValid());
+        EXPECT_EQ(Api::FindEdgeLoop(*m_whiteBox, {cut}).size(), 4);
+    }
+
+    TEST_F(WhiteBoxTestFixture, EdgeRingStopsAtTriangle)
+    {
+        namespace Api = WhiteBox::Api;
+        auto mesh = Api::CreateWhiteBoxMesh();
+        const auto a = Api::AddVertex(*mesh, AZ::Vector3(0, 0, 0));
+        const auto b = Api::AddVertex(*mesh, AZ::Vector3(1, 0, 0));
+        const auto c = Api::AddVertex(*mesh, AZ::Vector3(1, 1, 0));
+        const auto d = Api::AddVertex(*mesh, AZ::Vector3(0, 1, 0));
+        const auto e = Api::AddVertex(*mesh, AZ::Vector3(2, 0.5f, 0));
+        Api::AddQuadPolygon(*mesh, a, b, c, d);
+        Api::AddTriPolygon(*mesh, c, b, e);
+        Api::EdgeHandle seed;
+        for (const auto edge : Api::MeshPolygonEdgeHandles(*mesh))
+        {
+            const auto points = Api::EdgeVertexPositions(*mesh, edge);
+            if (points[0].GetX() == 0 && points[1].GetX() == 0) { seed = edge; }
+        }
+        ASSERT_TRUE(seed.IsValid());
+        const auto ring = Api::FindEdgeRing(*mesh, {seed});
+        ASSERT_EQ(ring.size(), 2);
+        for (const auto edge : ring)
+        {
+            const auto points = Api::EdgeVertexPositions(*mesh, edge);
+            EXPECT_FLOAT_EQ(points[0].GetX(), points[1].GetX());
+        }
+    }
+
     TEST_F(WhiteBoxTestFixture, BevelCubeEdgesPreservesClosedMeshAndFaceProperties)
     {
         namespace Api = WhiteBox::Api;
@@ -2483,6 +2596,109 @@ namespace UnitTest
         for (const auto edge : Api::MeshEdgeHandles(*m_whiteBox))
         {
             EXPECT_EQ(Api::EdgeFaceHandles(*m_whiteBox, edge).size(), 2);
+        }
+    }
+
+    TEST_F(WhiteBoxTestFixture, ThreeEdgeBevelCornerUsesProfileGridWithoutGrooves)
+    {
+        namespace Api = WhiteBox::Api;
+        Api::InitializeAsUnitCube(*m_whiteBox);
+        const auto cornerHandle = Api::MeshVertexHandles(*m_whiteBox).front();
+        const auto corner = Api::VertexPosition(*m_whiteBox, cornerHandle);
+        Api::EdgeHandles selection;
+        for (const auto edge : Api::MeshPolygonEdgeHandles(*m_whiteBox))
+        {
+            const auto vertices = Api::EdgeVertexHandles(*m_whiteBox, edge);
+            if (vertices[0] == cornerHandle || vertices[1] == cornerHandle) { selection.push_back(edge); }
+        }
+        ASSERT_EQ(selection.size(), 3);
+        constexpr float width = 0.1f;
+        AZ::Vector3 center = corner;
+        for (int axis = 0; axis < 3; ++axis)
+        {
+            center.SetElement(axis, corner.GetElement(axis) + (corner.GetElement(axis) > 0.0f ? -width : width));
+        }
+        for (const int segments : {1, 2, 3, 4, 5, 6, 7, 8, 9})
+        {
+            for (const float profile : {0.25f, 0.5f, 0.75f, 0.9f, 0.95f})
+            {
+                auto mesh = Api::CloneMesh(*m_whiteBox);
+                AZStd::string error;
+                ASSERT_TRUE(Api::BevelEdges(*mesh, selection, width, segments, error, profile)) << error.c_str();
+                WhiteBox::WhiteBoxFaces renderFaces;
+                for (const auto handle : Api::MeshFaceHandles(*mesh))
+                {
+                    const auto points = Api::FaceVertexPositions(*mesh, handle);
+                    WhiteBox::WhiteBoxFace face{};
+                    face.m_v1 = {points[0], AZ::Vector2(0, 0)};
+                    face.m_v2 = {points[1], AZ::Vector2(1, 0)};
+                    face.m_v3 = {points[2], AZ::Vector2(0, 1)};
+                    face.m_normal = Api::FaceNormal(*mesh, handle);
+                    renderFaces.push_back(face);
+                }
+                EXPECT_EQ(WhiteBox::BuildCulledWhiteBoxFaces(renderFaces).size(), renderFaces.size());
+                size_t patchCount = 0;
+                size_t triangleCount = 0;
+                for (const auto& polygon : Api::MeshPolygonHandles(*mesh))
+                {
+                    const auto borders = Api::PolygonBorderVertexHandles(*mesh, polygon);
+                    ASSERT_EQ(borders.size(), 1);
+                    bool inCorner = true;
+                    for (const auto vertex : borders.front())
+                    {
+                        const auto delta = Api::VertexPosition(*mesh, vertex) - corner;
+                        for (int axis = 0; axis < 3; ++axis)
+                        {
+                            inCorner = inCorner && AZStd::abs(delta.GetElement(axis)) <= width + 1e-5f;
+                        }
+                    }
+                    if (!inCorner) { continue; }
+                    ++patchCount;
+                    if (segments % 2 == 0)
+                    {
+                        EXPECT_EQ(borders.front().size(), 4);
+                        EXPECT_EQ(polygon.m_faceHandles.size(), 2);
+                    }
+                    if (borders.front().size() == 3)
+                    {
+                        ++triangleCount;
+                        // The sole odd-segment triangle belongs at the center:
+                        // its centroid must be on the corner's symmetry axis.
+                        AZ::Vector3 centroid = AZ::Vector3::CreateZero();
+                        for (const auto vertex : borders.front()) { centroid += Api::VertexPosition(*mesh, vertex); }
+                        centroid = (centroid / 3.0f - center) / width;
+                        EXPECT_NEAR(AZStd::abs(centroid.GetX()), AZStd::abs(centroid.GetY()), 1e-5f);
+                        EXPECT_NEAR(AZStd::abs(centroid.GetY()), AZStd::abs(centroid.GetZ()), 1e-5f);
+                    }
+                    else { EXPECT_EQ(borders.front().size(), 4); }
+                    // Every corner sample, including interior grid vertices,
+                    // lies on the same superellipsoid as the adjoining strips.
+                    // A pulled-in boundary or a flat center fan violates this.
+                    for (const auto vertex : borders.front())
+                    {
+                        const auto relative = (Api::VertexPosition(*mesh, vertex) - center) / width;
+                        float implicitSurface = 0.0f;
+                        for (int axis = 0; axis < 3; ++axis)
+                        {
+                            implicitSurface += powf(AZStd::abs(relative.GetElement(axis)), 1.0f / (1.0f - profile));
+                        }
+                        EXPECT_NEAR(implicitSurface, 1.0f, 1e-4f);
+                    }
+                }
+                const int expectedPatches = segments % 2 == 0
+                    ? 3 * (segments / 2) * (segments / 2) : 3 * (segments / 2) * (segments / 2 + 1) + 1;
+                EXPECT_EQ(patchCount, static_cast<size_t>(expectedPatches));
+                EXPECT_EQ(triangleCount, static_cast<size_t>(segments % 2));
+                for (const auto edge : Api::MeshEdgeHandles(*mesh))
+                {
+                    EXPECT_EQ(Api::EdgeFaceHandles(*mesh, edge).size(), 2);
+                }
+                Api::WhiteBoxMeshStream saved;
+                ASSERT_TRUE(Api::WriteMesh(*mesh, saved));
+                auto restored = Api::CreateWhiteBoxMesh();
+                ASSERT_EQ(Api::ReadMesh(*restored, saved), Api::ReadResult::Full);
+                EXPECT_EQ(Api::MeshPolygonHandles(*restored).size(), Api::MeshPolygonHandles(*mesh).size());
+            }
         }
     }
 

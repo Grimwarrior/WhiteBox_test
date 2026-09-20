@@ -4106,6 +4106,126 @@ namespace WhiteBox
             return true;
         }
 
+        static EdgeHandles FindEdgePattern(const WhiteBoxMesh& whiteBox, const EdgeHandles& seeds, bool ring)
+        {
+            struct SelectionPolygon
+            {
+                EdgeHandles m_edges;
+                bool m_quad = false;
+            };
+            AZStd::vector<SelectionPolygon> polygons;
+            AZStd::map<int, AZStd::vector<size_t>> edgePolygons;
+            AZStd::map<int, EdgeHandles> vertexEdges;
+            // Only real polygon boundaries participate. Internal triangulation
+            // diagonals must not affect either valence or traversal direction.
+            for (const auto& polygon : MeshPolygonHandles(whiteBox))
+            {
+                const auto borders = PolygonBorderHalfedgeHandles(whiteBox, polygon);
+                SelectionPolygon data;
+                data.m_quad = borders.size() == 1 && borders.front().size() == 4;
+                const size_t index = polygons.size();
+                for (const auto& border : borders)
+                {
+                    for (const auto halfedge : border)
+                    {
+                        const auto edge = HalfedgeEdgeHandle(whiteBox, halfedge);
+                        data.m_edges.push_back(edge);
+                        auto& adjacent = edgePolygons[edge.Index()];
+                        if (AZStd::find(adjacent.begin(), adjacent.end(), index) == adjacent.end()) { adjacent.push_back(index); }
+                        if (adjacent.size() == 1)
+                        {
+                            for (const auto vertex : EdgeVertexHandles(whiteBox, edge))
+                            {
+                                auto& incident = vertexEdges[vertex.Index()];
+                                if (AZStd::find(incident.begin(), incident.end(), edge) == incident.end()) { incident.push_back(edge); }
+                            }
+                        }
+                    }
+                }
+                polygons.push_back(AZStd::move(data));
+            }
+            EdgeHandles result;
+            AZStd::unordered_set<int> seen;
+            const auto append = [&](EdgeHandle edge)
+            {
+                if (edgePolygons.count(edge.Index()) && seen.insert(edge.Index()).second) { result.push_back(edge); }
+            };
+            for (const auto seed : seeds) { append(seed); }
+            for (size_t cursor = 0; cursor < result.size(); ++cursor)
+            {
+                const auto edge = result[cursor];
+                const auto& faces = edgePolygons.find(edge.Index())->second;
+                if (faces.empty() || faces.size() > 2) { continue; }
+                if (ring)
+                {
+                    for (const auto index : faces)
+                    {
+                        const auto& polygon = polygons[index];
+                        if (!polygon.m_quad) { continue; }
+                        const auto found = AZStd::find(polygon.m_edges.begin(), polygon.m_edges.end(), edge);
+                        const size_t offset = static_cast<size_t>(found - polygon.m_edges.begin());
+                        append(polygon.m_edges[(offset + 2) % 4]);
+                    }
+                    continue;
+                }
+                for (const auto vertex : EdgeVertexHandles(whiteBox, edge))
+                {
+                    const auto& incident = vertexEdges.find(vertex.Index())->second;
+                    EdgeHandle next;
+                    bool ambiguous = false;
+                    if (faces.size() == 1)
+                    {
+                        // An open border is its own loop, including its corners.
+                        for (const auto candidate : incident)
+                        {
+                            if (candidate != edge && edgePolygons.find(candidate.Index())->second.size() == 1)
+                            {
+                                if (next.IsValid()) { ambiguous = true; break; }
+                                next = candidate;
+                            }
+                        }
+                    }
+                    else if (incident.size() == 4)
+                    {
+                        // At a regular quad junction, the continuation is the
+                        // sole edge that shares neither adjacent polygon.
+                        bool regular = true;
+                        AZStd::unordered_set<size_t> vertexPolygons;
+                        for (const auto candidate : incident)
+                        {
+                            const auto& adjacent = edgePolygons.find(candidate.Index())->second;
+                            if (adjacent.size() != 2) { regular = false; break; }
+                            bool sharesFace = false;
+                            for (const auto index : adjacent)
+                            {
+                                vertexPolygons.insert(index);
+                                regular = regular && polygons[index].m_quad;
+                                sharesFace = sharesFace || AZStd::find(faces.begin(), faces.end(), index) != faces.end();
+                            }
+                            if (!sharesFace)
+                            {
+                                if (next.IsValid()) { ambiguous = true; }
+                                next = candidate;
+                            }
+                        }
+                        ambiguous = ambiguous || !regular || vertexPolygons.size() != 4;
+                    }
+                    if (!ambiguous && next.IsValid()) { append(next); }
+                }
+            }
+            return result;
+        }
+
+        EdgeHandles FindEdgeLoop(const WhiteBoxMesh& whiteBox, const EdgeHandles& seeds)
+        {
+            return FindEdgePattern(whiteBox, seeds, false);
+        }
+
+        EdgeHandles FindEdgeRing(const WhiteBoxMesh& whiteBox, const EdgeHandles& seeds)
+        {
+            return FindEdgePattern(whiteBox, seeds, true);
+        }
+
         bool BevelEdges(
             WhiteBoxMesh& whiteBox, const EdgeHandles& edges, float width, int segments, AZStd::string& error, float profile)
         {
@@ -4119,6 +4239,7 @@ namespace WhiteBox
             const auto meshEdges = MeshEdgeHandles(whiteBox);
             AZStd::unordered_set<int> selected;
             AZStd::unordered_set<int> endpointsUsed;
+            AZStd::map<int, int> selectedAtCorner;
             EdgeHandles orderedEdges;
             for (const auto edge : edges)
             {
@@ -4131,6 +4252,7 @@ namespace WhiteBox
                 for (const auto vertex : EdgeVertexHandles(whiteBox, edge))
                 {
                     endpointsUsed.insert(vertex.Index());
+                    ++selectedAtCorner[vertex.Index()];
                 }
             }
             struct BevelPolygon
@@ -4262,6 +4384,24 @@ namespace WhiteBox
                     replacements[polygon.m_faceHandles.front().Index()][index] = {cornerVertex(vertex, point)};
                 }
             }
+            // At a three-edge junction all offset face corners share one
+            // profile center. Using the original vertex as each strip's center
+            // instead pulls their endpoints inward and produces a groove.
+            AZStd::map<int, AZ::Vector3> cornerCenters;
+            for (const auto& item : selectedAtCorner)
+            {
+                if (item.second != 3) { continue; }
+                const auto& around = incident[item.first];
+                if (around.size() != 3) { return fail("Unsupported three-edge bevel junction."); }
+                AZ::Vector3 sum = AZ::Vector3::CreateZero();
+                for (const auto& polygon : around)
+                {
+                    const auto& point = replacements[polygon.m_faceHandles.front().Index()][item.first];
+                    if (point.size() != 1) { return fail("Cannot construct the bevel corner profile."); }
+                    sum += VertexPosition(*candidate, point.front());
+                }
+                cornerCenters[item.first] = (sum - VertexPosition(whiteBox, VertexHandle{item.first})) * 0.5f;
+            }
             // End arcs not used by a surviving original face become corner patches.
             AZStd::map<int, AZStd::vector<VertexHandles>> cornerArcs;
             for (const auto edge : orderedEdges)
@@ -4309,7 +4449,18 @@ namespace WhiteBox
                         const float exponent = 2.0f * (1.0f - profile);
                         const float x = segment == segments ? 0.0f : 1.0f - powf(sinf(angle), exponent);
                         const float y = segment == 0 ? 0.0f : 1.0f - powf(AZStd::max(cosf(angle), 0.0f), exponent);
-                        arcs[end].push_back(cornerVertex(vertex, origin + v0 * x + v1 * y));
+                        auto point = origin + v0 * x + v1 * y;
+                        if (const auto center = cornerCenters.find(vertex.Index()); center != cornerCenters.end())
+                        {
+                            // Preserve the same superellipse used by the corner
+                            // grid, including its exact shared boundary vertices.
+                            point = center->second +
+                                (origin + v0 - center->second) * (1.0f - y) +
+                                (origin + v1 - center->second) * (1.0f - x);
+                        }
+                        if (segment == 0) { arcs[end].push_back(p0.front()); }
+                        else if (segment == segments) { arcs[end].push_back(p1.front()); }
+                        else { arcs[end].push_back(cornerVertex(vertex, point)); }
                     }
                     bool capped = false;
                     for (const auto& cap : incident[vertex.Index()])
@@ -4382,17 +4533,140 @@ namespace WhiteBox
                 }
                 if (ring.front() != ring.back()) { return fail("The bevel corner patch is not closed."); }
                 ring.pop_back();
-                AZ::Vector3 center = AZ::Vector3::CreateZero();
+                const auto centerIt = cornerCenters.find(item.first);
+                if (centerIt == cornerCenters.end()) { return fail("Missing bevel corner profile."); }
+                const auto center = centerIt->second;
+                const AZStd::array<AZ::Vector3, 3> axes{{
+                    VertexPosition(*candidate, ring[0]) - center,
+                    VertexPosition(*candidate, ring[segments]) - center,
+                    VertexPosition(*candidate, ring[2 * segments]) - center}};
                 AZ::Vector3 normal = AZ::Vector3::CreateZero();
-                for (const auto vertex : ring) { center += VertexPosition(*candidate, vertex); }
-                center /= static_cast<float>(ring.size());
                 for (const auto& polygon : incident[item.first]) { normal += PolygonNormal(whiteBox, polygon); }
-                const auto middle = AddVertex(*candidate, center);
+                normal = normal.GetNormalizedSafe();
                 const auto source = incident[item.first].front().m_faceHandles.front();
-                for (size_t i = 0; i < ring.size(); ++i)
+                const auto material = FaceMaterial(whiteBox, source);
+                const auto paint = FacePaintColor(whiteBox, source);
+                const float exponent = 2.0f * (1.0f - profile);
+                const auto gridVertex = [&](const AZ::Vector3& barycentric)
                 {
-                    patches.push_back({{middle, ring[i], ring[(i + 1) % ring.size()]}, normal.GetNormalizedSafe(),
-                        FaceMaterial(whiteBox, source), FacePaintColor(whiteBox, source)});
+                    const float a = barycentric.GetX();
+                    const float b = barycentric.GetY();
+                    const float c = barycentric.GetZ();
+                    // Reuse strip boundary handles exactly: no cracks, duplicate
+                    // vertices, or T-junctions at the grid perimeter.
+                    const auto sample = [&](float value)
+                    {
+                        return AZStd::clamp(static_cast<int>(value * segments + 0.5f), 0, segments);
+                    };
+                    if (c < 1e-6f) { return ring[sample(b)]; }
+                    if (a < 1e-6f) { return ring[segments + sample(c)]; }
+                    if (b < 1e-6f) { return ring[(3 * segments - sample(c)) % (3 * segments)]; }
+                    const auto direction = AZ::Vector3(
+                        sinf(AZ::Constants::HalfPi * a), sinf(AZ::Constants::HalfPi * b),
+                        sinf(AZ::Constants::HalfPi * c)).GetNormalizedSafe();
+                    const auto point = center + axes[0] * powf(direction.GetX(), exponent) +
+                        axes[1] * powf(direction.GetY(), exponent) + axes[2] * powf(direction.GetZ(), exponent);
+                    return cornerVertex(VertexHandle{item.first}, point);
+                };
+                if (segments % 2 == 0)
+                {
+                    // Three quad grids meet at one valence-three center. Each
+                    // outer side uses half of an existing strip end arc.
+                    const int size = segments / 2;
+                    const AZStd::array<AZ::Vector3, 3> corners{{
+                        AZ::Vector3::CreateAxisX(), AZ::Vector3::CreateAxisY(), AZ::Vector3::CreateAxisZ()}};
+                    for (int sector = 0; sector < 3; ++sector)
+                    {
+                        const auto a = corners[sector];
+                        const auto b = (a + corners[(sector + 1) % 3]) * 0.5f;
+                        const auto c = AZ::Vector3(1.0f / 3.0f);
+                        const auto d = (a + corners[(sector + 2) % 3]) * 0.5f;
+                        AZStd::vector<VertexHandles> grid(size + 1);
+                        for (int row = 0; row <= size; ++row)
+                        {
+                            const float v = static_cast<float>(row) / size;
+                            for (int column = 0; column <= size; ++column)
+                            {
+                                const float u = static_cast<float>(column) / size;
+                                grid[row].push_back(gridVertex(
+                                    a * ((1.0f - u) * (1.0f - v)) + b * (u * (1.0f - v)) +
+                                    c * (u * v) + d * ((1.0f - u) * v)));
+                            }
+                        }
+                        for (int row = 0; row < size; ++row)
+                        {
+                            for (int column = 0; column < size; ++column)
+                            {
+                                patches.push_back({{
+                                    grid[row][column], grid[row][column + 1],
+                                    grid[row + 1][column + 1], grid[row + 1][column]}, normal, material, paint});
+                            }
+                        }
+                    }
+                }
+                else
+                {
+                    // Split each odd-length boundary into two equal runs and
+                    // one middle edge. Three square corner grids are joined by
+                    // one-quad-wide strips, leaving just one central triangle.
+                    // This preserves rotational symmetry instead of placing an
+                    // entire row of triangles along one side of the corner.
+                    const int size = segments / 2;
+                    const AZStd::array<AZ::Vector3, 3> corners{{
+                        AZ::Vector3::CreateAxisX(), AZ::Vector3::CreateAxisY(), AZ::Vector3::CreateAxisZ()}};
+                    AZStd::array<AZ::Vector3, 3> inner;
+                    for (int sector = 0; sector < 3; ++sector)
+                    {
+                        inner[sector] = (AZ::Vector3(static_cast<float>(size)) + corners[sector]) /
+                            static_cast<float>(3 * size + 1);
+                    }
+                    if (size > 0)
+                    {
+                        const float fraction = static_cast<float>(size) / segments;
+                        for (int sector = 0; sector < 3; ++sector)
+                        {
+                            const int next = (sector + 1) % 3;
+                            const auto a = corners[sector];
+                            const auto b = a.Lerp(corners[next], fraction);
+                            const auto c = inner[sector];
+                            const auto d = a.Lerp(corners[(sector + 2) % 3], fraction);
+                            AZStd::vector<VertexHandles> grid(size + 1);
+                            for (int row = 0; row <= size; ++row)
+                            {
+                                const float v = static_cast<float>(row) / size;
+                                for (int column = 0; column <= size; ++column)
+                                {
+                                    const float u = static_cast<float>(column) / size;
+                                    grid[row].push_back(gridVertex(
+                                        a * ((1.0f - u) * (1.0f - v)) + b * (u * (1.0f - v)) +
+                                        c * (u * v) + d * ((1.0f - u) * v)));
+                                }
+                            }
+                            for (int row = 0; row < size; ++row)
+                            {
+                                for (int column = 0; column < size; ++column)
+                                {
+                                    patches.push_back({{
+                                        grid[row][column], grid[row][column + 1],
+                                        grid[row + 1][column + 1], grid[row + 1][column]}, normal, material, paint});
+                                }
+                            }
+                            const auto opposite = corners[next].Lerp(a, fraction);
+                            auto left = gridVertex(b);
+                            auto right = gridVertex(opposite);
+                            for (int row = 1; row <= size; ++row)
+                            {
+                                const float v = static_cast<float>(row) / size;
+                                const auto nextLeft = gridVertex(b.Lerp(inner[sector], v));
+                                const auto nextRight = gridVertex(opposite.Lerp(inner[next], v));
+                                patches.push_back({{left, right, nextRight, nextLeft}, normal, material, paint});
+                                left = nextLeft;
+                                right = nextRight;
+                            }
+                        }
+                    }
+                    patches.push_back({{
+                        gridVertex(inner[0]), gridVertex(inner[1]), gridVertex(inner[2])}, normal, material, paint});
                 }
             }
             FaceHandles removed;

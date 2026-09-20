@@ -570,7 +570,9 @@ namespace WhiteBox
         WhiteBoxMesh& mesh, const AZ::Transform& localFromWorld,
         const AZ::Vector3& center, const AZ::Vector3& uAxis, const AZ::Vector3& vAxis, const AZ::Vector3& up,
         const float baseUp, const float topUp, const DrawShapeType shapeType, const int sidesIn, const int steps,
-        const float holeRatio, const int tubeSides)
+        const float holeRatio, const int tubeSides, const float wallThickness, const float cavityGap,
+        const bool floor, const bool ceiling, const bool doorFrame, const float archHeight,
+        const float innerRadius, const float sweepAngle)
     {
         if (shapeType == DrawShapeType::Plane || shapeType == DrawShapeType::Torus || shapeType == DrawShapeType::Pipe)
         {
@@ -579,6 +581,45 @@ namespace WhiteBox
                 tubeSides);
             return;
         }
+        // Room, Door and Circular Stairs are parametric shells, not extruded footprints, so they have
+        // their own builders and were falling through to the prism path below - drawing one produced a
+        // plain box. Build the real shape at the origin from the drawn footprint's dimensions, then map
+        // it onto that footprint. BuildParametricShapeMesh dispatches all three and never re-enters
+        // here for them, so there is no recursion.
+        if (shapeType == DrawShapeType::Room || shapeType == DrawShapeType::Door ||
+            shapeType == DrawShapeType::CircularStairs)
+        {
+            const float width = AZ::GetMax(uAxis.GetLength(), 0.01f);
+            const float depth = AZ::GetMax(vAxis.GetLength(), 0.01f);
+            const float height = AZ::GetMax(std::abs(topUp - baseUp), 0.01f);
+
+            const Api::WhiteBoxMeshPtr shape = BuildParametricShapeMesh(
+                shapeType, width, depth, height, sidesIn, steps, wallThickness, cavityGap, floor, ceiling,
+                doorFrame, archHeight, innerRadius, sweepAngle, false, 0.25f, holeRatio, tubeSides);
+            if (!shape)
+            {
+                return;
+            }
+
+            // Those builders work in their own frame: X and Y centred on the origin, Z rising from the
+            // base plane. Move that onto the drawn footprint's axes, then into the mesh's local space.
+            const AZ::Vector3 u = uAxis.GetNormalizedSafe();
+            const AZ::Vector3 v = vAxis.GetNormalizedSafe();
+            const AZ::Vector3 base = center + up * AZ::GetMin(baseUp, topUp);
+            for (const Api::VertexHandle vertexHandle : Api::MeshVertexHandles(*shape))
+            {
+                const AZ::Vector3 local = Api::VertexPosition(*shape, vertexHandle);
+                Api::SetVertexPosition(
+                    *shape, vertexHandle,
+                    localFromWorld.TransformPoint(
+                        base + u * local.GetX() + v * local.GetY() + up * local.GetZ()));
+            }
+            Api::CalculateNormals(*shape);
+            Api::CalculatePlanarUVs(*shape);
+            AppendMesh(mesh, *shape);
+            return;
+        }
+
         // Sphere and Staircase have dedicated builders (not prism/pyramid based).
         if (shapeType == DrawShapeType::Sphere)
         {
