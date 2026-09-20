@@ -66,6 +66,7 @@ namespace WhiteBox
         QCheckBox* m_cubeShowGrid = nullptr;
         QCheckBox* m_carve = nullptr;
         QCheckBox* m_mergeUnion = nullptr;
+        QCheckBox* m_polygonExtrude = nullptr;
         bool m_updating = false;
     };
 } // namespace WhiteBox

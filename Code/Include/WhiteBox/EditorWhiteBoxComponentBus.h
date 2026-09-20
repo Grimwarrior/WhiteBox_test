@@ -130,6 +130,7 @@ namespace WhiteBox
         //! When true, committing a drawn shape CSG-unions it into the mesh (a clean,
         //! watertight, manifold merge) instead of adding overlapping geometry.
         virtual bool GetDrawMergeUnion() { return false; }
+        virtual bool GetDrawPolygonExtrude() { return false; }
 
         //! When true, draw mode click-stamps grid-snapped 1x1x1 cubes (CSG union, or
         //! subtract with Ctrl) instead of the click-drag-pull workflow.

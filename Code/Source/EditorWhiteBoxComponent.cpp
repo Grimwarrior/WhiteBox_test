@@ -390,7 +390,7 @@ namespace WhiteBox
         if (auto serializeContext = azrtti_cast<AZ::SerializeContext*>(context))
         {
             serializeContext->Class<DrawShapeData>()
-                ->Version(3, &DrawShapeDataVersionConverter)
+                ->Version(4, &DrawShapeDataVersionConverter)
                 ->Field("Shape", &DrawShapeData::m_shape)
                 ->Field("Sides", &DrawShapeData::m_sides)
                 ->Field("HoleRatio", &DrawShapeData::m_holeRatio)
@@ -398,6 +398,7 @@ namespace WhiteBox
                 ->Field("Stair", &DrawShapeData::m_stair)
                 ->Field("Carve", &DrawShapeData::m_carve)
                 ->Field("MergeUnion", &DrawShapeData::m_mergeUnion)
+                ->Field("PolygonExtrude", &DrawShapeData::m_polygonExtrude)
                 ->Field("UnitCube", &DrawShapeData::m_unitCube)
                 ->Field("UnitCubeSize", &DrawShapeData::m_unitCubeSize)
                 ->Field("UnitCubeShowGrid", &DrawShapeData::m_unitCubeShowGrid);

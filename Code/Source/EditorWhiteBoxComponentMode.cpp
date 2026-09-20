@@ -19,6 +19,7 @@
 #include "Tools/WhiteBoxPaintWindow.h"
 #include "Tools/WhiteBoxShapeOptionsWindow.h"
 #include "Tools/WhiteBoxWeldWindow.h"
+#include "Tools/WhiteBoxExtrudeInsetWindow.h"
 #include <AzToolsFramework/API/ToolsApplicationAPI.h>
 #include "Util/WhiteBoxSnapUtil.h"
 #include "Viewport/WhiteBoxViewportConstants.h"
@@ -103,7 +104,7 @@ namespace WhiteBox
         };
 
         m_deferredWorkToken = AZStd::make_shared<bool>(true);
-        m_worldFromLocal = AzToolsFramework::WorldFromLocalWithUniformScale(entityComponentIdPair.GetEntityId());
+        m_worldFromLocal = EditorSpaceFromLocal(entityComponentIdPair);
         CreateSubModeSelectionCluster();
         // start with DefaultMode
         EnterDefaultMode();
@@ -467,6 +468,27 @@ namespace WhiteBox
             "Cancel the current operation, or return to normal viewport editing",
             [this]()
             {
+                // A latched drag is the innermost thing Escape can cancel. The window that armed the
+                // latch stays open, so the next drag still works.
+                bool latchedDrag = false;
+                EditorWhiteBoxTransformModeRequestBus::EventResult(
+                    latchedDrag, GetEntityComponentIdPair(),
+                    &EditorWhiteBoxTransformModeRequests::HasLatchedDrag);
+                if (latchedDrag)
+                {
+                    AZStd::visit(
+                        [](auto& mode)
+                        {
+                            return mode->HandleEscape();
+                        },
+                        m_modes);
+                    return;
+                }
+                if (m_extrudeInsetWindow && m_extrudeInsetWindow->isVisible())
+                {
+                    m_extrudeInsetWindow->reject();
+                    return;
+                }
                 if (m_weldWindow && m_weldWindow->isVisible())
                 {
                     m_weldWindow->reject();
@@ -681,6 +703,10 @@ namespace WhiteBox
             }
         }
     
+        // Recomputed every frame because the active layer's transform is part of it, and the layer
+        // gizmo writes a new one on every mouse move of a drag.
+        m_worldFromLocal = EditorSpaceFromLocal(GetEntityComponentIdPair());
+
         // generate mesh to query
         if (!m_intersectionAndRenderData.has_value())
         {
@@ -689,8 +715,9 @@ namespace WhiteBox
     
         // Selection changes arrive through the manipulator manager, not through this class's mouse
         // handler, so the gated buttons are re-evaluated here. Both refreshes early-out unless the
-        // answer changed, so this costs two bus queries a frame.
+        // answer changed, so a steady frame only pays for the queries.
         RefreshSketchClusterState();
+        RefreshModelingClusterState();
 
         debugDisplay.DepthTestOn();
         debugDisplay.SetColor(ed_whiteBoxEdgeDefault);
@@ -788,9 +815,11 @@ namespace WhiteBox
     }
 
     void EditorWhiteBoxComponentMode::OnTransformChanged(
-        [[maybe_unused]] const AZ::Transform& local, const AZ::Transform& world)
+        [[maybe_unused]] const AZ::Transform& local, [[maybe_unused]] const AZ::Transform& world)
     {
-        m_worldFromLocal = world;
+        // Not the world transform handed in: the editing space also carries the active layer's
+        // transform, and manipulators cannot hold a non-uniform scale.
+        m_worldFromLocal = EditorSpaceFromLocal(GetEntityComponentIdPair());
     }
 
     void EditorWhiteBoxComponentMode::OnDefaultShapeTypeChanged([[maybe_unused]] const DefaultShapeType defaultShape)
@@ -1357,8 +1386,10 @@ namespace WhiteBox
 
         ViewportUi::ViewportUiRequestBus::EventResult(
             m_modelingClusterId, ViewportUi::DefaultViewportId,
-            &ViewportUi::ViewportUiRequestBus::Events::CreateCluster, ViewportUi::Alignment::TopLeft);
+            &ViewportUi::ViewportUiRequestBus::Events::CreateCluster, ViewportUi::Alignment::TopRight);
 
+        m_transformExtrudeButtonId = RegisterClusterButton(m_modelingClusterId, ":/WhiteBox/Icons/Extrude.svg");
+        m_transformInsetButtonId = RegisterClusterButton(m_modelingClusterId, ":/WhiteBox/Icons/Inset.svg");
         m_edgeLoopButtonId = RegisterClusterButton(m_modelingClusterId, ":/WhiteBox/Icons/EdgeLoop.svg");
         m_edgeRingButtonId = RegisterClusterButton(m_modelingClusterId, ":/WhiteBox/Icons/EdgeRing.svg");
         m_bridgeButtonId = RegisterClusterButton(m_modelingClusterId, ":/WhiteBox/Icons/Bridge.svg");
@@ -1372,6 +1403,8 @@ namespace WhiteBox
                 ViewportUi::DefaultViewportId, &ViewportUi::ViewportUiRequestBus::Events::SetClusterButtonTooltip,
                 m_modelingClusterId, buttonId, AZStd::string(text));
         };
+        tooltip(m_transformExtrudeButtonId, "Extrude - type a distance, or latch it and drag any polygon or edge");
+        tooltip(m_transformInsetButtonId, "Inset - type a percentage, or latch it and drag any planar convex region");
         tooltip(m_edgeLoopButtonId, "Select Edge Loop: follow connected edges from the selection");
         tooltip(m_edgeRingButtonId, "Select Edge Ring: cross opposite edges of quads");
         tooltip(m_bridgeButtonId, WhiteboxModelingClusterBridgeTooltip);
@@ -1384,7 +1417,46 @@ namespace WhiteBox
             {
                 const AZ::EntityComponentIdPair pair = GetEntityComponentIdPair();
                 ModelingOps::Result result;
-                if (buttonId == m_edgeLoopButtonId || buttonId == m_edgeRingButtonId)
+                if (m_extrudeInsetWindow)
+                {
+                    m_extrudeInsetWindow->Dismiss();
+                    m_extrudeInsetWindow.clear();
+                }
+                if (buttonId == m_transformExtrudeButtonId || buttonId == m_transformInsetButtonId)
+                {
+                    // These two carry a latch, and a highlighted button has to be releasable by
+                    // clicking it - so a click on the armed one drops the latch instead of reopening
+                    // the window that armed it. The window offers both ways in: an amount to apply
+                    // once, and the latch for dragging polygon after polygon.
+                    const auto wanted = buttonId == m_transformInsetButtonId
+                        ? TransformModelingLatch::Inset : TransformModelingLatch::Extrude;
+                    TransformModelingLatch latch = TransformModelingLatch::None;
+                    EditorWhiteBoxTransformModeRequestBus::EventResult(
+                        latch, pair, &EditorWhiteBoxTransformModeRequests::GetModelingLatch);
+                    if (latch == wanted)
+                    {
+                        EditorWhiteBoxTransformModeRequestBus::Event(
+                            pair, &EditorWhiteBoxTransformModeRequests::SetModelingLatch,
+                            TransformModelingLatch::None);
+                        RefreshModelingClusterState();
+                        return;
+                    }
+                    // Opening the other one's window releases whatever was armed, so the highlight,
+                    // the checkbox and what a drag actually does never disagree.
+                    EditorWhiteBoxTransformModeRequestBus::Event(
+                        pair, &EditorWhiteBoxTransformModeRequests::SetModelingLatch,
+                        TransformModelingLatch::None);
+                    if (m_bevelWindow) { m_bevelWindow->Dismiss(); m_bevelWindow.clear(); }
+                    if (m_weldWindow) { m_weldWindow->Dismiss(); m_weldWindow.clear(); }
+                    QWidget* mainWindow = nullptr;
+                    AzToolsFramework::EditorRequests::Bus::BroadcastResult(
+                        mainWindow, &AzToolsFramework::EditorRequests::GetMainWindow);
+                    m_extrudeInsetWindow = new WhiteBoxExtrudeInsetWindow(
+                        pair, buttonId == m_transformInsetButtonId, mainWindow);
+                    m_extrudeInsetWindow->ShowNearCursor();
+                    result = {true, {}};
+                }
+                else if (buttonId == m_edgeLoopButtonId || buttonId == m_edgeRingButtonId)
                 {
                     result = ModelingOps::SelectEdgePattern(pair, buttonId == m_edgeRingButtonId);
                 }
@@ -1464,6 +1536,11 @@ namespace WhiteBox
 
     void EditorWhiteBoxComponentMode::RemoveModelingCluster()
     {
+        if (m_extrudeInsetWindow)
+        {
+            m_extrudeInsetWindow->Dismiss();
+            m_extrudeInsetWindow.clear();
+        }
         if (m_weldWindow)
         {
             m_weldWindow->Dismiss();
@@ -1485,6 +1562,7 @@ namespace WhiteBox
             ViewportUi::DefaultViewportId, &ViewportUi::ViewportUiRequestBus::Events::RemoveCluster,
             m_modelingClusterId);
         m_modelingClusterId = ViewportUi::InvalidClusterId;
+        m_modelingClusterState.reset();
     }
 
     void EditorWhiteBoxComponentMode::RefreshModelingClusterState()
@@ -1496,19 +1574,54 @@ namespace WhiteBox
         }
 
         const AZ::EntityComponentIdPair pair = GetEntityComponentIdPair();
+        TransformModelingLatch latch = TransformModelingLatch::None;
+        EditorWhiteBoxTransformModeRequestBus::EventResult(
+            latch, pair, &EditorWhiteBoxTransformModeRequests::GetModelingLatch);
+        const ModelingOps::Selection selection = ModelingOps::CurrentSelection(pair);
+        const bool edgeSelection = ModelingOps::CanSelectEdgePattern(selection);
+        const bool bridge = ModelingOps::CanBridge(selection);
+        const bool weld = ModelingOps::CanWeld(selection);
+        const bool loopCut = ModelingOps::CanLoopCut(selection);
+        const bool bevel = ModelingOps::CanBevel(selection) || selection.m_liveBevel;
+
+        // This runs every frame, because selection changes arrive through the manipulator manager and
+        // the latch is armed from a floating window - neither goes through this class's mouse handler.
+        // Nothing below touches the widget unless one of those answers moved.
+        const AZ::u32 state = (static_cast<AZ::u32>(latch) << 5) | (edgeSelection ? 1u : 0u) |
+            (bridge ? 2u : 0u) | (weld ? 4u : 0u) | (loopCut ? 8u : 0u) | (bevel ? 16u : 0u);
+        if (m_modelingClusterState == state)
+        {
+            return;
+        }
+        m_modelingClusterState = state;
+
         const auto enable = [this](const ViewportUi::ButtonId buttonId, const bool usable)
         {
             ViewportUi::ViewportUiRequestBus::Event(
                 ViewportUi::DefaultViewportId, &ViewportUi::ViewportUiRequestBus::Events::SetClusterDisableButton,
                 m_modelingClusterId, buttonId, !usable);
         };
-        const bool edgeSelection = ModelingOps::CanSelectEdgePattern(pair);
+        // These two stay live with nothing selected: the window they open can arm a latch first and
+        // take its selection from whatever the next drag lands on.
+        enable(m_transformExtrudeButtonId, true);
+        enable(m_transformInsetButtonId, true);
+        if (latch != TransformModelingLatch::None)
+        {
+            ViewportUi::ViewportUiRequestBus::Event(
+                ViewportUi::DefaultViewportId, &ViewportUi::ViewportUiRequestBus::Events::SetClusterActiveButton,
+                m_modelingClusterId, latch == TransformModelingLatch::Extrude ? m_transformExtrudeButtonId : m_transformInsetButtonId);
+        }
+        else
+        {
+            ViewportUi::ViewportUiRequestBus::Event(
+                ViewportUi::DefaultViewportId, &ViewportUi::ViewportUiRequestBus::Events::ClearClusterActiveButton, m_modelingClusterId);
+        }
         enable(m_edgeLoopButtonId, edgeSelection);
         enable(m_edgeRingButtonId, edgeSelection);
-        enable(m_bridgeButtonId, ModelingOps::CanBridge(pair));
-        enable(m_weldButtonId, ModelingOps::CanWeld(pair));
-        enable(m_loopCutButtonId, ModelingOps::CanLoopCut(pair));
-        enable(m_bevelButtonId, ModelingOps::CanBevel(pair) || ModelingOps::HasLiveBevel(pair));
+        enable(m_bridgeButtonId, bridge);
+        enable(m_weldButtonId, weld);
+        enable(m_loopCutButtonId, loopCut);
+        enable(m_bevelButtonId, bevel);
     }
 
     void EditorWhiteBoxComponentMode::RemoveSubModeSelectionCluster()

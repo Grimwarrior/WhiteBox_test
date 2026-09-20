@@ -3432,6 +3432,92 @@ namespace UnitTest
         EXPECT_EQ(boundaryEdges, 4);
     }
 
+    TEST_F(WhiteBoxTestFixture, ExtrudeAndInsetKeepAdjacentPolygonsAsOneRegion)
+    {
+        namespace Api = WhiteBox::Api;
+        for (const bool inset : {false, true})
+        {
+            auto mesh = Api::CreateWhiteBoxMesh();
+            Api::VertexHandles vertices;
+            for (int y = 0; y < 2; ++y)
+            {
+                for (int x = 0; x < 3; ++x)
+                {
+                    vertices.push_back(Api::AddVertex(*mesh, AZ::Vector3(float(x), float(y), 0)));
+                }
+            }
+            const Api::PolygonHandles selection{
+                Api::AddQuadPolygon(*mesh, vertices[0], vertices[1], vertices[4], vertices[3]),
+                Api::AddQuadPolygon(*mesh, vertices[1], vertices[2], vertices[5], vertices[4])};
+            const auto material = AZ::Data::AssetId::CreateString("{15214A10-CEAC-49D8-AB23-B7129F69B9F1}:7");
+            Api::SetPolygonMaterial(*mesh, selection[0], material);
+            for (const auto face : selection[0].m_faceHandles) { Api::SetFacePaintColor(*mesh, face, 0xff443322); }
+            Api::CalculateNormals(*mesh);
+            Api::CalculatePlanarUVs(*mesh);
+            Api::PolygonHandles result;
+            AZStd::string error;
+            ASSERT_TRUE(Api::ExtrudeInsetRegions(*mesh, selection, inset ? 0.2f : 0.25f, inset, result, error))
+                << error.c_str();
+            ASSERT_EQ(result.size(), 2);
+            EXPECT_EQ(Api::MeshPolygonHandles(*mesh).size(), 8); // two caps + six perimeter walls, no interior wall
+            EXPECT_EQ(Api::MeshFaceHandles(*mesh).size(), 16);
+            size_t materialFaces = 0;
+            float capArea = 0.0f;
+            Api::VertexHandles capVertices;
+            for (const auto& polygon : result)
+            {
+                for (const auto vertex : Api::PolygonVertexHandles(*mesh, polygon))
+                {
+                    if (AZStd::find(capVertices.begin(), capVertices.end(), vertex) == capVertices.end())
+                    {
+                        capVertices.push_back(vertex);
+                    }
+                    EXPECT_NEAR(Api::VertexPosition(*mesh, vertex).GetZ(), inset ? 0.0f : 0.25f, 1e-5f);
+                }
+                for (const auto face : polygon.m_faceHandles)
+                {
+                    if (Api::FaceMaterial(*mesh, face) == material)
+                    {
+                        ++materialFaces;
+                        EXPECT_EQ(Api::FacePaintColor(*mesh, face), 0xff443322);
+                    }
+                    const auto points = Api::FaceVertexPositions(*mesh, face);
+                    capArea += (points[1] - points[0]).Cross(points[2] - points[0]).GetLength() * 0.5f;
+                }
+            }
+            EXPECT_EQ(capVertices.size(), 6); // shared cap edge still shares its two vertices
+            EXPECT_EQ(materialFaces, 2);
+            EXPECT_NEAR(capArea, inset ? 1.28f : 2.0f, 1e-5f);
+        }
+    }
+
+    TEST_F(WhiteBoxTestFixture, ExtrudeRegionOnCubeIsClosedAndUnsupportedInsetLeavesMeshUnchanged)
+    {
+        namespace Api = WhiteBox::Api;
+        auto mesh = Api::CreateWhiteBoxMesh();
+        const auto polygons = Api::InitializeAsUnitCube(*mesh);
+        Api::WhiteBoxMeshStream before;
+        ASSERT_TRUE(Api::WriteMesh(*mesh, before));
+        Api::PolygonHandles result;
+        AZStd::string error;
+        // The top and front form one connected, non-planar region.
+        EXPECT_FALSE(Api::ExtrudeInsetRegions(*mesh, {polygons[0], polygons[2]}, 0.2f, true, result, error));
+        EXPECT_TRUE(result.empty());
+        Api::WhiteBoxMeshStream after;
+        ASSERT_TRUE(Api::WriteMesh(*mesh, after));
+        EXPECT_EQ(before, after);
+        ASSERT_TRUE(Api::ExtrudeInsetRegions(*mesh, {polygons[0]}, 0.25f, false, result, error)) << error.c_str();
+        ASSERT_EQ(result.size(), 1);
+        double volume = 0.0;
+        for (const auto edge : Api::MeshEdgeHandles(*mesh)) { EXPECT_EQ(Api::EdgeFaceHandles(*mesh, edge).size(), 2); }
+        for (const auto face : Api::MeshFaceHandles(*mesh))
+        {
+            const auto p = Api::FaceVertexPositions(*mesh, face);
+            volume += p[0].Dot(p[1].Cross(p[2])) / 6.0;
+        }
+        EXPECT_NEAR(volume, 1.25, 1e-5);
+    }
+
     TEST_F(WhiteBoxTestFixture, FreeformPolygonSupportsConcaveOutlinesAndRejectsCrossingsWithoutMutation)
     {
         namespace Api = WhiteBox::Api;
@@ -3457,8 +3543,99 @@ namespace UnitTest
             AZ::Vector3(0, 0, 0), AZ::Vector3(2, 2, 0), AZ::Vector3(0, 2, 0), AZ::Vector3(2, 0, 0)};
         EXPECT_FALSE(WhiteBox::Detail::BuildPolygonFace(
             *mesh, AZ::Transform::CreateIdentity(), crossing, AZ::Vector3::CreateAxisZ()));
+        EXPECT_FALSE(WhiteBox::Detail::BuildPolygonFace(
+            *mesh, AZ::Transform::CreateIdentity(), crossing, AZ::Vector3::CreateAxisZ(), 2.0f));
         EXPECT_EQ(Api::MeshVertexCount(*mesh), before);
         EXPECT_EQ(Api::MeshFaceHandles(*mesh).size(), 3);
+    }
+
+    TEST_F(WhiteBoxTestFixture, FreeformPolygonExtrusionIsClosedForConcaveOutlinesBothWindingsAndDepthSigns)
+    {
+        namespace Api = WhiteBox::Api;
+        const AZStd::vector<AZ::Vector3> outline{
+            AZ::Vector3(0, 0, 0), AZ::Vector3(2, 0, 0), AZ::Vector3(2, 2, 0),
+            AZ::Vector3(1, 1, 0), AZ::Vector3(0, 2, 0)};
+        for (const bool reverse : {false, true})
+        {
+            for (const float height : {-2.0f, 2.0f})
+            {
+                // Draw on a tilted world plane and store on a scaled entity.
+                auto planeToWorld = AZ::Transform::CreateRotationX(1.0f);
+                planeToWorld.SetTranslation(AZ::Vector3(5.0f, 7.0f, 3.0f));
+                AZStd::vector<AZ::Vector3> points;
+                for (size_t i = 0; i < outline.size(); ++i)
+                {
+                    points.push_back(planeToWorld.TransformPoint(outline[reverse ? outline.size() - 1 - i : i]));
+                }
+                auto mesh = Api::CreateWhiteBoxMesh();
+                ASSERT_TRUE(WhiteBox::Detail::BuildPolygonFace(
+                    *mesh, AZ::Transform::CreateUniformScale(0.5f), points,
+                    planeToWorld.TransformVector(AZ::Vector3::CreateAxisZ()), height));
+                EXPECT_EQ(Api::MeshVertexCount(*mesh), 10);
+                EXPECT_EQ(Api::MeshFaceHandles(*mesh).size(), 16);
+                EXPECT_EQ(Api::MeshPolygonHandles(*mesh).size(), 7);
+                for (const auto edge : Api::MeshEdgeHandles(*mesh))
+                {
+                    EXPECT_EQ(Api::EdgeFaceHandles(*mesh, edge).size(), 2);
+                }
+                double signedVolume = 0.0;
+                for (const auto face : Api::MeshFaceHandles(*mesh))
+                {
+                    const auto positions = Api::FaceVertexPositions(*mesh, face);
+                    signedVolume += positions[0].Dot(positions[1].Cross(positions[2])) / 6.0;
+                }
+                // Concave outline area = 3; depth = 2; local uniform scale = 0.5.
+                EXPECT_NEAR(signedVolume, 0.75, 1e-4);
+            }
+        }
+    }
+
+    TEST_F(WhiteBoxTestFixture, ExtrudedConcavePolygonCanCarveAndUnionInBothPullDirections)
+    {
+        namespace Api = WhiteBox::Api;
+        struct BooleanCase
+        {
+            Api::BooleanOperation m_operation;
+            float m_baseHeight;
+            float m_depth;
+            double m_expectedVolume;
+        };
+        const BooleanCase cases[]{
+            {Api::BooleanOperation::Subtraction, 4.01f, -2.01f, 58.0},
+            {Api::BooleanOperation::Union, 3.0f, 2.0f, 67.0},
+            {Api::BooleanOperation::Union, 1.0f, -2.0f, 67.0}};
+        for (const auto& example : cases)
+        {
+            auto target = Api::CreateWhiteBoxMesh();
+            auto cutter = Api::CreateWhiteBoxMesh();
+            ASSERT_TRUE(WhiteBox::Detail::BuildPolygonFace(
+                *target, AZ::Transform::CreateIdentity(),
+                {AZ::Vector3(0, 0, 0), AZ::Vector3(4, 0, 0), AZ::Vector3(4, 4, 0), AZ::Vector3(0, 4, 0)},
+                AZ::Vector3::CreateAxisZ(), 4.0f));
+            const float z = example.m_baseHeight;
+            // Concave footprint area is 3. The subtraction cuts a two-unit-deep pocket;
+            // either union extends one unit beyond the target, adding volume 3.
+            ASSERT_TRUE(WhiteBox::Detail::BuildPolygonFace(
+                *cutter, AZ::Transform::CreateIdentity(),
+                {AZ::Vector3(1, 1, z), AZ::Vector3(3, 1, z), AZ::Vector3(3, 3, z),
+                 AZ::Vector3(2, 2, z), AZ::Vector3(1, 3, z)},
+                AZ::Vector3::CreateAxisZ(), example.m_depth));
+            Api::CalculateNormals(*target);
+            Api::CalculateNormals(*cutter);
+            ASSERT_TRUE(Api::ApplyMeshBoolean(
+                *target, *cutter, AZ::Transform::CreateIdentity(), example.m_operation));
+            double volume = 0.0;
+            for (const auto face : Api::MeshFaceHandles(*target))
+            {
+                const auto positions = Api::FaceVertexPositions(*target, face);
+                volume += positions[0].Dot(positions[1].Cross(positions[2])) / 6.0;
+            }
+            EXPECT_NEAR(volume, example.m_expectedVolume, 1e-3);
+            for (const auto edge : Api::MeshEdgeHandles(*target))
+            {
+                EXPECT_EQ(Api::EdgeFaceHandles(*target, edge).size(), 2);
+            }
+        }
     }
 
     TEST_F(WhiteBoxTestFixture, ParametricStairsDeriveStepCountFromTargetRiserHeight)

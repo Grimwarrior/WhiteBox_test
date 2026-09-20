@@ -36,10 +36,11 @@ namespace WhiteBox
             const AZ::Vector3& uAxis, const AZ::Vector3& vAxis, const AZ::Vector3& up,
             float baseUp, float topUp, DrawShapeType shape, int sides, float holeRatio, int tubeSides);
         //! Validate and triangulate a simple planar outline, including concave polygons.
+        //! A nonzero signed world-space height creates a closed solid with outward-facing caps and sides.
         //! Returns false without modifying the mesh for crossing/degenerate outlines.
         bool BuildPolygonFace(
             WhiteBoxMesh& mesh, const AZ::Transform& localFromWorld,
-            const AZStd::vector<AZ::Vector3>& points, const AZ::Vector3& normal);
+            const AZStd::vector<AZ::Vector3>& points, const AZ::Vector3& normal, float extrusionHeight = 0.0f);
         //! Build a right-handed basis with @p n (the surface normal) as the up axis.
         void BasisFromNormal(const AZ::Vector3& n, AZ::Vector3& right, AZ::Vector3& fwd, AZ::Vector3& up);
 

@@ -842,6 +842,19 @@ namespace WhiteBox
         //! Clones the white box mesh object into a new mesh.
         //! @return Will return null if any error was encountered during serialization, otherwise the cloned mesh.
         WhiteBoxMeshPtr CloneMesh(const WhiteBoxMesh& whiteBox);
+        //! Copy a prepared mesh while preserving its topology handles and properties.
+        void AssignMesh(WhiteBoxMesh& target, const WhiteBoxMesh& source);
+        //! Transactional extrusion of connected boundary edges (or one solid edge using Sketch semantics).
+        bool ExtrudeEdgeSelection(
+            WhiteBoxMesh& mesh, const EdgeHandles& edges, const AZ::Vector3& offset,
+            EdgeHandles& result, PolygonHandles& preview, AZStd::string& error);
+
+        //! Extrude connected selected regions along their area-weighted normals, or inset planar
+        //! convex regions by a fraction (0, 1), matching Sketch's proportional inset.
+        //! Preserves polygon divisions, face materials/paint and existing UVs. Transactional on failure.
+        bool ExtrudeInsetRegions(
+            WhiteBoxMesh& whiteBox, const PolygonHandles& selection, float amount, bool inset,
+            PolygonHandles& result, AZStd::string& error, PolygonHandles* preview = nullptr);
 
         //! Bridge two disjoint boundary edges, connect open polygons at their nearest
         //! compatible boundary edges, or replace two facing polygon caps with

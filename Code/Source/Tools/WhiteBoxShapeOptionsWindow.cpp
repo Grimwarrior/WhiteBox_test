@@ -151,6 +151,10 @@ namespace WhiteBox
         m_carve->setToolTip(tr("Drawing performs a CSG boolean, the same as holding Ctrl: pull in to carve, out to add."));
         m_mergeUnion = new QCheckBox(tr("Merge into mesh (union)"), this);
         m_mergeUnion->setToolTip(tr("Committing the drawn shape unions it into the mesh instead of leaving overlapping geometry."));
+        m_polygonExtrude = new QCheckBox(tr("Extrude after closing"), this);
+        m_polygonExtrude->setToolTip(tr(
+            "Close the polygon, then move the mouse or type a depth. Click or press Enter to finish; Esc cancels."));
+        toggles->addWidget(m_polygonExtrude);
         toggles->addWidget(m_stepsByHeight);
         toggles->addWidget(m_cubeShowGrid);
         toggles->addWidget(m_carve);
@@ -171,6 +175,7 @@ namespace WhiteBox
         connect(m_cubeShowGrid, &QCheckBox::toggled, this, apply);
         connect(m_carve, &QCheckBox::toggled, this, apply);
         connect(m_mergeUnion, &QCheckBox::toggled, this, apply);
+        connect(m_polygonExtrude, &QCheckBox::toggled, this, apply);
 
         RefreshValues();
     }
@@ -198,6 +203,19 @@ namespace WhiteBox
         m_stepsRow.SetVisible(stair && !byHeight);
         m_stepHeightRow.SetVisible(stair && byHeight);
         m_stepsByHeight->setVisible(stair);
+        m_polygonExtrude->setVisible(!cubeStamp && shape == DrawShapeType::Polygon);
+        const bool polygon = !cubeStamp && shape == DrawShapeType::Polygon;
+        const bool booleanAvailable = !polygon || m_polygonExtrude->isChecked();
+        m_carve->setVisible(shape != DrawShapeType::Plane || cubeStamp);
+        m_mergeUnion->setVisible(shape != DrawShapeType::Plane || cubeStamp);
+        m_carve->setEnabled(booleanAvailable);
+        m_mergeUnion->setEnabled(booleanAvailable);
+        m_carve->setToolTip(polygon && !booleanAvailable
+            ? tr("Enable Extrude after closing to carve with a solid polygon.")
+            : tr("Pull inward to subtract, outward to add. Takes precedence over Merge into mesh."));
+        m_mergeUnion->setToolTip(polygon && !booleanAvailable
+            ? tr("Enable Extrude after closing to merge a solid polygon into the mesh.")
+            : tr("Union the drawn solid into the active mesh in either pull direction. Turn Carve off to force a union."));
 
         // A floating palette that keeps the height of its tallest primitive reads as broken, so it
         // shrinks back to whatever is actually on show.
@@ -221,6 +239,7 @@ namespace WhiteBox
             const QSignalBlocker sidesBlock(m_sides), tubeBlock(m_tubeSides), stepsBlock(m_steps);
             const QSignalBlocker holeBlock(m_holeRatio), stepHeightBlock(m_stepHeight);
             const QSignalBlocker byHeightBlock(m_stepsByHeight), carveBlock(m_carve), mergeBlock(m_mergeUnion);
+            const QSignalBlocker polygonExtrudeBlock(m_polygonExtrude);
             m_sides->setValue(component->GetDrawSides());
             m_tubeSides->setValue(component->GetDrawTubeSides());
             m_holeRatio->setValue(component->GetDrawHoleRatio());
@@ -229,6 +248,7 @@ namespace WhiteBox
             m_stepsByHeight->setChecked(stair.m_byHeight);
             m_carve->setChecked(component->GetDrawCarve());
             m_mergeUnion->setChecked(component->GetDrawMergeUnion());
+            m_polygonExtrude->setChecked(component->GetDrawPolygonExtrude());
             m_cubeSize->setValue(component->GetDrawUnitCubeSize());
             m_cubeShowGrid->setChecked(component->GetDrawUnitCubeShowGrid());
         }
@@ -261,6 +281,7 @@ namespace WhiteBox
             component->SetDrawHoleRatio(static_cast<float>(m_holeRatio->value()));
             component->SetDrawCarve(m_carve->isChecked());
             component->SetDrawMergeUnion(m_mergeUnion->isChecked());
+            component->SetDrawPolygonExtrude(m_polygonExtrude->isChecked());
 
             DrawStairInfo stair = component->GetDrawStairInfo();
             stair.m_steps = m_steps->value();

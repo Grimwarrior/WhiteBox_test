@@ -230,6 +230,7 @@ namespace WhiteBox
         QPushButton* m_gizmoScale = nullptr;
         QComboBox* m_activeLayerCombo = nullptr;
         QListWidget* m_layerList = nullptr;
+        QLabel* m_layerCountLabel = nullptr;
         QPushButton* m_layerTintButton = nullptr;
         QComboBox* m_layerCombineCombo = nullptr;
         QCheckBox* m_layerInvertNormals = nullptr;

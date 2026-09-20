@@ -73,9 +73,25 @@ namespace WhiteBox::ModelingOps
         return component && component->HasActiveBevel();
     }
 
-    bool CanSelectEdgePattern(const AZ::EntityComponentIdPair& pair)
+    Selection CurrentSelection(const AZ::EntityComponentIdPair& pair)
     {
-        return EditableComponentFor(pair) && !SelectedEdges(pair).empty();
+        Selection selection;
+        EditorWhiteBoxComponent* component = EditableComponentFor(pair);
+        if (component == nullptr)
+        {
+            return selection;
+        }
+        selection.m_editable = true;
+        selection.m_liveBevel = component->HasActiveBevel();
+        selection.m_polygons = SelectedPolygons(pair);
+        selection.m_edges = SelectedEdges(pair);
+        selection.m_vertices = SelectedVertices(pair);
+        return selection;
+    }
+
+    bool CanSelectEdgePattern(const Selection& selection)
+    {
+        return selection.m_editable && !selection.m_edges.empty();
     }
 
     Result SelectEdgePattern(const AZ::EntityComponentIdPair& pair, const bool ring)
@@ -88,36 +104,56 @@ namespace WhiteBox::ModelingOps
             SelectedEdges(pair).size(), ring ? "Rings" : "Loops")};
     }
 
-    bool CanBridge(const AZ::EntityComponentIdPair& entityComponentIdPair)
+    bool CanExtrudeInset(const Selection& selection)
     {
-        if (EditableComponentFor(entityComponentIdPair) == nullptr)
+        return selection.m_editable && !selection.m_polygons.empty();
+    }
+
+    Result ExtrudeInset(const AZ::EntityComponentIdPair& pair, const float amount, const bool inset)
+    {
+        auto* component = EditableComponentFor(pair);
+        if (!component) { return {false, "No editable White Box mesh."}; }
+        Api::PolygonHandles result;
+        AZStd::string error;
+        AzToolsFramework::ScopedUndoBatch undo(inset ? "White Box Inset" : "White Box Extrude");
+        if (!Api::ExtrudeInsetRegions(*component->GetWhiteBoxMesh(), SelectedPolygons(pair), amount, inset, result, error))
+        {
+            return {false, error};
+        }
+        CommitMeshEdit(*component, pair);
+        EditorWhiteBoxTransformModeRequestBus::Event(
+            pair, &EditorWhiteBoxTransformModeRequests::SetSelectedPolygons, result);
+        undo.MarkEntityDirty(pair.GetEntityId());
+        return {true, inset ? "Region inset." : "Region extruded."};
+    }
+
+    bool CanBridge(const Selection& selection)
+    {
+        if (!selection.m_editable)
         {
             return false;
         }
-        const Api::PolygonHandles polygons = SelectedPolygons(entityComponentIdPair);
-        const Api::EdgeHandles edges = SelectedEdges(entityComponentIdPair);
-        return (polygons.size() == 2 && edges.empty()) || (edges.size() == 2 && polygons.empty());
+        return (selection.m_polygons.size() == 2 && selection.m_edges.empty()) ||
+            (selection.m_edges.size() == 2 && selection.m_polygons.empty());
     }
 
-    bool CanWeld(const AZ::EntityComponentIdPair& entityComponentIdPair)
+    bool CanWeld(const Selection& selection)
     {
-        return EditableComponentFor(entityComponentIdPair) != nullptr &&
-            SelectedVertices(entityComponentIdPair).size() >= 2;
+        return selection.m_editable && selection.m_vertices.size() >= 2;
     }
 
-    bool CanLoopCut(const AZ::EntityComponentIdPair& entityComponentIdPair)
+    bool CanLoopCut(const Selection& selection)
     {
-        return EditableComponentFor(entityComponentIdPair) != nullptr;
+        return selection.m_editable;
     }
 
-    bool CanBevel(const AZ::EntityComponentIdPair& entityComponentIdPair)
+    bool CanBevel(const Selection& selection)
     {
-        EditorWhiteBoxComponent* component = EditableComponentFor(entityComponentIdPair);
-        if (component == nullptr || component->HasActiveBevel())
+        if (!selection.m_editable || selection.m_liveBevel)
         {
             return false; // one live bevel at a time; bake or cancel it first
         }
-        return !SelectedEdges(entityComponentIdPair).empty() || !SelectedPolygons(entityComponentIdPair).empty();
+        return !selection.m_edges.empty() || !selection.m_polygons.empty();
     }
 
     Result Bridge(const AZ::EntityComponentIdPair& entityComponentIdPair)

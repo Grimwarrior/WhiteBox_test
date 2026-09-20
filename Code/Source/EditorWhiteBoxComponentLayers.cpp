@@ -11,6 +11,8 @@
 
 #include "EditorWhiteBoxComponent.h"
 
+#include "SubComponentModes/EditorWhiteBoxDefaultModeBus.h"
+#include "SubComponentModes/EditorWhiteBoxTransformModeBus.h"
 #include "Util/WhiteBoxMeshUtil.h"
 #include "Util/WhiteBoxVoxelUtil.h"
 #include "Viewport/WhiteBoxShapeBuilders.h"
@@ -663,6 +665,56 @@ namespace WhiteBox
         return AZ::Edit::PropertyRefreshLevels::EntireTree;
     }
 
+    AZStd::string EditorWhiteBoxComponent::UniqueLayerName(const AZStd::string& base) const
+    {
+        const auto taken = [this](const AZStd::string& name)
+        {
+            return AZStd::any_of(
+                m_layers.begin(), m_layers.end(),
+                [&name](const WhiteBoxLayer& layer)
+                {
+                    return layer.m_name == name;
+                });
+        };
+
+        AZStd::string candidate = base + " copy";
+        for (int suffix = 2; taken(candidate); ++suffix)
+        {
+            candidate = AZStd::string::format("%s copy %d", base.c_str(), suffix);
+        }
+        return candidate;
+    }
+
+    AZ::Crc32 EditorWhiteBoxComponent::OnDuplicateLayer()
+    {
+        if (m_activeLayerIndex < 0 || m_activeLayerIndex >= static_cast<int>(m_layers.size()))
+        {
+            return AZ::Edit::PropertyRefreshLevels::None;
+        }
+
+        AzToolsFramework::ScopedUndoBatch undoBatch("Duplicate White Box Layer");
+        SerializeWhiteBox(); // the active layer's edits live in the working mesh until this runs
+
+        // Every member of a layer is a value, mesh streams included, so the copy is the whole thing -
+        // geometry, transform, combine mode, parametric shape and any live bevel.
+        WhiteBoxLayer copy = m_layers[m_activeLayerIndex];
+        copy.m_id = AllocLayerId(); // ...except the id, which has to stay unique
+        copy.m_name = UniqueLayerName(m_layers[m_activeLayerIndex].m_name);
+        m_layers.insert(m_layers.begin() + m_activeLayerIndex + 1, AZStd::move(copy));
+
+        // Leave the copy active: duplicating is nearly always the first half of "and now change this
+        // one", and the original is one click away.
+        ++m_activeLayerIndex;
+        m_layerRuntime.m_lastCount = static_cast<int>(m_layers.size());
+        m_layerRuntime.m_loadedIndex = -1; // the working members still hold the original
+        LoadActiveLayer();
+        m_layerRuntime.m_lastSignature = LayerSignature();
+        RebuildWhiteBox();
+        RefreshComponentMode();
+        undoBatch.MarkEntityDirty(GetEntityId());
+        return AZ::Edit::PropertyRefreshLevels::EntireTree;
+    }
+
     AZ::Crc32 EditorWhiteBoxComponent::OnDeleteLayer()
     {
         if (m_layers.empty() || m_activeLayerIndex < 0 || m_activeLayerIndex >= static_cast<int>(m_layers.size()))
@@ -737,6 +789,40 @@ namespace WhiteBox
         }
         RebuildWhiteBox();
         return AZ::Edit::PropertyRefreshLevels::ValuesOnly;
+    }
+
+    AZ::Transform EditorWhiteBoxComponent::GetActiveLayerTransform() const
+    {
+        const int index = GetActiveLayerIndex();
+        if (index < 0 || index >= GetLayerCount())
+        {
+            return AZ::Transform::CreateIdentity();
+        }
+
+        const WhiteBoxLayer& layer = m_layers[index];
+        // Same order ApplyTransformToMesh uses: scale, then rotate, then translate - which is exactly
+        // how AZ::Transform composes. A non-uniform scale cannot survive the trip; see EditorSpaceFromLocal.
+        AZ::Transform transform = AZ::Transform::CreateFromQuaternionAndTranslation(
+            AZ::Quaternion::CreateFromEulerAnglesDegrees(layer.m_rotation), layer.m_position);
+        transform.SetUniformScale(layer.m_scale.GetMaxElement());
+        return transform;
+    }
+
+    void EditorWhiteBoxComponent::RefreshManipulatorSpaces()
+    {
+        const AZ::EntityComponentIdPair pair(GetEntityId(), GetId());
+        EditorWhiteBoxDefaultModeRequestBus::Event(
+            pair, &EditorWhiteBoxDefaultModeRequestBus::Events::RefreshPolygonTranslationModifier);
+        EditorWhiteBoxDefaultModeRequestBus::Event(
+            pair, &EditorWhiteBoxDefaultModeRequestBus::Events::RefreshPolygonScaleModifier);
+        EditorWhiteBoxDefaultModeRequestBus::Event(
+            pair, &EditorWhiteBoxDefaultModeRequestBus::Events::RefreshEdgeTranslationModifier);
+        EditorWhiteBoxDefaultModeRequestBus::Event(
+            pair, &EditorWhiteBoxDefaultModeRequestBus::Events::RefreshEdgeScaleModifier);
+        EditorWhiteBoxDefaultModeRequestBus::Event(
+            pair, &EditorWhiteBoxDefaultModeRequestBus::Events::RefreshVertexSelectionModifier);
+        EditorWhiteBoxTransformModeRequestBus::Event(
+            pair, &EditorWhiteBoxTransformModeRequestBus::Events::RefreshManipulatorSpace);
     }
 
     void EditorWhiteBoxComponent::RefreshComponentMode()

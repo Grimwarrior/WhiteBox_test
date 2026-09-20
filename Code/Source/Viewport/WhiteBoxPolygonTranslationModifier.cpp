@@ -6,6 +6,7 @@
  *
  */
 
+#include "Util/WhiteBoxEditorUtil.h"
 #include "EditorWhiteBoxComponentModeBus.h"
 #include "EditorWhiteBoxPolygonModifierBus.h"
 #include "SubComponentModes/EditorWhiteBoxDefaultModeBus.h"
@@ -55,7 +56,7 @@ namespace WhiteBox
             whiteBox, m_entityComponentIdPair, &EditorWhiteBoxComponentRequests::GetWhiteBoxMesh);
 
         m_translationManipulator = AzToolsFramework::LinearManipulator::MakeShared(
-            AzToolsFramework::WorldFromLocalWithUniformScale(m_entityComponentIdPair.GetEntityId()));
+            EditorSpaceFromLocal(m_entityComponentIdPair));
 
         m_translationManipulator->AddEntityComponentIdPair(m_entityComponentIdPair);
         m_translationManipulator->SetLocalPosition(Api::PolygonMidpoint(*whiteBox, m_polygonHandle));

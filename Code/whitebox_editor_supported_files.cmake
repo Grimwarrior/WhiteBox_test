@@ -40,6 +40,8 @@ set(FILES
     Source/Tools/WhiteBoxModelingWindow.h
     Source/Tools/WhiteBoxWeldWindow.cpp
     Source/Tools/WhiteBoxWeldWindow.h
+    Source/Tools/WhiteBoxExtrudeInsetWindow.cpp
+    Source/Tools/WhiteBoxExtrudeInsetWindow.h
     Source/Tools/WhiteBoxLayerGizmo.cpp
     Source/Tools/WhiteBoxLayerGizmo.h
     Source/Tools/WhiteBoxEntityGizmo.cpp

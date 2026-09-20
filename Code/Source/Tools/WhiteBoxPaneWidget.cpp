@@ -26,6 +26,7 @@
 #include <AzToolsFramework/ComponentMode/ComponentModeDelegate.h>
 #include <AzToolsFramework/ToolsComponents/EditorNonUniformScaleComponent.h>
 
+#include <QApplication>
 #include <QCheckBox>
 #include <QColorDialog>
 #include <QComboBox>
@@ -39,7 +40,14 @@
 #include <QHBoxLayout>
 #include <QLabel>
 #include <QListWidget>
+#include <QIcon>
+#include <QMouseEvent>
+#include <QPainter>
+#include <QPixmap>
+#include <QPainterPath>
 #include <QPushButton>
+#include <QStyledItemDelegate>
+#include <QToolButton>
 #include <QSpinBox>
 #include <QTimer>
 #include <QSignalBlocker>
@@ -121,6 +129,301 @@ namespace WhiteBox
         //! from/to rows are computed and handed to the owner, which reorders the component's
         //! layer list and rebuilds the widget from it - the component stays the source of truth.
         //! No signals/slots of its own, so it needs no Q_OBJECT / moc.
+        //! What a layer row carries beyond its name and check state.
+        constexpr int LayerTintRole = Qt::UserRole + 1;
+        constexpr int LayerCombineRole = Qt::UserRole + 2;
+
+        //! Row metrics, in pixels at the list's own font size.
+        constexpr int RowPadding = 6;
+        constexpr int EyeWidth = 14;
+        constexpr int SwatchWidth = 10;
+        constexpr int RowGap = 7;
+        constexpr int MinimumRowHeight = 24;
+
+        //! The badge text for a layer's combine mode - the Combine combo's own labels.
+        QString CombineModeLabel(const LayerCombineMode mode)
+        {
+            switch (mode)
+            {
+            case LayerCombineMode::Union:
+                return QObject::tr("Union");
+            case LayerCombineMode::Subtract:
+                return QObject::tr("Subtract");
+            case LayerCombineMode::Intersect:
+                return QObject::tr("Intersect");
+            case LayerCombineMode::Separate:
+            default:
+                return QObject::tr("Separate");
+            }
+        }
+
+        //! Two offset squares, for the Duplicate button. Painted rather than typed: no copy glyph
+        //! has dependable font coverage, and a missing one shows up as a box.
+        QPixmap DuplicatePixmap(const QColor& color)
+        {
+            QPixmap pixmap(16, 16);
+            pixmap.fill(Qt::transparent);
+            QPainter painter(&pixmap);
+            painter.setRenderHint(QPainter::Antialiasing, true);
+            painter.setPen(QPen(color, 1.2));
+            painter.drawRoundedRect(QRectF(2.0, 2.0, 8.0, 8.0), 1.5, 1.5);
+            // Punch the front square out of the back one so they read as stacked, not crossed.
+            painter.setCompositionMode(QPainter::CompositionMode_Clear);
+            painter.setPen(Qt::NoPen);
+            painter.setBrush(Qt::black);
+            painter.drawRoundedRect(QRectF(4.6, 4.6, 9.8, 9.8), 2.0, 2.0);
+            painter.setCompositionMode(QPainter::CompositionMode_SourceOver);
+            painter.setPen(QPen(color, 1.2));
+            painter.setBrush(Qt::NoBrush);
+            painter.drawRoundedRect(QRectF(5.6, 5.6, 8.0, 8.0), 1.5, 1.5);
+            return pixmap;
+        }
+
+        QIcon MakeDuplicateIcon(const QColor& normal, const QColor& accent)
+        {
+            QIcon icon(DuplicatePixmap(normal));
+            icon.addPixmap(DuplicatePixmap(accent), QIcon::Active);
+            return icon;
+        }
+
+        //! Paint the compact layer buttons explicitly: the editor's tool-button style can leave
+        //! auto-raised buttons borderless. All colours come from the current widget palette, so
+        //! changing the editor theme also updates these frames and their artwork.
+        class LayerToolButton : public QToolButton
+        {
+        public:
+            explicit LayerToolButton(AZStd::function<QIcon(const QColor&, const QColor&)> iconPainter = {})
+                : m_iconPainter(AZStd::move(iconPainter))
+            {
+                setObjectName(QStringLiteral("whiteBoxLayerToolButton"));
+                setAutoRaise(true);
+                setAttribute(Qt::WA_Hover);
+                setFocusPolicy(Qt::NoFocus);
+                setFixedSize(26, 26);
+                setIconSize(QSize(16, 16));
+            }
+
+        protected:
+            void paintEvent(QPaintEvent* /*event*/) override
+            {
+                const auto group = isEnabled() ? QPalette::Active : QPalette::Disabled;
+                const QColor foreground = palette().color(group, QPalette::Text);
+                const QColor accent = palette().color(group, QPalette::Highlight);
+                const bool hovered = isEnabled() && underMouse();
+                const bool pressed = isEnabled() && (isDown() || isChecked());
+
+                QPainter painter(this);
+                painter.setRenderHint(QPainter::Antialiasing);
+                const QRectF frame = QRectF(rect()).adjusted(0.5, 0.5, -0.5, -0.5);
+                QColor border = foreground;
+                border.setAlpha(isEnabled() ? 110 : 55);
+                painter.setPen(Qt::NoPen);
+                painter.setBrush(palette().brush(group, QPalette::Button));
+                painter.drawRoundedRect(frame, 3.0, 3.0);
+                if (hovered || pressed)
+                {
+                    QColor wash = accent;
+                    wash.setAlpha(pressed ? 90 : 45);
+                    painter.setBrush(wash);
+                    painter.drawRoundedRect(frame, 3.0, 3.0);
+                    border = accent;
+                }
+                painter.setBrush(Qt::NoBrush);
+                painter.setPen(QPen(border, 1.0));
+                painter.drawRoundedRect(frame, 3.0, 3.0);
+
+                const QColor content = hovered || pressed ? accent : foreground;
+                if (m_iconPainter)
+                {
+                    // Generate artwork from the live palette, including its disabled text colour.
+                    // Using Normal avoids Qt applying an additional automatic greyscale treatment.
+                    const QIcon artwork = m_iconPainter(content, accent);
+                    const QRect iconRect(
+                        (width() - iconSize().width()) / 2, (height() - iconSize().height()) / 2,
+                        iconSize().width(), iconSize().height());
+                    artwork.paint(&painter, iconRect, Qt::AlignCenter, QIcon::Normal);
+                }
+                else
+                {
+                    painter.setPen(content);
+                    painter.drawText(rect(), Qt::AlignCenter, text());
+                }
+            }
+
+        private:
+            AZStd::function<QIcon(const QColor&, const QColor&)> m_iconPainter;
+        };
+
+        QRect EyeRect(const QRect& row)
+        {
+            return QRect(row.left() + RowPadding, row.center().y() - EyeWidth / 2, EyeWidth, EyeWidth);
+        }
+
+        //! An eye outline with a pupil, struck through when the layer is hidden. Drawn rather than
+        //! loaded so it takes its colour from the editor theme, like everything else on the row.
+        void DrawEye(QPainter* painter, const QRect& rect, const QColor& color, const bool open)
+        {
+            QPen pen(color, 1.2);
+            pen.setCapStyle(Qt::RoundCap);
+            painter->setPen(pen);
+            painter->setBrush(Qt::NoBrush);
+
+            const QPointF center = rect.center();
+            const qreal halfWidth = rect.width() * 0.5;
+            const qreal lidDepth = rect.height() * 0.6;
+            QPainterPath eye;
+            eye.moveTo(center.x() - halfWidth, center.y());
+            eye.quadTo(center.x(), center.y() - lidDepth, center.x() + halfWidth, center.y());
+            eye.quadTo(center.x(), center.y() + lidDepth, center.x() - halfWidth, center.y());
+            painter->drawPath(eye);
+            if (open)
+            {
+                painter->setBrush(color);
+                painter->drawEllipse(center, halfWidth * 0.26, halfWidth * 0.26);
+                painter->setBrush(Qt::NoBrush);
+            }
+            else
+            {
+                painter->drawLine(
+                    QPointF(center.x() - halfWidth, center.y() + halfWidth),
+                    QPointF(center.x() + halfWidth, center.y() - halfWidth));
+            }
+        }
+
+        //! Draws each layer the way the mockup lays it out: visibility eye, tint swatch, name, and
+        //! the combine mode as a badge on the right. A delegate rather than a widget per row, so the
+        //! list keeps drag-to-reorder, rename-on-double-click and the theme's selection painting.
+        class LayerRowDelegate : public QStyledItemDelegate
+        {
+        public:
+            using QStyledItemDelegate::QStyledItemDelegate;
+
+            QSize sizeHint(const QStyleOptionViewItem& option, const QModelIndex& index) const override
+            {
+                QSize size = QStyledItemDelegate::sizeHint(option, index);
+                size.setHeight(AZStd::max(size.height(), MinimumRowHeight));
+                return size;
+            }
+
+            void paint(QPainter* painter, const QStyleOptionViewItem& option, const QModelIndex& index)
+                const override
+            {
+                QStyleOptionViewItem opt = option;
+                initStyleOption(&opt, index);
+                // The eye stands in for the check indicator, and the name is placed by hand so the
+                // badge can share the row - leave the style the background and the selection only.
+                opt.features &= ~QStyleOptionViewItem::HasCheckIndicator;
+                opt.text.clear();
+                opt.icon = QIcon();
+                const QWidget* widget = opt.widget;
+                QStyle* style = widget != nullptr ? widget->style() : QApplication::style();
+                style->drawControl(QStyle::CE_ItemViewItem, &opt, painter, widget);
+
+                painter->save();
+                painter->setRenderHint(QPainter::Antialiasing, true);
+
+                const bool selected = (option.state & QStyle::State_Selected) != 0;
+                const QColor textColor =
+                    opt.palette.color(selected ? QPalette::HighlightedText : QPalette::Text);
+                const bool visible = index.data(Qt::CheckStateRole).toInt() == Qt::Checked;
+
+                QColor eyeColor = textColor;
+                eyeColor.setAlpha(visible ? 210 : 80);
+                DrawEye(painter, EyeRect(option.rect), eyeColor, visible);
+
+                int left = EyeRect(option.rect).right() + RowGap;
+                const QColor tint = index.data(LayerTintRole).value<QColor>();
+                if (tint.isValid())
+                {
+                    const QRect swatch(
+                        left, option.rect.center().y() - SwatchWidth / 2, SwatchWidth, SwatchWidth);
+                    painter->setPen(QPen(QColor(0, 0, 0, 90), 1.0));
+                    painter->setBrush(tint);
+                    painter->drawRoundedRect(QRectF(swatch).adjusted(0.5, 0.5, -0.5, -0.5), 2.0, 2.0);
+                    left = swatch.right() + RowGap;
+                }
+
+                int right = option.rect.right() - RowPadding;
+                const QString badge = index.data(LayerCombineRole).toString();
+                if (!badge.isEmpty())
+                {
+                    const QFontMetrics metrics(opt.font);
+                    const int badgeWidth = metrics.horizontalAdvance(badge) + 14;
+                    const int badgeHeight = metrics.height() + 2;
+                    const QRect badgeRect(
+                        right - badgeWidth, option.rect.center().y() - badgeHeight / 2, badgeWidth,
+                        badgeHeight);
+                    QColor fill = textColor;
+                    fill.setAlpha(selected ? 60 : 30);
+                    painter->setPen(Qt::NoPen);
+                    painter->setBrush(fill);
+                    painter->drawRoundedRect(badgeRect, 3.0, 3.0);
+                    QColor badgeText = textColor;
+                    badgeText.setAlpha(200);
+                    painter->setPen(badgeText);
+                    painter->setFont(opt.font);
+                    painter->drawText(badgeRect, Qt::AlignCenter, badge);
+                    right = badgeRect.left() - RowGap;
+                }
+
+                const QRect nameRect(
+                    left, option.rect.top(), AZStd::max(right - left, 0), option.rect.height());
+                QColor nameColor = textColor;
+                if (!visible)
+                {
+                    nameColor.setAlpha(120); // a hidden layer reads as dimmed, like its eye
+                }
+                painter->setPen(nameColor);
+                painter->setFont(opt.font);
+                painter->drawText(
+                    nameRect, Qt::AlignVCenter | Qt::AlignLeft,
+                    QFontMetrics(opt.font).elidedText(
+                        index.data(Qt::DisplayRole).toString(), Qt::ElideRight, nameRect.width()));
+                painter->restore();
+            }
+
+            //! Clicking the eye toggles visibility, and never starts a rename.
+            bool editorEvent(
+                QEvent* event, QAbstractItemModel* model, const QStyleOptionViewItem& option,
+                const QModelIndex& index) override
+            {
+                if (event->type() == QEvent::MouseButtonRelease ||
+                    event->type() == QEvent::MouseButtonPress ||
+                    event->type() == QEvent::MouseButtonDblClick)
+                {
+                    auto* mouse = static_cast<QMouseEvent*>(event);
+#if QT_VERSION >= QT_VERSION_CHECK(6, 0, 0)
+                    const QPoint position = mouse->position().toPoint();
+#else
+                    const QPoint position = mouse->pos();
+#endif
+                    if (mouse->button() == Qt::LeftButton &&
+                        EyeRect(option.rect).adjusted(-3, -3, 3, 3).contains(position))
+                    {
+                        if (event->type() == QEvent::MouseButtonRelease)
+                        {
+                            const bool visible = index.data(Qt::CheckStateRole).toInt() == Qt::Checked;
+                            model->setData(
+                                index, visible ? Qt::Unchecked : Qt::Checked, Qt::CheckStateRole);
+                        }
+                        return true;
+                    }
+                }
+                return QStyledItemDelegate::editorEvent(event, model, option, index);
+            }
+
+            //! Rename in place over the name, not across the eye and the badge.
+            void updateEditorGeometry(
+                QWidget* editor, const QStyleOptionViewItem& option, const QModelIndex& index) const override
+            {
+                QStyledItemDelegate::updateEditorGeometry(editor, option, index);
+                const int left = EyeRect(option.rect).right() + RowGap + SwatchWidth + RowGap;
+                editor->setGeometry(QRect(
+                    left, option.rect.top(), AZStd::max(option.rect.right() - RowPadding - left, 40),
+                    option.rect.height()));
+            }
+        };
+
         class LayerListWidget : public QListWidget
         {
         public:
@@ -556,31 +859,38 @@ namespace WhiteBox
         createGroup->setLayout(createGrid);
         layout->addWidget(createGroup);
 
-        auto* buttonRow = new QHBoxLayout();
-        auto* newLayerButton = new QPushButton(tr("New"));
-        auto* deleteLayerButton = new QPushButton(tr("Delete"));
-        auto* applyTransformButton = new QPushButton(tr("Apply Transform"));
-        applyTransformButton->setToolTip(
-            tr("Bake the active layer's Position/Rotation/Scale into its geometry and reset them to identity."));
-        buttonRow->addWidget(newLayerButton);
-        buttonRow->addWidget(deleteLayerButton);
-        buttonRow->addWidget(applyTransformButton);
-        layout->addLayout(buttonRow);
-
-        auto* moveRow = new QHBoxLayout();
-        auto* moveUpButton = new QPushButton(tr("Move Up"));
-        auto* moveDownButton = new QPushButton(tr("Move Down"));
+        // One compact strip above the list rather than two rows of wide buttons: these actions are
+        // all about the list right below them, and the count belongs with it too.
         const QString moveTip =
             tr("Reorder the selected layer. Layer order is the order the Combine modes accumulate "
                "in, so moving a layer restacks its boolean.");
-        moveUpButton->setToolTip(moveTip);
-        moveDownButton->setToolTip(moveTip);
-        moveRow->addWidget(moveUpButton);
-        moveRow->addWidget(moveDownButton);
-        layout->addLayout(moveRow);
+        auto* buttonRow = new QHBoxLayout();
+        buttonRow->setSpacing(2);
+        const auto makeToolButton = [buttonRow](const QString& glyph, const QString& tip)
+        {
+            auto* button = new LayerToolButton();
+            button->setText(glyph);
+            button->setToolTip(tip);
+            buttonRow->addWidget(button);
+            return button;
+        };
+        auto* newLayerButton = makeToolButton(QStringLiteral("+"), tr("Add a new layer."));
+        auto* deleteLayerButton = makeToolButton(QString(QChar(0x2212)), tr("Delete the selected layer."));
+        auto* duplicateLayerButton = new LayerToolButton(&MakeDuplicateIcon);
+        duplicateLayerButton->setToolTip(tr("Duplicate the selected layer, geometry and settings alike."));
+        buttonRow->addWidget(duplicateLayerButton);
+        auto* moveUpButton = makeToolButton(QString(QChar(0x2191)), moveTip);
+        auto* moveDownButton = makeToolButton(QString(QChar(0x2193)), moveTip);
+        buttonRow->addStretch();
+        m_layerCountLabel = new QLabel();
+        m_layerCountLabel->setEnabled(false); // the theme's secondary text, which is what a count is
+        buttonRow->addWidget(m_layerCountLabel);
+        layout->addLayout(buttonRow);
 
         auto* layerList = new LayerListWidget();
         m_layerList = layerList;
+        m_layerList->setItemDelegate(new LayerRowDelegate(m_layerList));
+        m_layerList->setUniformItemSizes(true);
         m_layerList->setToolTip(
             tr("All layers, in combine order. Double-click to rename; use the checkbox to "
                "show/hide; drag a layer (or use Move Up / Move Down) to reorder."));
@@ -630,6 +940,10 @@ namespace WhiteBox
         metaLayout->addRow(tr("Position"), MakeVec3Row(m_layerPos, -100000.0, 100000.0, 0.1));
         metaLayout->addRow(tr("Rotation"), MakeVec3Row(m_layerRot, -3600.0, 3600.0, 1.0));
         metaLayout->addRow(tr("Scale"), MakeVec3Row(m_layerScale, 0.001, 1000.0, 0.1));
+        auto* applyTransformButton = new QPushButton(tr("Apply Transform"));
+        applyTransformButton->setToolTip(
+            tr("Bake the active layer's Position/Rotation/Scale into its geometry and reset them to identity."));
+        metaLayout->addRow(QString(), applyTransformButton);
 
         // Viewport gizmo for the selected layer's transform (same manipulators as the editor's
         // Transform component, but driving the layer's non-destructive Position/Rotation/Scale).
@@ -886,11 +1200,11 @@ namespace WhiteBox
 
         layout->addWidget(m_layerMetaGroup);
 
-        connect(newLayerButton, &QPushButton::clicked, this,
+        connect(newLayerButton, &QAbstractButton::clicked, this,
             [this]() {
                 ModifyComponent("White Box New Layer", [](EditorWhiteBoxComponent* c) { c->AddLayer(); });
             });
-        connect(deleteLayerButton, &QPushButton::clicked, this,
+        connect(deleteLayerButton, &QAbstractButton::clicked, this,
             [this]() {
                 ModifyComponent("White Box Delete Layer", [](EditorWhiteBoxComponent* c) { c->DeleteActiveLayer(); });
             });
@@ -901,13 +1215,19 @@ namespace WhiteBox
                     "White Box Apply Layer Transform",
                     [](EditorWhiteBoxComponent* c) { c->ApplyActiveLayerTransform(); });
             });
-        connect(moveUpButton, &QPushButton::clicked, this,
+        connect(duplicateLayerButton, &QAbstractButton::clicked, this,
+            [this]() {
+                ModifyComponent(
+                    "White Box Duplicate Layer",
+                    [](EditorWhiteBoxComponent* c) { c->DuplicateActiveLayer(); });
+            });
+        connect(moveUpButton, &QAbstractButton::clicked, this,
             [this]()
             {
                 const int row = m_layerList->currentRow();
                 MoveLayerRow(row, row - 1);
             });
-        connect(moveDownButton, &QPushButton::clicked, this,
+        connect(moveDownButton, &QAbstractButton::clicked, this,
             [this]()
             {
                 const int row = m_layerList->currentRow();
@@ -1177,7 +1497,15 @@ namespace WhiteBox
             auto* item = new QListWidgetItem(QString::fromUtf8(meta.m_name.c_str()));
             item->setFlags(item->flags() | Qt::ItemIsUserCheckable | Qt::ItemIsEditable);
             item->setCheckState(meta.m_visible ? Qt::Checked : Qt::Unchecked);
+            item->setData(
+                LayerTintRole,
+                QColor::fromRgbF(meta.m_tint.GetX(), meta.m_tint.GetY(), meta.m_tint.GetZ()));
+            item->setData(LayerCombineRole, CombineModeLabel(meta.m_combineMode));
             m_layerList->addItem(item);
+        }
+        if (m_layerCountLabel != nullptr)
+        {
+            m_layerCountLabel->setText(layerCount == 1 ? tr("1 layer") : tr("%1 layers").arg(layerCount));
         }
         const int row = (previousRow >= 0 && previousRow < layerCount) ? previousRow
             : (layerCount > 0 ? AZStd::clamp(activeIndex, 0, layerCount - 1) : -1);

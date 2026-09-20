@@ -6,6 +6,7 @@
  *
  */
 
+#include "Util/WhiteBoxEditorUtil.h"
 #include "EditorWhiteBoxComponentModeBus.h"
 #include "EditorWhiteBoxEdgeModifierBus.h"
 #include "SubComponentModes/EditorWhiteBoxDefaultModeBus.h"
@@ -122,7 +123,7 @@ namespace WhiteBox
         const auto axes = GetEdgeNormalAxes(vertexPositions[0], vertexPositions[1]);
 
         m_translationManipulator = AzToolsFramework::PlanarManipulator::MakeShared(
-            AzToolsFramework::WorldFromLocalWithUniformScale(m_entityComponentIdPair.GetEntityId()));
+            EditorSpaceFromLocal(m_entityComponentIdPair));
 
         m_translationManipulator->AddEntityComponentIdPair(m_entityComponentIdPair);
         m_translationManipulator->SetLocalPosition(Api::EdgeMidpoint(*whiteBox, m_hoveredEdgeHandle));

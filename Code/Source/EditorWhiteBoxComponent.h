@@ -102,6 +102,10 @@ namespace WhiteBox
         void DeserializeWhiteBox() override;
         void WriteAssetToComponent() override;
         void RebuildWhiteBox() override;
+        //! RebuildWhiteBox without the synchronous collider cook and game-mode bake - both are queued
+        //! on m_rebuild and run from OnTick once the edits stop arriving. For streaming edits only:
+        //! the caller owes a real rebuild, or a SerializeWhiteBox, when the gesture ends.
+        void RebuildWhiteBoxDeferred();
         void SetDefaultShape(DefaultShapeType defaultShape) override;
         void SetMaterialTint(const AZ::Color& tint) override;
         AZ::Color GetMaterialTint() override;
@@ -129,6 +133,7 @@ namespace WhiteBox
         }
         bool GetDrawCarve() override { return m_drawShapeData.m_carve; }
         bool GetDrawMergeUnion() override { return m_drawShapeData.m_mergeUnion; }
+        bool GetDrawPolygonExtrude() override { return m_drawShapeData.m_polygonExtrude; }
         bool GetDrawUnitCube() override { return m_drawShapeData.m_unitCube; }
         //! The world size used for the NEXT stamp and the stamp ghost grid. This is always
         //! the desired "Cube Size", independent of any cubes already placed: each stamped
@@ -309,6 +314,7 @@ namespace WhiteBox
         }
         void SetDrawCarve(bool carve) { m_drawShapeData.m_carve = carve; }
         void SetDrawMergeUnion(bool mergeUnion) { m_drawShapeData.m_mergeUnion = mergeUnion; }
+        void SetDrawPolygonExtrude(bool extrude) { m_drawShapeData.m_polygonExtrude = extrude; }
 
         // Unit Cube Stamp settings.
         void SetDrawUnitCube(bool unitCube) { m_drawShapeData.m_unitCube = unitCube; }
@@ -340,6 +346,9 @@ namespace WhiteBox
         AZStd::vector<AZ::Vector3> GetLayerVertexPositionsEntityLocal(int index);
 
         int GetLayerCount() const { return static_cast<int>(m_layers.size()); }
+        //! The active layer's Position/Rotation/Scale as one transform, in the order
+        //! ApplyTransformToMesh uses it (scale, rotate, translate). Identity when there is no layer.
+        AZ::Transform GetActiveLayerTransform() const;
         int GetActiveLayerIndex() const { return m_activeLayerIndex; }
         //! Stable identity for floating tools; an index can be reused after layer removal/reordering.
         AZ::u64 GetActiveLayerId() const
@@ -414,6 +423,8 @@ namespace WhiteBox
         void BakeBevel();
         void CancelBevel();
         void DeleteActiveLayer() { OnDeleteLayer(); }
+        //! Copy the active layer, geometry and settings alike, and insert it directly above.
+        void DuplicateActiveLayer() { OnDuplicateLayer(); }
         //! Move the layer at @p from so it ends up at index @p to (both are indices into the
         //! CURRENT list). Layer order matters - it is the order the combine modes accumulate in -
         //! so this is how the user restacks booleans. The active/loaded layer is tracked by its
@@ -447,6 +458,10 @@ namespace WhiteBox
                 return;
             }
             WhiteBoxLayer& layer = m_layers[index];
+            // The editing manipulators are built in a space that carries this transform, so they have
+            // to be rebuilt when it moves - otherwise the handles hang where the layer used to be.
+            const bool transformChanged = !layer.m_position.IsClose(meta.m_position) ||
+                !layer.m_rotation.IsClose(meta.m_rotation) || !layer.m_scale.IsClose(meta.m_scale);
             layer.m_name = meta.m_name;
             layer.m_visible = meta.m_visible;
             layer.m_collision = meta.m_collision;
@@ -461,6 +476,10 @@ namespace WhiteBox
                 AZStd::max(meta.m_scale.GetZ(), 0.001f));
             m_layerRuntime.m_meshCache.erase(layer.m_id); // this layer's cached display mesh is stale now
             OnLayersMetaChanged(); // recombine + resync
+            if (transformChanged)
+            {
+                RefreshManipulatorSpaces();
+            }
         }
 
         // Boolean.
@@ -613,6 +632,7 @@ namespace WhiteBox
             AZ::Crc32 TubeSidesVisibility() const;
             DrawStairData m_stair;  //!< Staircase-specific settings.
             bool m_carve = false;           //!< Draw acts as a CSG boolean (same as holding Ctrl).
+            bool m_polygonExtrude = false; //!< Pull a solid from a closed freeform outline before committing.
             bool m_mergeUnion = false;      //!< Committing a drawn shape CSG-unions it into the mesh.
             bool m_unitCube = false;        //!< Draw mode click-stamps grid-snapped cubes.
             float m_unitCubeSize = 1.0f;    //!< Desired world-space size of the next stamped cube.
@@ -755,8 +775,15 @@ namespace WhiteBox
         AZ::u32 OnActiveLayerChange();       //!< Active Layer control changed: commit current, load new.
         AZ::Crc32 OnNewLayer();              //!< Append an empty layer and make it active.
         AZ::Crc32 OnDeleteLayer();           //!< Delete the active layer (keeps at least one).
+        AZ::Crc32 OnDuplicateLayer();        //!< Copy the active layer and insert it directly above.
+        //! @p base with a copy suffix, stepped until no other layer answers to it.
+        AZStd::string UniqueLayerName(const AZStd::string& base) const;
         AZ::u32 OnLayersMetaChanged();       //!< Layer name/visibility edited: recombine + resync.
-        void RefreshComponentMode();         //!< Mark the component mode intersection data dirty after a layer swap.
+        void RefreshComponentMode();
+        //! Rebuild the editing manipulators in place so they pick up a changed layer transform.
+        //! Cheaper than RefreshComponentMode, and it keeps the selection - which matters because the
+        //! layer gizmo writes a new transform on every mouse move of a drag.
+        void RefreshManipulatorSpaces();         //!< Mark the component mode intersection data dirty after a layer swap.
         void ClearWorkingLayer();            //!< Reset the working members to empty (used when there are zero layers).
         AZ::Crc32 OnApplyLayerTransform();   //!< Bake the active layer's transform into its geometry, then reset it.
         //! Build the full combined mesh from an active-layer freeform: every visible layer
@@ -803,9 +830,6 @@ namespace WhiteBox
         //! false this is a preview: the mesh stream write is skipped for the active layer and the
         //! collider cook / game-mode bake are left to the tick debounce.
         void RegenerateParametricLayer(int index, bool commit = true);
-        //! RebuildWhiteBox without the synchronous collider cook and game-mode bake - both are queued
-        //! on m_rebuild and run from OnTick once the edits stop arriving. For streaming edits only.
-        void RebuildWhiteBoxDeferred();
 
         //! The mesh used for RENDER / collision / bounds / selection. In live
         //! (non-destructive) boolean mode this is the evaluated result; otherwise

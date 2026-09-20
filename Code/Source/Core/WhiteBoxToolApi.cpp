@@ -4226,6 +4226,345 @@ namespace WhiteBox
             return FindEdgePattern(whiteBox, seeds, true);
         }
 
+        void AssignMesh(WhiteBoxMesh& target, const WhiteBoxMesh& source)
+        {
+            target.mesh = source.mesh;
+        }
+
+        bool ExtrudeEdgeSelection(
+            WhiteBoxMesh& mesh, const EdgeHandles& edges, const AZ::Vector3& offset,
+            EdgeHandles& result, PolygonHandles& preview, AZStd::string& error)
+        {
+            result.clear();
+            preview.clear();
+            const auto fail = [&error](const char* message) { error = message; return false; };
+            if (edges.empty() || !offset.IsFinite() || offset.IsZero(1e-5f)) { return fail("Drag away from the edge to extrude."); }
+            const auto valid = MeshPolygonEdgeHandles(mesh);
+            bool boundary = true;
+            for (const auto edge : edges)
+            {
+                if (AZStd::find(valid.begin(), valid.end(), edge) == valid.end()) { return fail("Select polygon boundary edges."); }
+                boundary = boundary && EdgeIsBoundary(mesh, edge);
+            }
+            auto candidate = CloneMesh(mesh);
+            if (!boundary)
+            {
+                if (edges.size() != 1) { return fail("Select one solid edge, or a connected set of open boundary edges."); }
+                const auto edge = TranslateEdgeAppend(*candidate, edges.front(), offset);
+                if (!edge.IsValid() || edge == edges.front()) { return fail("This edge cannot extrude in that direction."); }
+                result.push_back(edge);
+                preview = MeshPolygonHandles(*candidate);
+            }
+            else
+            {
+                AZStd::map<int, VertexHandle> top;
+                for (const auto edge : edges)
+                {
+                    for (const auto vertex : EdgeVertexHandles(mesh, edge))
+                    {
+                        if (!top.count(vertex.Index())) { top.emplace(vertex.Index(), AddVertex(*candidate, VertexPosition(mesh, vertex) + offset)); }
+                    }
+                }
+                for (const auto edge : edges)
+                {
+                    auto halfedge = EdgeHalfedgeHandle(mesh, edge, EdgeHalfedge::First);
+                    if (!HalfedgeIsBoundary(mesh, halfedge)) { halfedge = HalfedgeOppositeHalfedgeHandle(mesh, halfedge); }
+                    const auto a = HalfedgeVertexHandleAtTail(mesh, halfedge);
+                    const auto b = HalfedgeVertexHandleAtTip(mesh, halfedge);
+                    AZ::Vector3 normal;
+                    if (!TryCalculateTriangleNormal(VertexPosition(mesh, b) - VertexPosition(mesh, a), offset, normal))
+                    {
+                        return fail("Drag across the edge, not along it.");
+                    }
+                    const auto polygon = AddQuadWithoutFallback(*candidate, {{
+                        a, b, top.find(b.Index())->second, top.find(a.Index())->second}});
+                    if (polygon.m_faceHandles.size() != 2) { return fail("These edges cannot extrude together without invalid connections."); }
+                    const auto source = EdgeFaceHandles(mesh, edge).front();
+                    for (const auto face : polygon.m_faceHandles)
+                    {
+                        SetFaceMaterial(*candidate, face, FaceMaterial(mesh, source));
+                        SetFacePaintColor(*candidate, face, FacePaintColor(mesh, source));
+                    }
+                    const auto outer = candidate->mesh.find_halfedge(
+                        om_vh(top.find(b.Index())->second), om_vh(top.find(a.Index())->second));
+                    if (!outer.is_valid()) { return fail("Could not create the extruded edge."); }
+                    result.push_back(EdgeHandle{candidate->mesh.edge_handle(outer).idx()});
+                    preview.push_back(polygon);
+                    CalculateNormals(*candidate);
+                    CalculatePlanarUVs(*candidate, polygon.m_faceHandles);
+                }
+            }
+            AssignMesh(mesh, *candidate);
+            return true;
+        }
+
+        bool ExtrudeInsetRegions(
+            WhiteBoxMesh& whiteBox, const PolygonHandles& selection, const float amount, const bool inset,
+            PolygonHandles& result, AZStd::string& error, PolygonHandles* preview)
+        {
+            result.clear();
+            if (preview) { preview->clear(); }
+            const auto fail = [&error](const char* message) { error = message; return false; };
+            if (!AZ::IsFiniteFloat(amount) || (inset ? amount <= 0.0f || amount >= 1.0f : AZStd::abs(amount) < 1e-5f))
+            {
+                return fail(inset ? "Inset must be between 0 and 100 percent." : "Enter a nonzero extrusion distance.");
+            }
+            const auto polygons = MeshPolygonHandles(whiteBox);
+            AZStd::vector<int> sourceGroup(whiteBox.mesh.n_faces(), -1);
+            AZStd::vector<bool> selected(whiteBox.mesh.n_faces(), false);
+            for (size_t i = 0; i < polygons.size(); ++i)
+            {
+                for (const auto face : polygons[i].m_faceHandles) { sourceGroup[face.Index()] = static_cast<int>(i); }
+            }
+            for (const auto& polygon : selection)
+            {
+                if (AZStd::find(polygons.begin(), polygons.end(), polygon) == polygons.end())
+                {
+                    return fail("The polygon selection is stale. Select the faces again.");
+                }
+                for (const auto face : polygon.m_faceHandles) { selected[face.Index()] = true; }
+            }
+            if (selection.empty()) { return fail("Select one or more polygons."); }
+
+            struct Region
+            {
+                FaceHandles m_faces;
+                HalfedgeHandles m_border;
+                VertexHandles m_vertices;
+                AZ::Vector3 m_normal = AZ::Vector3::CreateZero();
+                AZ::Vector3 m_center = AZ::Vector3::CreateZero();
+                AZStd::map<int, VertexHandle> m_top;
+            };
+            AZStd::vector<Region> regions;
+            AZStd::vector<int> faceRegion(whiteBox.mesh.n_faces(), -1);
+            for (const auto seed : MeshFaceHandles(whiteBox))
+            {
+                if (!selected[seed.Index()] || faceRegion[seed.Index()] >= 0) { continue; }
+                const int regionIndex = static_cast<int>(regions.size());
+                regions.emplace_back();
+                auto& region = regions.back();
+                FaceHandles pending{seed};
+                while (!pending.empty())
+                {
+                    const auto face = pending.back();
+                    pending.pop_back();
+                    if (faceRegion[face.Index()] >= 0) { continue; }
+                    faceRegion[face.Index()] = regionIndex;
+                    region.m_faces.push_back(face);
+                    const auto vertices = FaceVertexHandles(whiteBox, face);
+                    if (vertices.size() != 3) { return fail("The selection contains invalid triangles."); }
+                    const auto points = FaceVertexPositions(whiteBox, face);
+                    region.m_normal += (points[1] - points[0]).Cross(points[2] - points[0]);
+                    for (const auto vertex : vertices)
+                    {
+                        if (AZStd::find(region.m_vertices.begin(), region.m_vertices.end(), vertex) == region.m_vertices.end())
+                        {
+                            region.m_vertices.push_back(vertex);
+                            region.m_center += VertexPosition(whiteBox, vertex);
+                        }
+                    }
+                    for (const auto halfedge : FaceHalfedgeHandles(whiteBox, face))
+                    {
+                        const auto other = HalfedgeFaceHandle(whiteBox, HalfedgeOppositeHalfedgeHandle(whiteBox, halfedge));
+                        if (other.IsValid() && selected[other.Index()]) { pending.push_back(other); }
+                        else { region.m_border.push_back(halfedge); }
+                    }
+                }
+                if (region.m_border.empty() || region.m_normal.IsZero(1e-6f))
+                {
+                    return fail("Select a surface region with an open perimeter and a clear extrusion direction.");
+                }
+                region.m_normal.Normalize();
+                region.m_center /= static_cast<float>(region.m_vertices.size());
+                if (inset)
+                {
+                    // Proportional scaling safely insets a planar convex perimeter. Refuse holes,
+                    // concave outlines and folded regions rather than producing crossing side faces.
+                    AZStd::map<int, int> next;
+                    for (const auto edge : region.m_border)
+                    {
+                        const auto a = HalfedgeVertexHandleAtTail(whiteBox, edge);
+                        const auto b = HalfedgeVertexHandleAtTip(whiteBox, edge);
+                        if (!next.emplace(a.Index(), b.Index()).second) { return fail("Inset needs a single simple perimeter."); }
+                    }
+                    int current = next.begin()->first;
+                    const int first = current;
+                    size_t visited = 0;
+                    do
+                    {
+                        const auto it = next.find(current);
+                        if (it == next.end() || visited++ >= next.size()) { return fail("Inset needs a single simple perimeter."); }
+                        const auto after = next.find(it->second);
+                        if (after == next.end()) { return fail("Inset needs a single simple perimeter."); }
+                        const auto a = VertexPosition(whiteBox, VertexHandle{current});
+                        const auto b = VertexPosition(whiteBox, VertexHandle{it->second});
+                        const auto c = VertexPosition(whiteBox, VertexHandle{after->second});
+                        if ((b - a).Cross(c - b).Dot(region.m_normal) < -1e-6f)
+                        {
+                            return fail("Inset currently supports convex regions. Select a smaller convex region.");
+                        }
+                        current = it->second;
+                    } while (current != first);
+                    if (visited != next.size()) { return fail("Inset does not yet support regions with holes."); }
+                    for (const auto vertex : region.m_vertices)
+                    {
+                        if (AZStd::abs((VertexPosition(whiteBox, vertex) - region.m_center).Dot(region.m_normal)) > 1e-4f)
+                        {
+                            return fail("Inset requires a planar region.");
+                        }
+                    }
+                }
+            }
+
+            auto candidate = CreateWhiteBoxMesh();
+            AZStd::vector<VertexHandle> original(whiteBox.mesh.n_vertices());
+            for (const auto vertex : MeshVertexHandles(whiteBox))
+            {
+                original[vertex.Index()] = AddVertex(*candidate, VertexPosition(whiteBox, vertex));
+                if (VertexIsHidden(whiteBox, vertex)) { HideVertex(*candidate, original[vertex.Index()]); }
+            }
+            for (auto& region : regions)
+            {
+                for (const auto vertex : region.m_vertices)
+                {
+                    const auto position = VertexPosition(whiteBox, vertex);
+                    const auto moved = inset ? region.m_center + (position - region.m_center) * (1.0f - amount)
+                                             : position + region.m_normal * amount;
+                    const auto added = AddVertex(*candidate, moved);
+                    region.m_top.emplace(vertex.Index(), added);
+                    if (VertexIsHidden(whiteBox, vertex)) { HideVertex(*candidate, added); }
+                }
+            }
+            struct RegionFace
+            {
+                AZStd::array<VertexHandle, 3> m_vertices;
+                AZStd::array<AZ::Vector2, 3> m_uvs;
+                FaceHandle m_source;
+                FaceHandle m_result;
+                size_t m_group = 0;
+                bool m_keepUv = true;
+                bool m_created = false; //!< Invented here, rather than carried over or translated.
+            };
+            AZStd::vector<RegionFace> faces;
+            for (const auto face : MeshFaceHandles(whiteBox))
+            {
+                if (sourceGroup[face.Index()] < 0) { return fail("Repair the mesh's polygon groups first."); }
+                RegionFace added{};
+                added.m_source = face;
+                added.m_group = static_cast<size_t>(sourceGroup[face.Index()]);
+                const auto halfedges = FaceHalfedgeHandles(whiteBox, face);
+                if (halfedges.size() != 3) { return fail("The mesh contains invalid triangles."); }
+                for (size_t i = 0; i < 3; ++i)
+                {
+                    const auto vertex = HalfedgeVertexHandleAtTip(whiteBox, halfedges[i]);
+                    added.m_vertices[i] = selected[face.Index()]
+                        ? regions[faceRegion[face.Index()]].m_top.find(vertex.Index())->second : original[vertex.Index()];
+                    added.m_uvs[i] = HalfedgeUV(whiteBox, halfedges[i]);
+                }
+                faces.push_back(added);
+            }
+            size_t groupCount = polygons.size();
+            for (const auto& region : regions)
+            {
+                for (const auto halfedge : region.m_border)
+                {
+                    const auto a = HalfedgeVertexHandleAtTail(whiteBox, halfedge);
+                    const auto b = HalfedgeVertexHandleAtTip(whiteBox, halfedge);
+                    const auto source = HalfedgeFaceHandle(whiteBox, halfedge);
+                    const AZStd::array<VertexHandle, 4> quad{
+                        original[a.Index()], original[b.Index()],
+                        region.m_top.find(b.Index())->second, region.m_top.find(a.Index())->second};
+                    for (size_t i = 1; i < 3; ++i)
+                    {
+                        RegionFace side{};
+                        side.m_vertices = {quad[0], quad[i], quad[i + 1]};
+                        side.m_source = source;
+                        side.m_group = groupCount;
+                        side.m_keepUv = false;
+                        side.m_created = true;
+                        faces.push_back(side);
+                    }
+                    ++groupCount;
+                }
+            }
+            // Only the side walls this operation invents. Everything else is either carried across
+            // untouched or translated rigidly, so its shape is not this operation's to vouch for -
+            // and refusing the whole extrude over a sliver that was already in the mesh leaves the
+            // user with nothing to act on.
+            for (const auto& face : faces)
+            {
+                if (!face.m_created)
+                {
+                    continue;
+                }
+                const auto& v = face.m_vertices;
+                const auto a = VertexPosition(*candidate, v[0]);
+                AZ::Vector3 normal;
+                if (!TryCalculateTriangleNormal(
+                        VertexPosition(*candidate, v[1]) - a, VertexPosition(*candidate, v[2]) - a, normal))
+                {
+                    return fail("The new side faces collapse at this amount. Move a little further.");
+                }
+            }
+            // Adjacent source triangles may not be listed in insertion order. Retry uninserted
+            // triangles until the connected fans are assembled; never duplicate vertices on failure.
+            size_t remaining = faces.size();
+            while (remaining)
+            {
+                const size_t before = remaining;
+                for (auto& face : faces)
+                {
+                    if (face.m_result.IsValid()) { continue; }
+                    const auto& v = face.m_vertices;
+                    const auto added = candidate->mesh.add_face(om_vh(v[0]), om_vh(v[1]), om_vh(v[2]));
+                    if (!added.is_valid()) { continue; }
+                    face.m_result = wb_fh(added);
+                    --remaining;
+                }
+                if (remaining == before) { return fail("This selection would create invalid face connections. The mesh was left unchanged."); }
+            }
+            PolygonPropertyHandle property;
+            candidate->mesh.get_property_handle(property, PolygonProps);
+            auto& mapping = candidate->mesh.property(property);
+            AZStd::vector<FaceHandlesInternal> groups(groupCount);
+            CalculateNormals(*candidate);
+            CalculatePlanarUVs(*candidate);
+            for (const auto& face : faces)
+            {
+                groups[face.m_group].push_back(om_fh(face.m_result));
+                SetFaceMaterial(*candidate, face.m_result, FaceMaterial(whiteBox, face.m_source));
+                SetFacePaintColor(*candidate, face.m_result, FacePaintColor(whiteBox, face.m_source));
+                if (face.m_keepUv)
+                {
+                    for (size_t i = 0; i < 3; ++i)
+                    {
+                        const auto& v = face.m_vertices;
+                        const auto edge = candidate->mesh.find_halfedge(om_vh(v[(i + 2) % 3]), om_vh(v[i]));
+                        candidate->mesh.set_texcoord2D(edge, face.m_uvs[i]);
+                    }
+                }
+            }
+            for (const auto& group : groups)
+            {
+                for (const auto face : group) { mapping[face] = group; }
+            }
+            for (size_t i = 0; i < polygons.size(); ++i)
+            {
+                if (selected[polygons[i].m_faceHandles.front().Index()]) { result.push_back(PolygonHandleFromInternal(groups[i])); }
+            }
+            if (preview)
+            {
+                *preview = result;
+                for (size_t i = polygons.size(); i < groups.size(); ++i)
+                {
+                    preview->push_back(PolygonHandleFromInternal(groups[i]));
+                }
+            }
+            RemoveIsolatedVertices(*candidate);
+            whiteBox.mesh = candidate->mesh;
+            return true;
+        }
+
         bool BevelEdges(
             WhiteBoxMesh& whiteBox, const EdgeHandles& edges, float width, int segments, AZStd::string& error, float profile)
         {

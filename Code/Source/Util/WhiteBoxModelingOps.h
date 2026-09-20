@@ -8,14 +8,15 @@
 
 #pragma once
 
-#include <AzCore/Component/EntityId.h>
+#include <AzCore/Component/ComponentBus.h>
 #include <AzCore/std/string/string.h>
+#include <WhiteBox/WhiteBoxToolApi.h>
 
 namespace WhiteBox
 {
-    //! The Transform-mode modeling operations (Bridge, Weld, Loop Cut, Bevel), factored out of the
-    //! White Box pane so the viewport cluster runs the same code rather than a second copy. Each takes
-    //! the component to act on and reports what to show the user; neither caller owns the logic.
+    //! The Transform-mode modeling operations (Extrude, Inset, Bridge, Weld, Loop Cut, Bevel),
+    //! factored out of the White Box pane so the viewport cluster and the floating windows run the same
+    //! code rather than a copy each. Each reports what to show the user; no caller owns the logic.
     namespace ModelingOps
     {
         //! What an operation did, for whichever surface invoked it to display.
@@ -25,14 +26,32 @@ namespace WhiteBox
             AZStd::string m_message; //!< The error when it failed, otherwise what just happened.
         };
 
-        //! Whether each operation would do anything with the current selection. The pane uses these to
-        //! enable its buttons and the cluster to disable its own, so the two agree on what is possible.
-        bool CanBridge(const AZ::EntityComponentIdPair& entityComponentIdPair);
-        bool CanWeld(const AZ::EntityComponentIdPair& entityComponentIdPair);
-        bool CanLoopCut(const AZ::EntityComponentIdPair& entityComponentIdPair);
-        bool CanBevel(const AZ::EntityComponentIdPair& entityComponentIdPair);
+        //! The Transform-mode selection, read once. A polygon handle owns a vector of face handles,
+        //! so a caller that asks several of the questions below - the viewport cluster asks five of
+        //! them every frame - copies far less than by letting each question fetch its own.
+        struct Selection
+        {
+            Api::PolygonHandles m_polygons;
+            Api::EdgeHandles m_edges;
+            Api::VertexHandles m_vertices;
+            bool m_editable = false;  //!< There is a component with a mesh to act on.
+            bool m_liveBevel = false; //!< A bevel is already live, so another cannot start.
+        };
+        Selection CurrentSelection(const AZ::EntityComponentIdPair& entityComponentIdPair);
+
+        //! Whether each operation would do anything with the given selection. Whichever surface offers
+        //! the operation uses these to enable its buttons, so what is clickable and what will actually
+        //! run are decided by the same code.
+        bool CanBridge(const Selection& selection);
+        bool CanWeld(const Selection& selection);
+        bool CanLoopCut(const Selection& selection);
+        bool CanBevel(const Selection& selection);
+        bool CanSelectEdgePattern(const Selection& selection);
+        //! A typed amount only applies to polygons. Edges extrude by dragging with the latch on.
+        bool CanExtrudeInset(const Selection& selection);
+
+        Result ExtrudeInset(const AZ::EntityComponentIdPair& pair, float amount, bool inset);
         bool HasLiveBevel(const AZ::EntityComponentIdPair& entityComponentIdPair);
-        bool CanSelectEdgePattern(const AZ::EntityComponentIdPair& entityComponentIdPair);
         //! Selection only: expands all current edge seeds, without baking or editing geometry.
         Result SelectEdgePattern(const AZ::EntityComponentIdPair& entityComponentIdPair, bool ring);
 

@@ -32,6 +32,7 @@ namespace WhiteBox
     class PaintMode;
     class WhiteBoxBevelWindow;
     class WhiteBoxWeldWindow;
+    class WhiteBoxExtrudeInsetWindow;
     class WhiteBoxShapeOptionsWindow;
     class WhiteBoxPaintWindow;
 
@@ -185,20 +186,27 @@ namespace WhiteBox
         AZ::Event<AzToolsFramework::ViewportUi::ButtonId>::Handler
             m_modeSelectionHandler;
 
-        //! The modeling cluster: Bridge / Weld / Loop Cut / Bevel, shown only while Transform mode is
-        //! active because that is the only mode whose selection they can act on. Created on entering
-        //! that mode and torn down on leaving it, so the viewport never carries buttons that do nothing.
+        //! The modeling cluster: Extrude / Inset / edge patterns / Bridge / Weld / Loop Cut / Bevel,
+        //! shown only while Transform mode is active because that is the only mode whose selection they
+        //! can act on. Created on entering that mode and torn down on leaving it, so the viewport never
+        //! carries buttons that do nothing.
         AzToolsFramework::ViewportUi::ClusterId m_modelingClusterId;
         AzToolsFramework::ViewportUi::ButtonId m_bridgeButtonId;
+        AzToolsFramework::ViewportUi::ButtonId m_transformExtrudeButtonId;
+        AzToolsFramework::ViewportUi::ButtonId m_transformInsetButtonId;
         AzToolsFramework::ViewportUi::ButtonId m_weldButtonId;
         AzToolsFramework::ViewportUi::ButtonId m_loopCutButtonId;
         AzToolsFramework::ViewportUi::ButtonId m_bevelButtonId;
         AzToolsFramework::ViewportUi::ButtonId m_edgeLoopButtonId;
         AzToolsFramework::ViewportUi::ButtonId m_edgeRingButtonId;
         AZ::Event<AzToolsFramework::ViewportUi::ButtonId>::Handler m_modelingHandler;
+        //! Last pushed enable/latch state packed into a word, so the per-frame refresh only talks to
+        //! the widget when one of those answers actually changes.
+        AZStd::optional<AZ::u32> m_modelingClusterState;
 
         QPointer<WhiteBoxBevelWindow> m_bevelWindow;
         QPointer<WhiteBoxWeldWindow> m_weldWindow;
+        QPointer<WhiteBoxExtrudeInsetWindow> m_extrudeInsetWindow;
 
         //! The Draw Shape primitive switcher: one entry per DrawShapeType, shown along the bottom of
         //! the viewport while Draw Shape mode is active. A cluster, so the active primitive gets the same
@@ -260,7 +268,8 @@ namespace WhiteBox
         void CreateModelingCluster();
         void RemoveModelingCluster();
         //! Enable each modeling button according to what the current selection allows, so a disabled
-        //! button says "not with this selection" before it is clicked rather than after.
+        //! button says "not with this selection" before it is clicked rather than after, and highlight
+        //! whichever drag latch is armed.
         void RefreshModelingClusterState();
     };
 

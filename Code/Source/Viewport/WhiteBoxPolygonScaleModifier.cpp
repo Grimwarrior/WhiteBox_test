@@ -6,6 +6,7 @@
  *
  */
 
+#include "Util/WhiteBoxEditorUtil.h"
 #include "EditorWhiteBoxPolygonModifierBus.h"
 #include "SubComponentModes/EditorWhiteBoxDefaultModeBus.h"
 #include "Util/WhiteBoxMathUtil.h"
@@ -65,7 +66,7 @@ namespace WhiteBox
             for (const auto& vertexHandle : borderVertexHandles)
             {
                 auto manipulator = AzToolsFramework::LinearManipulator::MakeShared(
-                    AzToolsFramework::WorldFromLocalWithUniformScale(m_entityComponentIdPair.GetEntityId()));
+                    EditorSpaceFromLocal(m_entityComponentIdPair));
 
                 const AZ::Vector3 vertexPosition = Api::VertexPosition(*whiteBox, vertexHandle);
                 const AZ::Vector3 axis = (vertexPosition - midpoint).GetNormalized();
