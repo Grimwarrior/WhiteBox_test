@@ -5,6 +5,7 @@
     <file alias="Bridge.svg">../../../Assets/Editor/Icons/Toolbar/Bridge.svg</file>
     <file alias="Weld.svg">../../../Assets/Editor/Icons/Toolbar/Weld.svg</file>
     <file alias="FillHole.svg">../../../Assets/Editor/Icons/Toolbar/FillHole.svg</file>
+    <file alias="DeletePolygon.svg">../../../Assets/Editor/Icons/Toolbar/DeletePolygon.svg</file>
     <file alias="LoopCut.svg">../../../Assets/Editor/Icons/Toolbar/LoopCut.svg</file>
     <file alias="Knife.svg">../../../Assets/Editor/Icons/Toolbar/Knife.svg</file>
     <file alias="Bevel.svg">../../../Assets/Editor/Icons/Toolbar/Bevel.svg</file>

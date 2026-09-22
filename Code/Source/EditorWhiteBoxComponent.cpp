@@ -537,6 +537,7 @@ namespace WhiteBox
                 ->Field("EdgesOnly", &EditorWhiteBoxComponent::m_edgesOnly)
                 ->Field("UseGlobalTint", &EditorWhiteBoxComponent::m_useGlobalTint)
                 ->Field("MaterialOverride", &EditorWhiteBoxComponent::m_materialOverrideAssetId)
+                ->Field("DefaultMaterialAsset", &EditorWhiteBoxComponent::m_defaultMaterialAsset)
                 ->Field("Voxel", &EditorWhiteBoxComponent::m_voxel)
                 ->Field("Boolean", &EditorWhiteBoxComponent::m_boolean)
                 // Persist whether this entity is an active global-boolean target so the composed
@@ -589,6 +590,11 @@ namespace WhiteBox
 
                     ->ClassElement(AZ::Edit::ClassElements::Group, "Material / Display")
                     ->Attribute(AZ::Edit::Attributes::AutoExpand, false)
+                    ->DataElement(
+                        AZ::Edit::UIHandlers::Default, &EditorWhiteBoxComponent::m_defaultMaterialAsset,
+                        "Default Material",
+                        "Default material for this entity. Clear to use the built-in White Box material.")
+                    ->Attribute(AZ::Edit::Attributes::ChangeNotify, &EditorWhiteBoxComponent::OnDefaultMaterialChange)
                     ->DataElement(
                         AZ::Edit::UIHandlers::CheckBox, &EditorWhiteBoxComponent::m_useGlobalTint, "Use Global Tint",
                         "Render every layer with the material tint below. Turn off to let each layer use its own.")
@@ -712,6 +718,9 @@ namespace WhiteBox
         m_material.m_materialAsset = AZ::Data::Asset<AZ::RPI::MaterialAsset>(
             m_materialOverrideAssetId, azrtti_typeid<AZ::RPI::MaterialAsset>());
         m_material.m_materialAsset.SetAutoLoadBehavior(AZ::Data::AssetLoadBehavior::PreLoad);
+        // Data saved before the card carried this control has no mirror stored, so derive it here
+        // rather than trusting what was serialized.
+        m_defaultMaterialAsset = m_material.m_materialAsset;
         const AZ::EntityId entityId = GetEntityId();
         const AZ::EntityComponentIdPair entityComponentIdPair{entityId, GetId()};
 

@@ -4186,6 +4186,78 @@ namespace WhiteBox
             return true;
         }
 
+        bool DeleteFaces(WhiteBoxMesh& whiteBox, const FaceHandles& selection, AZStd::string& error)
+        {
+            AZ_PROFILE_FUNCTION(AzToolsFramework);
+
+            error.clear();
+            const auto fail = [&error](const char* message)
+            {
+                error = message;
+                return false;
+            };
+            if (selection.empty())
+            {
+                return fail("Select what to delete in Transform mode first.");
+            }
+
+            const auto allFaces = MeshFaceHandles(whiteBox);
+            FaceHandles faces;
+            faces.reserve(selection.size());
+            for (const auto face : selection)
+            {
+                if (!face.IsValid() || AZStd::find(allFaces.begin(), allFaces.end(), face) == allFaces.end())
+                {
+                    return fail("The selection is stale. Make the selection again.");
+                }
+                // A polygon selection can name the same triangle twice when two of them overlap.
+                if (AZStd::find(faces.begin(), faces.end(), face) == faces.end())
+                {
+                    faces.push_back(face);
+                }
+            }
+            if (faces.size() >= allFaces.size())
+            {
+                return fail(
+                    "That would delete every face and leave only loose vertices. Keep at least one, or reset the "
+                    "White Box mesh instead.");
+            }
+
+            auto candidate = CloneMesh(whiteBox);
+            // RemoveFaces keeps the vertices and drops only the edges that are left without a face,
+            // which is what Blender's delete-faces does and what makes the opening refillable.
+            RemoveFaces(*candidate, faces);
+            CalculateNormals(*candidate);
+            whiteBox.mesh = candidate->mesh;
+            return true;
+        }
+
+        bool DeletePolygons(WhiteBoxMesh& whiteBox, const PolygonHandles& polygons, AZStd::string& error)
+        {
+            AZ_PROFILE_FUNCTION(AzToolsFramework);
+
+            error.clear();
+            if (polygons.empty())
+            {
+                error = "Select one or more polygons in Transform mode.";
+                return false;
+            }
+
+            const auto allPolygons = MeshPolygonHandles(whiteBox);
+            FaceHandles faces;
+            for (const auto& polygon : polygons)
+            {
+                if (polygon.m_faceHandles.empty() ||
+                    AZStd::find(allPolygons.begin(), allPolygons.end(), polygon) == allPolygons.end())
+                {
+                    error = "The selection is stale. Select the polygons again.";
+                    return false;
+                }
+                faces.insert(faces.end(), polygon.m_faceHandles.begin(), polygon.m_faceHandles.end());
+            }
+            return DeleteFaces(whiteBox, faces, error);
+        }
+
         bool WeldVertices(
             WhiteBoxMesh& whiteBox, const VertexHandles& vertices, const bool toLastSelected, AZStd::string& error)
         {

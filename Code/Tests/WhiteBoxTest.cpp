@@ -4226,4 +4226,68 @@ namespace UnitTest
             EXPECT_TRUE(Api::FaceNormal(*mesh, face).IsClose(outward, 0.001f));
         }
     }
+
+    TEST_F(WhiteBoxTestFixture, DeletePolygonKeepsEveryVertexAndDeleteFacesWorksOneTriangleAtATime)
+    {
+        namespace Api = WhiteBox::Api;
+        // Two quads side by side sharing one edge. Deleting the right one strands its two outer
+        // vertices, which is what makes this worth checking: they must survive the delete.
+        auto mesh = Api::CreateWhiteBoxMesh();
+        const auto a = Api::AddVertex(*mesh, AZ::Vector3(0.0f, 0.0f, 0.0f));
+        const auto b = Api::AddVertex(*mesh, AZ::Vector3(0.0f, 0.0f, 1.0f));
+        const auto c = Api::AddVertex(*mesh, AZ::Vector3(1.0f, 0.0f, 0.0f));
+        const auto d = Api::AddVertex(*mesh, AZ::Vector3(1.0f, 0.0f, 1.0f));
+        const auto e = Api::AddVertex(*mesh, AZ::Vector3(2.0f, 0.0f, 0.0f));
+        const auto f = Api::AddVertex(*mesh, AZ::Vector3(2.0f, 0.0f, 1.0f));
+        Api::AddQuadPolygon(*mesh, a, c, d, b);
+        Api::AddQuadPolygon(*mesh, c, e, f, d);
+        Api::CalculateNormals(*mesh);
+        ASSERT_EQ(Api::MeshVertexHandles(*mesh).size(), 6);
+        ASSERT_EQ(Api::MeshFaceHandles(*mesh).size(), 4);
+
+        const auto polygons = Api::MeshPolygonHandles(*mesh);
+        ASSERT_EQ(polygons.size(), 2);
+        const auto holds = [&mesh](const Api::PolygonHandle& polygon, const Api::VertexHandle vertex)
+        {
+            const auto corners = Api::PolygonBorderVertexHandlesFlattened(*mesh, polygon);
+            return AZStd::find(corners.begin(), corners.end(), vertex) != corners.end();
+        };
+        const auto right = holds(polygons[0], e) ? polygons[0] : polygons[1];
+        const auto left = holds(polygons[0], e) ? polygons[1] : polygons[0];
+        ASSERT_TRUE(holds(right, e));
+        ASSERT_TRUE(holds(left, a));
+
+        AZStd::string error;
+        Api::WhiteBoxMeshStream before;
+        ASSERT_TRUE(Api::WriteMesh(*mesh, before));
+        const auto unchanged = [&mesh, &before]()
+        {
+            Api::WhiteBoxMeshStream after;
+            return Api::WriteMesh(*mesh, after) && after == before;
+        };
+        EXPECT_FALSE(Api::DeletePolygons(*mesh, {}, error));
+        EXPECT_FALSE(error.empty());
+        EXPECT_TRUE(unchanged());
+        EXPECT_FALSE(Api::DeletePolygons(*mesh, {Api::PolygonHandle{{Api::FaceHandle{999999}}}}, error));
+        EXPECT_FALSE(error.empty());
+        EXPECT_TRUE(unchanged());
+        // Emptying the mesh would leave nothing but loose vertices, so it is refused.
+        EXPECT_FALSE(Api::DeletePolygons(*mesh, polygons, error));
+        EXPECT_FALSE(error.empty());
+        EXPECT_TRUE(unchanged());
+
+        ASSERT_TRUE(Api::DeletePolygons(*mesh, {right}, error)) << error.c_str();
+        EXPECT_EQ(Api::MeshFaceHandles(*mesh).size(), 2);
+        // The point of the operation: the faces go, every vertex stays, including the two that are
+        // now attached to nothing at all.
+        EXPECT_EQ(Api::MeshVertexHandles(*mesh).size(), 6);
+        EXPECT_EQ(Api::MeshPolygonHandles(*mesh).size(), 1);
+
+        // One triangle of the remaining quad, leaving its partner in place.
+        const auto remaining = Api::MeshPolygonHandles(*mesh).front();
+        ASSERT_EQ(remaining.m_faceHandles.size(), 2);
+        ASSERT_TRUE(Api::DeleteFaces(*mesh, {remaining.m_faceHandles.front()}, error)) << error.c_str();
+        EXPECT_EQ(Api::MeshFaceHandles(*mesh).size(), 1);
+        EXPECT_EQ(Api::MeshVertexHandles(*mesh).size(), 6);
+    }
 }

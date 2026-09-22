@@ -872,6 +872,16 @@ namespace WhiteBox
         bool FillHole(
             WhiteBoxMesh& whiteBox, const EdgeHandles& edges, AZStd::string& error, PolygonHandle* filled = nullptr);
 
+        //! Delete the selected polygons, keeping their vertices so the opening can be refilled or
+        //! rebuilt by hand. Edges left without a face on either side go with them, matching the
+        //! delete-faces behaviour in other modelling tools.
+        //! Transactional: a failure returns a message and leaves the mesh unchanged.
+        bool DeletePolygons(WhiteBoxMesh& whiteBox, const PolygonHandles& polygons, AZStd::string& error);
+
+        //! As DeletePolygons, but at triangle granularity, so one triangle of a quad can go while
+        //! its partner stays. Duplicate handles in the selection are ignored.
+        bool DeleteFaces(WhiteBoxMesh& whiteBox, const FaceHandles& selection, AZStd::string& error);
+
         //! Merge selected vertices at their average position or the last selected vertex.
         //! Collapsed triangles are removed; surviving face properties and UVs are retained.
         //! Connected corner collapses may leave open face patches meeting at the merged point.

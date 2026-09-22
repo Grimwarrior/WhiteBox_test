@@ -44,6 +44,7 @@ namespace WhiteBox
         //! run are decided by the same code.
         bool CanBridge(const Selection& selection);
         bool CanFillHole(const Selection& selection);
+        bool CanDeletePolygon(const Selection& selection);
         bool CanWeld(const Selection& selection);
         bool CanLoopCut(const Selection& selection);
         bool CanBevel(const Selection& selection);
@@ -60,6 +61,8 @@ namespace WhiteBox
         Result Bridge(const AZ::EntityComponentIdPair& entityComponentIdPair);
         //! Close the single planar hole bordered by the selected open edges, and select the new cap.
         Result FillHole(const AZ::EntityComponentIdPair& entityComponentIdPair);
+        //! Delete the selected polygons but keep their vertices, so the opening can be refilled.
+        Result DeletePolygon(const AZ::EntityComponentIdPair& entityComponentIdPair);
         //! Merge the selected vertices into one, at the selection centre or at the last one selected.
         Result Weld(const AZ::EntityComponentIdPair& entityComponentIdPair, bool atLastVertex);
         //! Enter the interactive loop cut. Switches to Transform sub-mode first if something else is active.

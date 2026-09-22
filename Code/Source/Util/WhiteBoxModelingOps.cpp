@@ -142,6 +142,11 @@ namespace WhiteBox::ModelingOps
         return selection.m_editable && !selection.m_edges.empty();
     }
 
+    bool CanDeletePolygon(const Selection& selection)
+    {
+        return selection.m_editable && !selection.m_polygons.empty();
+    }
+
     bool CanWeld(const Selection& selection)
     {
         return selection.m_editable && selection.m_vertices.size() >= 2;
@@ -211,6 +216,31 @@ namespace WhiteBox::ModelingOps
             undoBatch.MarkEntityDirty(entityComponentIdPair.GetEntityId());
         }
         return { true, "Hole filled. Undo restores the open border." };
+    }
+
+    Result DeletePolygon(const AZ::EntityComponentIdPair& entityComponentIdPair)
+    {
+        EditorWhiteBoxComponent* component = EditableComponentFor(entityComponentIdPair);
+        if (component == nullptr)
+        {
+            return { false, "No editable White Box mesh." };
+        }
+
+        const Api::PolygonHandles polygons = SelectedPolygons(entityComponentIdPair);
+
+        AZStd::string error;
+        {
+            AzToolsFramework::ScopedUndoBatch undoBatch("White Box Delete Polygon");
+            if (!Api::DeletePolygons(*component->GetWhiteBoxMesh(), polygons, error))
+            {
+                return { false, error };
+            }
+            CommitMeshEdit(*component, entityComponentIdPair);
+            undoBatch.MarkEntityDirty(entityComponentIdPair.GetEntityId());
+        }
+        return { true, AZStd::string::format(
+            "%zu polygon%s deleted, vertices kept. Undo restores the faces.",
+            polygons.size(), polygons.size() == 1 ? "" : "s") };
     }
 
     Result Weld(const AZ::EntityComponentIdPair& entityComponentIdPair, const bool atLastVertex)

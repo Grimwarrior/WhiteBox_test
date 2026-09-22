@@ -858,6 +858,8 @@ namespace WhiteBox
         AZ::Crc32 BooleanGroupVisibility() const;
 
         void OnMaterialChange();
+        //! Default Material picked on the card: push it through the same path the pane used.
+        void OnDefaultMaterialChange();
         //! Open the dockable White Box pane (the component card's only button).
         AZ::Crc32 OnOpenPane();
         AZ::Crc32 AssetVisibility() const;
@@ -934,6 +936,10 @@ namespace WhiteBox
         bool m_edgesOnly = false; //!< When set, hide the solid render mesh and draw only the mesh edges.
         bool m_useGlobalTint = true; //!< When set, every layer renders with the global material tint; otherwise each layer uses its own tint.
         AZ::Data::AssetId m_materialOverrideAssetId; //!< External material asset override (invalid = built-in material).
+        //! What the card's Default Material picker binds to. The asset id above stays the value the
+        //! render path and the Pane API read; this mirror is re-derived from it on Activate, so a
+        //! change made through either surface shows up on the other and the two cannot drift.
+        AZ::Data::Asset<AZ::RPI::MaterialAsset> m_defaultMaterialAsset;
         FacePaintSettings m_facePaintSettings; //!< Transient brush settings, not scene data.
         //! Latched Extrude / Inset, transient like the brush settings above.
         bool m_stickyExtrude = false;

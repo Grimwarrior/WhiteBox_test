@@ -1395,6 +1395,7 @@ namespace WhiteBox
         m_bridgeButtonId = RegisterClusterButton(m_modelingClusterId, ":/WhiteBox/Icons/Bridge.svg");
         m_weldButtonId = RegisterClusterButton(m_modelingClusterId, ":/WhiteBox/Icons/Weld.svg");
         m_fillHoleButtonId = RegisterClusterButton(m_modelingClusterId, ":/WhiteBox/Icons/FillHole.svg");
+        m_deletePolygonButtonId = RegisterClusterButton(m_modelingClusterId, ":/WhiteBox/Icons/DeletePolygon.svg");
         m_loopCutButtonId = RegisterClusterButton(m_modelingClusterId, ":/WhiteBox/Icons/LoopCut.svg");
         m_knifeButtonId = RegisterClusterButton(m_modelingClusterId, ":/WhiteBox/Icons/Knife.svg");
         m_bevelButtonId = RegisterClusterButton(m_modelingClusterId, ":/WhiteBox/Icons/Bevel.svg");
@@ -1412,6 +1413,7 @@ namespace WhiteBox
         tooltip(m_bridgeButtonId, WhiteboxModelingClusterBridgeTooltip);
         tooltip(m_weldButtonId, WhiteboxModelingClusterWeldTooltip);
         tooltip(m_fillHoleButtonId, WhiteboxModelingClusterFillHoleTooltip);
+        tooltip(m_deletePolygonButtonId, WhiteboxModelingClusterDeletePolygonTooltip);
         tooltip(m_loopCutButtonId, WhiteboxModelingClusterLoopCutTooltip);
         tooltip(m_knifeButtonId, "Knife: click surface points to cut; Enter applies, Esc cancels");
         tooltip(m_bevelButtonId, WhiteboxModelingClusterBevelTooltip);
@@ -1471,6 +1473,10 @@ namespace WhiteBox
                 else if (buttonId == m_fillHoleButtonId)
                 {
                     result = ModelingOps::FillHole(pair);
+                }
+                else if (buttonId == m_deletePolygonButtonId)
+                {
+                    result = ModelingOps::DeletePolygon(pair);
                 }
                 else if (buttonId == m_weldButtonId)
                 {
@@ -1597,6 +1603,7 @@ namespace WhiteBox
         const bool bridge = ModelingOps::CanBridge(selection);
         const bool weld = ModelingOps::CanWeld(selection);
         const bool fillHole = ModelingOps::CanFillHole(selection);
+        const bool deletePolygon = ModelingOps::CanDeletePolygon(selection);
         const bool loopCut = ModelingOps::CanLoopCut(selection);
         const bool bevel = ModelingOps::CanBevel(selection) || selection.m_liveBevel;
         bool knife = false;
@@ -1608,7 +1615,7 @@ namespace WhiteBox
         // Nothing below touches the widget unless one of those answers moved.
         const AZ::u32 state = (static_cast<AZ::u32>(latch) << 5) | (edgeSelection ? 1u : 0u) |
             (bridge ? 2u : 0u) | (weld ? 4u : 0u) | (loopCut ? 8u : 0u) | (bevel ? 16u : 0u) | (knife ? 128u : 0u) |
-            (fillHole ? 256u : 0u);
+            (fillHole ? 256u : 0u) | (deletePolygon ? 512u : 0u);
         if (m_modelingClusterState == state)
         {
             return;
@@ -1647,6 +1654,7 @@ namespace WhiteBox
         enable(m_bridgeButtonId, bridge);
         enable(m_weldButtonId, weld);
         enable(m_fillHoleButtonId, fillHole);
+        enable(m_deletePolygonButtonId, deletePolygon);
         enable(m_loopCutButtonId, loopCut);
         enable(m_knifeButtonId, loopCut);
         enable(m_bevelButtonId, bevel);
