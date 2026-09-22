@@ -68,6 +68,8 @@ namespace WhiteBox
             "Bridge — connect two selected boundary edges, or two facing polygons";
         constexpr static const char* const WhiteboxModelingClusterWeldTooltip =
             "Weld — choose how to merge two or more selected vertices";
+        constexpr static const char* const WhiteboxModelingClusterFillHoleTooltip =
+            "Fill Hole — close the flat hole bordered by the selected open edges";
         constexpr static const char* const WhiteboxModelingClusterLoopCutTooltip =
             "Loop Cut — hover a face or edge, wheel for count, click to cut";
         constexpr static const char* const WhiteboxModelingClusterBevelTooltip =
@@ -195,7 +197,9 @@ namespace WhiteBox
         AzToolsFramework::ViewportUi::ButtonId m_transformExtrudeButtonId;
         AzToolsFramework::ViewportUi::ButtonId m_transformInsetButtonId;
         AzToolsFramework::ViewportUi::ButtonId m_weldButtonId;
+        AzToolsFramework::ViewportUi::ButtonId m_fillHoleButtonId;
         AzToolsFramework::ViewportUi::ButtonId m_loopCutButtonId;
+        AzToolsFramework::ViewportUi::ButtonId m_knifeButtonId;
         AzToolsFramework::ViewportUi::ButtonId m_bevelButtonId;
         AzToolsFramework::ViewportUi::ButtonId m_edgeLoopButtonId;
         AzToolsFramework::ViewportUi::ButtonId m_edgeRingButtonId;

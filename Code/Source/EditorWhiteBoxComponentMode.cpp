@@ -1394,7 +1394,9 @@ namespace WhiteBox
         m_edgeRingButtonId = RegisterClusterButton(m_modelingClusterId, ":/WhiteBox/Icons/EdgeRing.svg");
         m_bridgeButtonId = RegisterClusterButton(m_modelingClusterId, ":/WhiteBox/Icons/Bridge.svg");
         m_weldButtonId = RegisterClusterButton(m_modelingClusterId, ":/WhiteBox/Icons/Weld.svg");
+        m_fillHoleButtonId = RegisterClusterButton(m_modelingClusterId, ":/WhiteBox/Icons/FillHole.svg");
         m_loopCutButtonId = RegisterClusterButton(m_modelingClusterId, ":/WhiteBox/Icons/LoopCut.svg");
+        m_knifeButtonId = RegisterClusterButton(m_modelingClusterId, ":/WhiteBox/Icons/Knife.svg");
         m_bevelButtonId = RegisterClusterButton(m_modelingClusterId, ":/WhiteBox/Icons/Bevel.svg");
 
         const auto tooltip = [this](const ViewportUi::ButtonId buttonId, const char* text)
@@ -1409,7 +1411,9 @@ namespace WhiteBox
         tooltip(m_edgeRingButtonId, "Select Edge Ring: cross opposite edges of quads");
         tooltip(m_bridgeButtonId, WhiteboxModelingClusterBridgeTooltip);
         tooltip(m_weldButtonId, WhiteboxModelingClusterWeldTooltip);
+        tooltip(m_fillHoleButtonId, WhiteboxModelingClusterFillHoleTooltip);
         tooltip(m_loopCutButtonId, WhiteboxModelingClusterLoopCutTooltip);
+        tooltip(m_knifeButtonId, "Knife: click surface points to cut; Enter applies, Esc cancels");
         tooltip(m_bevelButtonId, WhiteboxModelingClusterBevelTooltip);
 
         m_modelingHandler = AZ::Event<ViewportUi::ButtonId>::Handler(
@@ -1464,6 +1468,10 @@ namespace WhiteBox
                 {
                     result = ModelingOps::Bridge(pair);
                 }
+                else if (buttonId == m_fillHoleButtonId)
+                {
+                    result = ModelingOps::FillHole(pair);
+                }
                 else if (buttonId == m_weldButtonId)
                 {
                     if (m_bevelWindow)
@@ -1484,6 +1492,13 @@ namespace WhiteBox
                         m_weldWindow = new WhiteBoxWeldWindow(pair, mainWindow);
                     }
                     m_weldWindow->ShowNearCursor();
+                    result = {true, {}};
+                }
+                else if (buttonId == m_knifeButtonId)
+                {
+                    if (m_bevelWindow) { m_bevelWindow->Dismiss(); m_bevelWindow.clear(); }
+                    if (m_weldWindow) { m_weldWindow->Dismiss(); m_weldWindow.clear(); }
+                    EditorWhiteBoxTransformModeRequestBus::Event(pair, &EditorWhiteBoxTransformModeRequests::BeginKnife);
                     result = {true, {}};
                 }
                 else if (buttonId == m_loopCutButtonId)
@@ -1581,14 +1596,19 @@ namespace WhiteBox
         const bool edgeSelection = ModelingOps::CanSelectEdgePattern(selection);
         const bool bridge = ModelingOps::CanBridge(selection);
         const bool weld = ModelingOps::CanWeld(selection);
+        const bool fillHole = ModelingOps::CanFillHole(selection);
         const bool loopCut = ModelingOps::CanLoopCut(selection);
         const bool bevel = ModelingOps::CanBevel(selection) || selection.m_liveBevel;
+        bool knife = false;
+        EditorWhiteBoxTransformModeRequestBus::EventResult(
+            knife, pair, &EditorWhiteBoxTransformModeRequests::IsKnifeActive);
 
         // This runs every frame, because selection changes arrive through the manipulator manager and
         // the latch is armed from a floating window - neither goes through this class's mouse handler.
         // Nothing below touches the widget unless one of those answers moved.
         const AZ::u32 state = (static_cast<AZ::u32>(latch) << 5) | (edgeSelection ? 1u : 0u) |
-            (bridge ? 2u : 0u) | (weld ? 4u : 0u) | (loopCut ? 8u : 0u) | (bevel ? 16u : 0u);
+            (bridge ? 2u : 0u) | (weld ? 4u : 0u) | (loopCut ? 8u : 0u) | (bevel ? 16u : 0u) | (knife ? 128u : 0u) |
+            (fillHole ? 256u : 0u);
         if (m_modelingClusterState == state)
         {
             return;
@@ -1605,7 +1625,13 @@ namespace WhiteBox
         // take its selection from whatever the next drag lands on.
         enable(m_transformExtrudeButtonId, true);
         enable(m_transformInsetButtonId, true);
-        if (latch != TransformModelingLatch::None)
+        if (knife)
+        {
+            ViewportUi::ViewportUiRequestBus::Event(
+                ViewportUi::DefaultViewportId, &ViewportUi::ViewportUiRequestBus::Events::SetClusterActiveButton,
+                m_modelingClusterId, m_knifeButtonId);
+        }
+        else if (latch != TransformModelingLatch::None)
         {
             ViewportUi::ViewportUiRequestBus::Event(
                 ViewportUi::DefaultViewportId, &ViewportUi::ViewportUiRequestBus::Events::SetClusterActiveButton,
@@ -1620,7 +1646,9 @@ namespace WhiteBox
         enable(m_edgeRingButtonId, edgeSelection);
         enable(m_bridgeButtonId, bridge);
         enable(m_weldButtonId, weld);
+        enable(m_fillHoleButtonId, fillHole);
         enable(m_loopCutButtonId, loopCut);
+        enable(m_knifeButtonId, loopCut);
         enable(m_bevelButtonId, bevel);
     }
 

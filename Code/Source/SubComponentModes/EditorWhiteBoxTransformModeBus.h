@@ -50,6 +50,8 @@ namespace WhiteBox
         virtual void RefreshManipulatorSpace() {}
         virtual void SetSelectedPolygons(const Api::PolygonHandles& /*polygons*/) {}
         virtual void BeginLoopCut() {}
+        virtual void BeginKnife() {}
+        virtual bool IsKnifeActive() const { return false; }
         //! Expand the current edge selection. False selects loops, true selects rings.
         virtual bool ExpandEdgeSelection(bool /*ring*/) { return false; }
 

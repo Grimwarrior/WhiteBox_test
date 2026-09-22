@@ -3899,6 +3899,293 @@ namespace WhiteBox
             return true;
         }
 
+        // The outline is scaled to unit extent before clipping, so both thresholds are absolute.
+        static constexpr float EarMinimumTurn = 1e-10f;
+        static constexpr float PlanarTolerance = 1e-3f;
+
+        // Ear clipping in the hole's own plane, so concave outlines fill without adding vertices.
+        // Indices address the caller's border; an outline that crosses itself runs out of ears and
+        // is reported rather than filled with overlapping triangles.
+        static bool TriangulateLoop(
+            const AZStd::vector<AZ::Vector2>& points, AZStd::vector<AZStd::array<size_t, 3>>& triangles)
+        {
+            const size_t count = points.size();
+            if (count < 3)
+            {
+                return false;
+            }
+            const auto turn = [&points](const size_t a, const size_t b, const size_t c)
+            {
+                const auto edge0 = points[b] - points[a];
+                const auto edge1 = points[c] - points[a];
+                return edge0.GetX() * edge1.GetY() - edge0.GetY() * edge1.GetX();
+            };
+
+            AZStd::vector<size_t> remaining;
+            remaining.reserve(count);
+            for (size_t i = 0; i < count; ++i)
+            {
+                remaining.push_back(i);
+            }
+            triangles.clear();
+            triangles.reserve(count - 2);
+            const auto corner = [&remaining](const size_t i)
+            {
+                return AZStd::array<size_t, 3>{{remaining[(i + remaining.size() - 1) % remaining.size()],
+                                                remaining[i], remaining[(i + 1) % remaining.size()]}};
+            };
+            while (remaining.size() > 3)
+            {
+                size_t chosen = remaining.size();
+                float chosenQuality = -1.0f;
+                for (size_t i = 0; i < remaining.size(); ++i)
+                {
+                    const auto ear = corner(i);
+                    const float area = turn(ear[0], ear[1], ear[2]);
+                    if (area <= EarMinimumTurn)
+                    {
+                        continue; // a reflex or collinear corner is never an ear
+                    }
+                    // Only a corner with no other corner inside it can be cut off. Corners exactly
+                    // on the candidate's edges count as inside, so an ear never spans the border.
+                    bool occupied = false;
+                    for (const size_t other : remaining)
+                    {
+                        if (other == ear[0] || other == ear[1] || other == ear[2])
+                        {
+                            continue;
+                        }
+                        if (turn(ear[0], ear[1], other) >= 0.0f && turn(ear[1], ear[2], other) >= 0.0f &&
+                            turn(ear[2], ear[0], other) >= 0.0f)
+                        {
+                            occupied = true;
+                            break;
+                        }
+                    }
+                    if (occupied)
+                    {
+                        continue;
+                    }
+                    // Take the squattest ear rather than the first one found. A border that runs
+                    // straight through a vertex - what a hole through a grid of quads leaves behind -
+                    // has corners that can never be ears themselves, and clipping greedily around
+                    // them strands them in a final sliver with no area.
+                    const float spread = (points[ear[1]] - points[ear[0]]).GetLengthSq() +
+                        (points[ear[2]] - points[ear[1]]).GetLengthSq() +
+                        (points[ear[0]] - points[ear[2]]).GetLengthSq();
+                    if (const float quality = area / spread; quality > chosenQuality)
+                    {
+                        chosenQuality = quality;
+                        chosen = i;
+                    }
+                }
+                if (chosen == remaining.size())
+                {
+                    return false;
+                }
+                triangles.push_back(corner(chosen));
+                remaining.erase(remaining.begin() + static_cast<ptrdiff_t>(chosen));
+            }
+            triangles.push_back({{remaining[0], remaining[1], remaining[2]}});
+            return true;
+        }
+
+        bool FillHole(WhiteBoxMesh& whiteBox, const EdgeHandles& edges, AZStd::string& error, PolygonHandle* filled)
+        {
+            AZ_PROFILE_FUNCTION(AzToolsFramework);
+
+            error.clear();
+            const auto fail = [&error](const char* message)
+            {
+                error = message;
+                return false;
+            };
+            if (edges.empty())
+            {
+                return fail("Select an edge on the hole's border in Transform mode.");
+            }
+
+            const auto allEdges = MeshEdgeHandles(whiteBox);
+            for (const auto edge : edges)
+            {
+                if (!edge.IsValid() || AZStd::find(allEdges.begin(), allEdges.end(), edge) == allEdges.end())
+                {
+                    return fail("The selection is stale. Select the hole's border edge again.");
+                }
+                // Exactly one face, so a loose edge is turned away here rather than later, when the
+                // face to take the material from is read.
+                if (const auto faces = EdgeFaceHandles(whiteBox, edge); faces.size() != 1)
+                {
+                    return fail(
+                        faces.empty()
+                            ? "The selection includes a loose edge with no face on either side of it."
+                            : "Fill Hole needs the open border of a hole. One of the selected edges already has a "
+                              "face on both sides.");
+                }
+            }
+
+            // In OpenMesh the face-less halfedge of a border edge is linked into its own hole, so
+            // following it around returns the border in the direction the filling faces need.
+            HalfedgeHandle start;
+            for (const auto side : {EdgeHalfedge::First, EdgeHalfedge::Second})
+            {
+                const auto halfedge = EdgeHalfedgeHandle(whiteBox, edges[0], side);
+                if (halfedge.IsValid() && HalfedgeIsBoundary(whiteBox, halfedge))
+                {
+                    start = halfedge;
+                    break;
+                }
+            }
+            if (!start.IsValid())
+            {
+                return fail("Could not find the open side of the selected edge.");
+            }
+
+            VertexHandles border;
+            EdgeHandles borderEdges;
+            for (auto halfedge = start;;)
+            {
+                border.push_back(HalfedgeVertexHandleAtTail(whiteBox, halfedge));
+                borderEdges.push_back(HalfedgeEdgeHandle(whiteBox, halfedge));
+                halfedge = HalfedgeHandleNext(whiteBox, halfedge);
+                if (!halfedge.IsValid() || border.size() > allEdges.size())
+                {
+                    return fail("The border around the selected edge does not close.");
+                }
+                if (halfedge == start)
+                {
+                    break;
+                }
+            }
+            if (border.size() < 3)
+            {
+                return fail("A hole needs at least three border edges before it can be filled.");
+            }
+            for (const auto edge : edges)
+            {
+                if (AZStd::find(borderEdges.begin(), borderEdges.end(), edge) == borderEdges.end())
+                {
+                    return fail("The selected edges border more than one hole. Select edges from a single hole.");
+                }
+            }
+            // A border that visits a vertex twice pinches there; filling it would leave that vertex
+            // non-manifold and OpenMesh would refuse the faces part way through.
+            for (size_t i = 0; i < border.size(); ++i)
+            {
+                for (size_t j = i + 1; j < border.size(); ++j)
+                {
+                    if (border[i] == border[j])
+                    {
+                        return fail(
+                            "The hole's border touches itself at a vertex. Separate it into single holes first.");
+                    }
+                }
+            }
+
+            AZStd::vector<AZ::Vector3> positions;
+            positions.reserve(border.size());
+            AZ::Vector3 centre = AZ::Vector3::CreateZero();
+            for (const auto vertex : border)
+            {
+                positions.push_back(VertexPosition(whiteBox, vertex));
+                centre += positions.back();
+            }
+            centre /= static_cast<float>(positions.size());
+
+            // Newell's normal is the area-weighted plane of the whole border rather than of any
+            // three corners, so a hole is not judged flat or not by its worst corner alone.
+            AZ::Vector3 normal = AZ::Vector3::CreateZero();
+            float extent = 0.0f;
+            for (size_t i = 0; i < positions.size(); ++i)
+            {
+                const auto current = positions[i] - centre;
+                normal += current.Cross(positions[(i + 1) % positions.size()] - centre);
+                extent = AZ::GetMax(extent, current.GetLength());
+            }
+            if (extent <= AZ::Constants::FloatEpsilon || normal.GetLengthSq() <= 1e-20f)
+            {
+                return fail("The hole's border is collapsed and encloses no area to fill.");
+            }
+            normal.Normalize();
+
+            // Flatness is measured against the hole's own size, so a small hole is held to the same
+            // shape tolerance as a large one.
+            for (const auto& position : positions)
+            {
+                if (AZStd::abs((position - centre).Dot(normal)) > extent * PlanarTolerance)
+                {
+                    return fail(
+                        "The hole's border is not planar. Fill Hole needs a flat border - flatten the vertices, or "
+                        "use Bridge to close it in steps.");
+                }
+            }
+
+            // u, v and the normal form a right handed basis, so the border stays wound the same way
+            // in 2d as it is around the normal and the clipped triangles need no reordering.
+            const AZ::Vector3 reference =
+                AZStd::abs(normal.GetZ()) < 0.9f ? AZ::Vector3::CreateAxisZ() : AZ::Vector3::CreateAxisX();
+            const AZ::Vector3 uAxis = normal.Cross(reference).GetNormalized();
+            const AZ::Vector3 vAxis = normal.Cross(uAxis);
+            AZStd::vector<AZ::Vector2> points;
+            points.reserve(positions.size());
+            for (const auto& position : positions)
+            {
+                const auto offset = (position - centre) / extent;
+                points.emplace_back(offset.Dot(uAxis), offset.Dot(vAxis));
+            }
+
+            AZStd::vector<AZStd::array<size_t, 3>> triangles;
+            if (!TriangulateLoop(points, triangles))
+            {
+                return fail(
+                    "The hole's outline could not be filled. It crosses itself or doubles back; simplify the border "
+                    "and try again.");
+            }
+
+            const auto sourceFace = EdgeFaceHandles(whiteBox, edges[0]).front();
+            const auto material = FaceMaterial(whiteBox, sourceFace);
+            const auto paint = FacePaintColor(whiteBox, sourceFace);
+            auto candidate = CloneMesh(whiteBox);
+            FaceHandlesInternal faces;
+            faces.reserve(triangles.size());
+            for (const auto& triangle : triangles)
+            {
+                // The border order came from the hole's own halfedges, so these wind to agree with
+                // the faces already around it. Deliberately not AddPolygon: its duplicate-vertex
+                // fallback would leave a loose patch floating in the hole instead of filling it.
+                const auto face = candidate->mesh.add_face(
+                    om_vh(border[triangle[0]]), om_vh(border[triangle[1]]), om_vh(border[triangle[2]]));
+                if (!face.is_valid())
+                {
+                    return fail(
+                        "Filling this hole would create non-manifold geometry. Check the border for faces that meet "
+                        "at a single vertex.");
+                }
+                faces.push_back(face);
+            }
+
+            PolygonPropertyHandle property;
+            candidate->mesh.get_property_handle(property, PolygonProps);
+            auto& groups = candidate->mesh.property(property);
+            FaceHandles added;
+            added.reserve(faces.size());
+            for (const auto face : faces)
+            {
+                groups[face] = faces; // one polygon, so the fill selects and textures as a single face
+                added.push_back(wb_fh(face));
+                SetFaceMaterial(*candidate, added.back(), material);
+                SetFacePaintColor(*candidate, added.back(), paint);
+            }
+            CalculateNormals(*candidate);
+            CalculatePlanarUVs(*candidate, added);
+            whiteBox.mesh = candidate->mesh;
+            if (filled != nullptr)
+            {
+                *filled = PolygonHandleFromInternal(faces);
+            }
+            return true;
+        }
+
         bool WeldVertices(
             WhiteBoxMesh& whiteBox, const VertexHandles& vertices, const bool toLastSelected, AZStd::string& error)
         {
@@ -5076,6 +5363,284 @@ namespace WhiteBox
             CalculatePlanarUVs(*candidate, added);
             RemoveIsolatedVertices(*candidate);
             whiteBox.mesh = candidate->mesh;
+            return true;
+        }
+
+        bool KnifeCut(
+            WhiteBoxMesh& whiteBox, const KnifePoint& start, KnifePoint& end, const AZ::Vector3& viewDirection,
+            AZStd::vector<AZ::Vector3>& lines, AZStd::string& error)
+        {
+            lines.clear();
+            error.clear();
+            const auto fail = [&error, &lines](const char* message)
+            {
+                error = message;
+                lines.clear();
+                return false;
+            };
+            const auto faces = MeshFaceHandles(whiteBox);
+            if (AZStd::find(faces.begin(), faces.end(), start.m_face) == faces.end() ||
+                AZStd::find(faces.begin(), faces.end(), end.m_face) == faces.end() ||
+                !start.m_position.IsFinite() || !end.m_position.IsFinite() || !viewDirection.IsFinite())
+            {
+                return fail("Choose two points on the active mesh.");
+            }
+            const auto delta = end.m_position - start.m_position;
+            const auto view = viewDirection.GetNormalizedSafe();
+            const auto axis = (delta - view * delta.Dot(view)).GetNormalizedSafe();
+            const float span = delta.Dot(axis);
+            const float epsilon = AZStd::max(delta.GetLength() * 1e-5f, 1e-7f);
+            if (view.IsZero() || span <= epsilon)
+            {
+                return fail("Move the next point farther away in the viewport.");
+            }
+            const auto planeNormal = axis.Cross(view).GetNormalizedSafe();
+            auto candidate = CloneMesh(whiteBox);
+            auto& mesh = candidate->mesh;
+            // Track each triangle's original polygon and source face while OpenMesh appends faces.
+            // PolygonProps is rebuilt only after the full path succeeds.
+            AZStd::map<int, int> labels;
+            AZStd::map<int, int> origins;
+            for (const auto& polygon : MeshPolygonHandles(whiteBox))
+            {
+                for (const auto face : polygon.m_faceHandles)
+                {
+                    labels[face.Index()] = polygon.m_faceHandles.front().Index();
+                    origins[face.Index()] = face.Index();
+                }
+            }
+            struct SourceTriangle
+            {
+                AZStd::array<AZ::Vector3, 3> m_points;
+                AZStd::array<AZ::Vector2, 3> m_uvs;
+                AZ::Data::AssetId m_material;
+                AZ::u32 m_paint;
+                int m_label;
+                int m_origin;
+            };
+            const auto barycentric = [epsilon](
+                const AZStd::array<AZ::Vector3, 3>& points, const AZ::Vector3& p, AZ::Vector3& weights)
+            {
+                const auto n = (points[1] - points[0]).Cross(points[2] - points[0]);
+                const float areaSq = n.GetLengthSq();
+                if (areaSq <= 0.0f || AZStd::abs((p - points[0]).Dot(n)) > epsilon * n.GetLength())
+                {
+                    return false;
+                }
+                weights.SetX((points[1] - p).Cross(points[2] - p).Dot(n) / areaSq);
+                weights.SetY((points[2] - p).Cross(points[0] - p).Dot(n) / areaSq);
+                weights.SetZ(1.0f - weights.GetX() - weights.GetY());
+                return weights.GetMinElement() >= -1e-4f;
+            };
+            const auto snapshot = [&](const FaceHandle face)
+            {
+                SourceTriangle source{};
+                const auto halfedges = FaceHalfedgeHandles(*candidate, face);
+                for (size_t i = 0; i < 3; ++i)
+                {
+                    source.m_points[i] = VertexPosition(*candidate, HalfedgeVertexHandleAtTip(*candidate, halfedges[i]));
+                    source.m_uvs[i] = HalfedgeUV(*candidate, halfedges[i]);
+                }
+                source.m_material = FaceMaterial(*candidate, face);
+                source.m_paint = FacePaintColor(*candidate, face);
+                source.m_label = labels.find(face.Index())->second;
+                source.m_origin = origins.find(face.Index())->second;
+                return source;
+            };
+            // Split one triangle or edge. Splitting an edge updates BOTH incident faces, so the
+            // cut never leaves T-junctions. Restore attributes using each source triangle's UV chart.
+            const auto insert = [&](const FaceHandle face, const AZ::Vector3& position)
+            {
+                const auto vertices = FaceVertexHandles(*candidate, face);
+                for (const auto vertex : vertices)
+                {
+                    if ((VertexPosition(*candidate, vertex) - position).GetLength() <= epsilon) { return vertex; }
+                }
+                EdgeHandle splitEdge;
+                AZ::Vector3 splitPosition = position;
+                for (const auto edge : FaceEdgeHandles(*candidate, face))
+                {
+                    const auto points = EdgeVertexPositions(*candidate, edge);
+                    const auto d = points[1] - points[0];
+                    const float lengthSq = d.GetLengthSq();
+                    if (lengthSq == 0.0f) { continue; }
+                    const float t = AZStd::clamp((position - points[0]).Dot(d) / lengthSq, 0.0f, 1.0f);
+                    const auto projected = points[0] + d * t;
+                    if ((projected - position).GetLength() <= epsilon)
+                    {
+                        splitEdge = edge;
+                        splitPosition = projected;
+                        break;
+                    }
+                }
+                AZStd::vector<SourceTriangle> sources;
+                if (splitEdge.IsValid())
+                {
+                    for (const auto adjacent : EdgeFaceHandles(*candidate, splitEdge)) { sources.push_back(snapshot(adjacent)); }
+                }
+                else { sources.push_back(snapshot(face)); }
+                const auto vertex = mesh.add_vertex(splitPosition);
+                if (splitEdge.IsValid()) { mesh.split_copy(om_eh(splitEdge), vertex); }
+                else { mesh.split_copy(om_fh(face), vertex); }
+                for (auto it = mesh.vf_ccwbegin(vertex); it.is_valid(); ++it)
+                {
+                    const auto resultFace = wb_fh(*it);
+                    const auto positions = FaceVertexPositions(*candidate, resultFace);
+                    const auto center = (positions[0] + positions[1] + positions[2]) / 3.0f;
+                    bool assigned = false;
+                    for (const auto& source : sources)
+                    {
+                        AZ::Vector3 weights;
+                        if (!barycentric(source.m_points, center, weights)) { continue; }
+                        const auto sourceNormal =
+                            (source.m_points[1] - source.m_points[0]).Cross(source.m_points[2] - source.m_points[0]);
+                        const auto resultNormal = (positions[1] - positions[0]).Cross(positions[2] - positions[0]);
+                        if (sourceNormal.Dot(resultNormal) <= 0.0f) { return VertexHandle{}; }
+                        labels[resultFace.Index()] = source.m_label;
+                        origins[resultFace.Index()] = source.m_origin;
+                        SetFaceMaterial(*candidate, resultFace, source.m_material);
+                        SetFacePaintColor(*candidate, resultFace, source.m_paint);
+                        for (const auto halfedge : FaceHalfedgeHandles(*candidate, resultFace))
+                        {
+                            const auto p = VertexPosition(*candidate, HalfedgeVertexHandleAtTip(*candidate, halfedge));
+                            barycentric(source.m_points, p, weights);
+                            mesh.set_texcoord2D(om_heh(halfedge),
+                                source.m_uvs[0] * weights.GetX() + source.m_uvs[1] * weights.GetY() +
+                                source.m_uvs[2] * weights.GetZ());
+                        }
+                        assigned = true;
+                        break;
+                    }
+                    if (!assigned) { return VertexHandle{}; }
+                }
+                return wb_vh(vertex);
+            };
+            const auto insertAnchor = [&](const KnifePoint& point)
+            {
+                for (const auto face : MeshFaceHandles(*candidate))
+                {
+                    if (origins.find(face.Index())->second != point.m_face.Index()) { continue; }
+                    const auto source = snapshot(face);
+                    AZ::Vector3 weights;
+                    if (barycentric(source.m_points, point.m_position, weights)) { return insert(face, point.m_position); }
+                }
+                return VertexHandle{};
+            };
+            const auto first = insertAnchor(start);
+            if (!first.IsValid()) { return fail("The first point is no longer on its face."); }
+            const auto last = insertAnchor(end);
+            if (!last.IsValid() || first == last) { return fail("The next point must lie on a different part of the surface."); }
+            AZStd::vector<AZStd::pair<VertexHandle, VertexHandle>> cutVertices;
+            VertexHandle current = first;
+            const size_t limit = faces.size() * 4 + 16;
+            for (size_t step = 0; current != last && step < limit; ++step)
+            {
+                const auto currentPosition = VertexPosition(*candidate, current);
+                const float progress = (currentPosition - start.m_position).Dot(axis);
+                FaceHandle nextFace;
+                AZ::Vector3 nextPosition = AZ::Vector3::CreateZero();
+                // A plane through a vertex can meet several triangles. Accept one forward route
+                // (shared-edge duplicates count as one), and reject folds/branches rather than
+                // accidentally cutting through the rear surface or another disconnected island.
+                for (auto it = mesh.vf_ccwbegin(om_vh(current)); it.is_valid(); ++it)
+                {
+                    const auto face = wb_fh(*it);
+                    const auto verts = FaceVertexHandles(*candidate, face);
+                    VertexHandles opposite;
+                    for (const auto vertex : verts) { if (vertex != current) { opposite.push_back(vertex); } }
+                    if (opposite.size() != 2) { continue; }
+                    const auto a = VertexPosition(*candidate, opposite[0]);
+                    const auto b = VertexPosition(*candidate, opposite[1]);
+                    const auto facePoints = FaceVertexPositions(*candidate, face);
+                    const auto normal = (facePoints[1] - facePoints[0]).Cross(facePoints[2] - facePoints[0]).GetNormalizedSafe();
+                    // Follow the visible side of the surface. At a silhouette vertex the same
+                    // plane may also meet rear faces, which must not become an alternative route.
+                    if (normal.Dot(view) >= -1e-5f) { continue; }
+                    const float da = (a - start.m_position).Dot(planeNormal);
+                    const float db = (b - start.m_position).Dot(planeNormal);
+                    if ((da > epsilon && db > epsilon) || (da < -epsilon && db < -epsilon) ||
+                        AZStd::abs(da - db) <= epsilon) { continue; }
+                    const float t = AZStd::clamp(da / (da - db), 0.0f, 1.0f);
+                    const auto hit = a.Lerp(b, t);
+                    const float along = (hit - start.m_position).Dot(axis);
+                    if (along <= progress + epsilon || along > span + epsilon) { continue; }
+                    if (nextFace.IsValid() && (nextPosition - hit).GetLength() > epsilon * 2.0f)
+                    {
+                        return fail("The cut has more than one route. Add a point at the corner or change the view.");
+                    }
+                    nextFace = face;
+                    nextPosition = hit;
+                }
+                if (!nextFace.IsValid())
+                {
+                    return fail("The cut cannot reach that point on a connected surface. Add a point at the boundary.");
+                }
+                const auto next = insert(nextFace, nextPosition);
+                if (!next.IsValid()) { return fail("Could not split this face safely."); }
+                const auto halfedge = mesh.find_halfedge(om_vh(current), om_vh(next));
+                if (!halfedge.is_valid()) { return fail("The cut did not form a valid edge."); }
+                cutVertices.push_back({current, next});
+                lines.push_back(currentPosition);
+                lines.push_back(VertexPosition(*candidate, next));
+                current = next;
+            }
+            if (current != last) { return fail("The cut could not reach the endpoint."); }
+            AZStd::unordered_set<int> cutEdges;
+            for (const auto& cut : cutVertices)
+            {
+                const auto h = mesh.find_halfedge(om_vh(cut.first), om_vh(cut.second));
+                if (!h.is_valid()) { return fail("A cut edge was lost while splitting."); }
+                cutEdges.insert(mesh.edge_handle(h).idx());
+                RestoreVertex(*candidate, cut.first);
+                RestoreVertex(*candidate, cut.second);
+            }
+            PolygonPropertyHandle property;
+            mesh.get_property_handle(property, PolygonProps);
+            auto& groups = mesh.property(property);
+            const auto regroup = [&]()
+            {
+                groups.clear();
+                AZStd::unordered_set<int> visited;
+                for (const auto face : MeshFaceHandles(*candidate))
+                {
+                    if (!visited.insert(face.Index()).second) { continue; }
+                    FaceHandlesInternal group{om_fh(face)};
+                    for (size_t i = 0; i < group.size(); ++i)
+                    {
+                        for (auto h = mesh.cfh_iter(group[i]); h.is_valid(); ++h)
+                        {
+                            if (cutEdges.count(mesh.edge_handle(*h).idx())) { continue; }
+                            const auto neighbor = mesh.face_handle(mesh.opposite_halfedge_handle(*h));
+                            if (neighbor.is_valid() && labels[neighbor.idx()] == labels[face.Index()] &&
+                                visited.insert(neighbor.idx()).second) { group.push_back(neighbor); }
+                        }
+                    }
+                    for (const auto member : group) { groups[member] = group; }
+                }
+            };
+            regroup();
+            // A dangling edge cannot bound a WhiteBox polygon on its own. Keep its neighboring
+            // triangles separate so the new cut remains selectable even at interior endpoints.
+            int supportLabel = -1;
+            bool needsSupports = false;
+            for (const int edge : cutEdges)
+            {
+                const auto adjacent = EdgeFaceHandles(*candidate, EdgeHandle{edge});
+                if (adjacent.size() != 2 ||
+                    groups[om_fh(adjacent[0])].front() != groups[om_fh(adjacent[1])].front()) { continue; }
+                for (const auto face : adjacent)
+                {
+                    labels[face.Index()] = supportLabel--;
+                }
+                needsSupports = true;
+            }
+            if (needsSupports) { regroup(); }
+            CalculateNormals(*candidate);
+            KnifePoint nextAnchor = end;
+            nextAnchor.m_position = VertexPosition(*candidate, last);
+            nextAnchor.m_face = wb_fh(*mesh.vf_ccwbegin(om_vh(last)));
+            whiteBox.mesh = mesh;
+            end = nextAnchor;
             return true;
         }
 

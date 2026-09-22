@@ -137,6 +137,11 @@ namespace WhiteBox::ModelingOps
             (selection.m_edges.size() == 2 && selection.m_polygons.empty());
     }
 
+    bool CanFillHole(const Selection& selection)
+    {
+        return selection.m_editable && !selection.m_edges.empty();
+    }
+
     bool CanWeld(const Selection& selection)
     {
         return selection.m_editable && selection.m_vertices.size() >= 2;
@@ -178,6 +183,34 @@ namespace WhiteBox::ModelingOps
             undoBatch.MarkEntityDirty(entityComponentIdPair.GetEntityId());
         }
         return { true, "Bridge created. Undo to restore the original selection's geometry." };
+    }
+
+    Result FillHole(const AZ::EntityComponentIdPair& entityComponentIdPair)
+    {
+        EditorWhiteBoxComponent* component = EditableComponentFor(entityComponentIdPair);
+        if (component == nullptr)
+        {
+            return { false, "No editable White Box mesh." };
+        }
+
+        const Api::EdgeHandles edges = SelectedEdges(entityComponentIdPair);
+
+        AZStd::string error;
+        Api::PolygonHandle filled;
+        {
+            AzToolsFramework::ScopedUndoBatch undoBatch("White Box Fill Hole");
+            if (!Api::FillHole(*component->GetWhiteBoxMesh(), edges, error, &filled))
+            {
+                return { false, error };
+            }
+            CommitMeshEdit(*component, entityComponentIdPair);
+            // The new cap is selected so it can be extruded or textured without hunting for it.
+            EditorWhiteBoxTransformModeRequestBus::Event(
+                entityComponentIdPair, &EditorWhiteBoxTransformModeRequests::SetSelectedPolygons,
+                Api::PolygonHandles{ filled });
+            undoBatch.MarkEntityDirty(entityComponentIdPair.GetEntityId());
+        }
+        return { true, "Hole filled. Undo restores the open border." };
     }
 
     Result Weld(const AZ::EntityComponentIdPair& entityComponentIdPair, const bool atLastVertex)

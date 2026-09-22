@@ -864,6 +864,14 @@ namespace WhiteBox
         bool BridgeSelection(
             WhiteBoxMesh& whiteBox, const PolygonHandles& polygons, const EdgeHandles& edges, AZStd::string& error);
 
+        //! Fill the single planar hole bordered by the selected open edges with one new polygon.
+        //! Concave outlines are supported; the border must be flat, must not touch itself and must
+        //! belong to one hole. The new faces wind to match the surrounding surface and inherit the
+        //! material and paint of the face beside the first selected edge.
+        //! Transactional: a failure returns a message and leaves the mesh unchanged.
+        bool FillHole(
+            WhiteBoxMesh& whiteBox, const EdgeHandles& edges, AZStd::string& error, PolygonHandle* filled = nullptr);
+
         //! Merge selected vertices at their average position or the last selected vertex.
         //! Collapsed triangles are removed; surviving face properties and UVs are retained.
         //! Connected corner collapses may leave open face patches meeting at the merged point.
@@ -889,6 +897,22 @@ namespace WhiteBox
         //! Read-only preview: pairs of local-space endpoints, using the same strip validation as insertion.
         bool PreviewEdgeLoops(
             WhiteBoxMesh& whiteBox, EdgeHandle edge, int count, AZStd::vector<AZ::Vector3>& lines, AZStd::string& error, float slide = 0.0f);
+
+        //! A surface anchor in mesh-local coordinates. The face disambiguates overlapping surfaces.
+        struct KnifePoint
+        {
+            FaceHandle m_face;
+            AZ::Vector3 m_position = AZ::Vector3::CreateZero();
+        };
+
+        //! Cut a connected surface along the plane through two anchors and the viewing direction.
+        //! Transactional: failure leaves mesh and end unchanged. On success end references a resulting
+        //! face, ready for another segment. Lines are pairs of actual surface points for the preview.
+        //! Preserves materials, face colours and interpolated per-corner UVs. Open-ended cuts may
+        //! expose supporting triangle edges because WhiteBox polygons require closed boundaries.
+        bool KnifeCut(
+            WhiteBoxMesh& mesh, const KnifePoint& start, KnifePoint& end, const AZ::Vector3& viewDirection,
+            AZStd::vector<AZ::Vector3>& lines, AZStd::string& error);
 
         //! Writes the white box mesh to an obj file at the specified path.
         //! @return Will return false if any error was encountered during serialization, true otherwise.

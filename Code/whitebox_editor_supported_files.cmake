@@ -38,6 +38,8 @@ set(FILES
     Source/Tools/WhiteBoxShapeOptionsWindow.h
     Source/Tools/WhiteBoxModelingWindow.cpp
     Source/Tools/WhiteBoxModelingWindow.h
+    Source/Tools/WhiteBoxToolStatus.cpp
+    Source/Tools/WhiteBoxToolStatus.h
     Source/Tools/WhiteBoxWeldWindow.cpp
     Source/Tools/WhiteBoxWeldWindow.h
     Source/Tools/WhiteBoxExtrudeInsetWindow.cpp

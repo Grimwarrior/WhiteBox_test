@@ -8,6 +8,7 @@
 
 #include "EditorWhiteBoxTransformMode.h"
 #include "EditorWhiteBoxComponent.h"
+#include "Tools/WhiteBoxToolStatus.h"
 #include <AzCore/Component/ComponentApplicationBus.h>
 #include <AzCore/Component/Entity.h>
 #include <AzToolsFramework/API/ToolsApplicationAPI.h>
@@ -17,6 +18,7 @@
 #include "Util/WhiteBoxEditorUtil.h"
 #include "Util/WhiteBoxSnapUtil.h"
 
+#include <AzCore/Math/IntersectSegment.h>
 #include <AzCore/std/algorithm.h>
 #include <AzCore/std/optional.h>
 #include <AzCore/std/smart_ptr/make_shared.h>
@@ -29,6 +31,7 @@
 #include <AzToolsFramework/API/ComponentModeCollectionInterface.h>
 #include <AzToolsFramework/Editor/ActionManagerIdentifiers/EditorContextIdentifiers.h>
 #include <AzToolsFramework/Editor/ActionManagerIdentifiers/EditorMenuIdentifiers.h>
+#include <AzToolsFramework/Viewport/ViewportMessages.h>
 #include <AzToolsFramework/ViewportSelection/EditorSelectionUtil.h>
 #include <Manipulators/LinearManipulator.h>
 #include <Manipulators/ManipulatorManager.h>
@@ -166,6 +169,8 @@ namespace WhiteBox
 
     TransformMode::~TransformMode()
     {
+        for (auto& entry : m_toolStatus) { delete entry.second.data(); }
+        m_toolStatus.clear();
         // A drag in flight has edited the live mesh but not serialized it. Leaving now would strand
         // that edit: the component's bytes still hold the pre-drag mesh.
         ClearLatchedDrag();
@@ -574,14 +579,24 @@ namespace WhiteBox
 
     void TransformMode::ChangeTransformType(TransformType subModeType)
     {
-        if (m_loopCutActive) { Refresh(); }
+        if (m_loopCutActive || m_knifeActive) { Refresh(); }
         m_transformType = subModeType;
         RefreshManipulator();
     }
 
     void TransformMode::Refresh()
     {
+        HideToolStatus();
         ClearLatchedDrag();
+        m_knifeActive = false;
+        m_knifeMesh.reset();
+        m_knifeHoverMesh.reset();
+        m_knifeSourceBytes.clear();
+        m_knifeAnchor.reset();
+        m_knifeHover.reset();
+        m_knifeLines.clear();
+        m_knifeHoverLines.clear();
+        m_knifeError.clear();
         m_loopCutActive = false;
         m_loopCutSliding = false;
         m_loopCutSlide = 0.0f;
@@ -666,6 +681,63 @@ namespace WhiteBox
         };
     }
 
+    void TransformMode::HideToolStatus()
+    {
+        for (auto& entry : m_toolStatus)
+        {
+            if (entry.second) { entry.second->HideStatus(); }
+        }
+    }
+
+    void TransformMode::UpdateToolStatus(const int viewportId)
+    {
+        // A middle dot, built from its code point rather than typed into the literal below: nothing
+        // else in this gem ships a non-ASCII string literal, and MSVC without /utf-8 would mangle one.
+        // arg() replaces every occurrence of the lowest-numbered marker, so one call fills them all.
+        const QString dot = QStringLiteral(" ") + QChar(0x00B7) + QStringLiteral(" ");
+        QString instructions;
+        QString error;
+        if (m_knifeActive)
+        {
+            instructions = QObject::tr("Click add%1Enter apply%1Esc cancel%1Alt orbit").arg(dot);
+            error = QString::fromUtf8(m_knifeError.c_str());
+        }
+        else if (m_loopCutActive)
+        {
+            instructions = m_loopCutSliding
+                ? QObject::tr("Move position%1Click cut%1Esc cancel").arg(dot)
+                : QObject::tr("Scroll count%1Click confirm%1Esc cancel").arg(dot);
+            const QString count = m_loopCutCount == 1 ? QObject::tr("1 cut") : QObject::tr("%1 cuts").arg(m_loopCutCount);
+            instructions.prepend(count + dot);
+            error = QString::fromUtf8(m_loopCutError.c_str());
+        }
+        else if (m_modelingLatch != TransformModelingLatch::None)
+        {
+            const bool extrude = m_modelingLatch == TransformModelingLatch::Extrude;
+            instructions = (extrude
+                ? QObject::tr("Drag polygon/edge%1Ctrl-click select%1Esc cancel")
+                : QObject::tr("Drag polygon right%1Ctrl-click select%1Esc cancel")).arg(dot);
+            error = QString::fromUtf8(m_latchError.c_str());
+        }
+        else
+        {
+            HideToolStatus();
+            return;
+        }
+
+        auto& status = m_toolStatus[viewportId];
+        if (!status)
+        {
+            QWidget* viewport = nullptr;
+            namespace Viewport = AzToolsFramework::ViewportInteraction;
+            Viewport::MainEditorViewportInteractionRequestBus::EventResult(
+                viewport, viewportId, &Viewport::MainEditorViewportInteractionRequests::GetWidgetForViewportContextMenu);
+            if (!viewport) { return; }
+            status = new WhiteBoxToolStatus(viewport);
+        }
+        status->SetStatus(instructions, error);
+    }
+
     void TransformMode::Display(
         [[maybe_unused]] const AZ::EntityComponentIdPair& entityComponentIdPair,
         const AZ::Transform& worldFromLocal,
@@ -673,6 +745,7 @@ namespace WhiteBox
         const AzFramework::ViewportInfo& viewportInfo,
         AzFramework::DebugDisplayRequests& debugDisplay)
     {
+        UpdateToolStatus(viewportInfo.m_viewportId);
         WhiteBoxMesh* whiteBox = nullptr;
         EditorWhiteBoxComponentRequestBus::EventResult(
             whiteBox, m_entityComponentIdPair, &EditorWhiteBoxComponentRequests::GetWhiteBoxMesh);
@@ -684,22 +757,32 @@ namespace WhiteBox
         debugDisplay.CullOff();
         debugDisplay.PushMatrix(worldFromLocal);
 
+        if (m_knifeActive)
+        {
+            debugDisplay.SetLineWidth(3.0f);
+            debugDisplay.DrawLines(m_knifeLines, AZ::Color(1.0f, 0.8f, 0.1f, 1.0f));
+            debugDisplay.DrawLines(m_knifeHoverLines, AZ::Color(0.2f, 1.0f, 0.6f, 1.0f));
+            debugDisplay.SetLineWidth(1.0f);
+            debugDisplay.PopMatrix();
+            debugDisplay.SetColor(AZ::Color(1.0f, 0.8f, 0.1f, 1.0f));
+            if (m_knifeAnchor)
+            {
+                debugDisplay.DrawTextLabel(worldFromLocal.TransformPoint(m_knifeAnchor->m_position), 1.6f, "+", true, 0, 0);
+            }
+            debugDisplay.SetColor(AZ::Color(0.2f, 1.0f, 0.6f, 1.0f));
+            if (m_knifeHover)
+            {
+                debugDisplay.DrawTextLabel(worldFromLocal.TransformPoint(m_knifeHover->m_position), 1.6f, "+", true, 0, 0);
+            }
+            return;
+        }
+
         if (m_loopCutActive)
         {
             debugDisplay.SetLineWidth(3.0f);
             debugDisplay.DrawLines(m_loopCutLines, AZ::Color(1.0f, 0.8f, 0.1f, 1.0f));
             debugDisplay.SetLineWidth(1.0f);
             debugDisplay.PopMatrix();
-            debugDisplay.SetColor(AZ::Color(1.0f, 0.8f, 0.1f, 1.0f));
-            const auto label = AZStd::string::format(
-                m_loopCutSliding
-                    ? "Loop Slide: %d | Move mouse: position | Click: cut mesh | Esc / right-click: cancel"
-                    : "Loop Cut: %d | Wheel: cuts | Click: lock count | Esc / right-click: cancel", m_loopCutCount);
-            debugDisplay.Draw2dTextLabel(20.0f, 80.0f, 1.3f, label.c_str());
-            if (!m_loopCutError.empty())
-            {
-                debugDisplay.Draw2dTextLabel(20.0f, 105.0f, 1.1f, m_loopCutError.c_str());
-            }
             return;
         }
 
@@ -770,15 +853,6 @@ namespace WhiteBox
         }
         debugDisplay.PopMatrix();
         debugDisplay.DepthTestOff();
-        if (m_modelingLatch != TransformModelingLatch::None && !m_loopCutActive)
-        {
-            debugDisplay.SetColor(AZ::Colors::White);
-            debugDisplay.Draw2dTextLabel(20.0f, 80.0f, 0.9f,
-                m_modelingLatch == TransformModelingLatch::Extrude
-                    ? "Extrude latch - drag a polygon or edge. Ctrl-click to select, Esc to cancel."
-                    : "Inset latch - drag a polygon right. Ctrl-click to select, Esc to cancel.");
-            if (!m_latchError.empty()) { debugDisplay.Draw2dTextLabel(20.0f, 98.0f, 0.9f, m_latchError.c_str()); }
-        }
 
         // Draw Blender-style numeric input overlay when active.
         if (m_numericInput.IsActive() && m_whiteBoxSelection)
@@ -803,6 +877,7 @@ namespace WhiteBox
         EditorWhiteBoxComponentRequestBus::EventResult(
             whiteBox, m_entityComponentIdPair, &EditorWhiteBoxComponentRequests::GetWhiteBoxMesh);
 
+        if (m_knifeActive) { return HandleKnife(mouse); }
         if (m_latchSource) { return HandleLatchedDrag(mouse); }
         if (m_loopCutActive && whiteBox)
         {
@@ -1096,7 +1171,7 @@ namespace WhiteBox
 
     bool TransformMode::HandleEscape()
     {
-        if (m_loopCutActive)
+        if (m_loopCutActive || m_knifeActive)
         {
             Refresh();
             return true;
@@ -1113,6 +1188,200 @@ namespace WhiteBox
         }
 
         return false;
+    }
+
+    void TransformMode::BeginKnife()
+    {
+        if (m_knifeActive) { Refresh(); return; }
+        CancelActiveDrag();
+        Refresh();
+        m_modelingLatch = TransformModelingLatch::None;
+        auto* component = FindWhiteBoxComponent(m_entityComponentIdPair);
+        if (!component || !component->GetWhiteBoxMesh()) { return; }
+        m_knifeMesh = Api::CloneMesh(*component->GetWhiteBoxMesh());
+        if (!Api::WriteMesh(*component->GetWhiteBoxMesh(), m_knifeSourceBytes))
+        {
+            Refresh();
+            return;
+        }
+        m_knifeLayerId = component->GetActiveLayerId();
+        m_knifeActive = true;
+    }
+
+    bool TransformMode::HandleKnife(const ModeMouseInteraction& mouse)
+    {
+        namespace Viewport = AzToolsFramework::ViewportInteraction;
+        const auto& event = mouse.m_mouseInteraction;
+        const auto& interaction = event.m_mouseInteraction;
+        const auto& buttons = interaction.m_mouseButtons;
+        auto* component = FindWhiteBoxComponent(m_entityComponentIdPair);
+        if (!component || component->GetActiveLayerId() != m_knifeLayerId || !m_knifeMesh)
+        {
+            Refresh();
+            return true;
+        }
+        if (interaction.m_keyboardModifiers.Alt() || buttons.Middle())
+        {
+            m_knifeHover.reset();
+            m_knifeHoverMesh.reset();
+            m_knifeHoverLines.clear();
+            return false;
+        }
+        if (event.m_mouseEvent == Viewport::MouseEvent::Down && buttons.Right())
+        {
+            Refresh();
+            return true;
+        }
+        if (event.m_mouseEvent != Viewport::MouseEvent::Move &&
+            !(event.m_mouseEvent == Viewport::MouseEvent::Down && buttons.Left()))
+        {
+            return buttons.Left();
+        }
+
+        m_knifeHover.reset();
+        m_knifeHoverMesh.reset();
+        m_knifeHoverLines.clear();
+        m_knifeError.clear();
+        const auto localFromWorld = mouse.m_worldFromLocal.GetInverse();
+        const auto origin = localFromWorld.TransformPoint(interaction.m_mousePick.m_rayOrigin);
+        const auto direction = localFromWorld.TransformVector(interaction.m_mousePick.m_rayDirection).GetNormalizedSafe();
+        const auto end = origin + direction * 100000.0f;
+        AZ::Intersect::SegmentTriangleHitTester tester(origin, end);
+        float closest = AZ::Constants::FloatMax;
+        // Use the scratch mesh: a later segment can snap to a cut that has not been committed yet.
+        for (const auto face : Api::MeshFaceHandles(*m_knifeMesh))
+        {
+            const auto points = Api::FaceVertexPositions(*m_knifeMesh, face);
+            float t = 0.0f;
+            AZ::Vector3 normal;
+            if (tester.IntersectSegmentTriangle(points[0], points[1], points[2], normal, t) && t < closest)
+            {
+                closest = t;
+                m_knifeHover = Api::KnifePoint{face, origin + (end - origin) * t};
+            }
+        }
+        if (!m_knifeHover) { return true; }
+
+        const auto camera = AzToolsFramework::GetCameraState(interaction.m_interactionId.m_viewportId);
+        const auto cursor = interaction.m_mousePick.m_screenCoordinates;
+        const auto distanceToCursor = [&](const AZ::Vector3& point)
+        {
+            const auto screen = AzFramework::WorldToScreen(mouse.m_worldFromLocal.TransformPoint(point), camera);
+            const float x = static_cast<float>(screen.m_x - cursor.m_x);
+            const float y = static_cast<float>(screen.m_y - cursor.m_y);
+            return x * x + y * y;
+        };
+        const auto polygon = Api::FacePolygonHandle(*m_knifeMesh, m_knifeHover->m_face);
+        const auto edges = Api::PolygonBorderEdgeHandlesFlattened(*m_knifeMesh, polygon);
+        const auto faceForEdge = [&](const Api::EdgeHandle edge)
+        {
+            for (const auto face : Api::EdgeFaceHandles(*m_knifeMesh, edge))
+            {
+                if (AZStd::find(polygon.m_faceHandles.begin(), polygon.m_faceHandles.end(), face) != polygon.m_faceHandles.end())
+                {
+                    return face;
+                }
+            }
+            return m_knifeHover->m_face;
+        };
+        // Prefer a vertex within ten screen pixels, then an edge within eight pixels.
+        // Project the mouse ray onto the edge in 3D, so perspective does not distort snapping.
+        float snapDistance = 100.0f;
+        bool vertexSnapped = false;
+        for (const auto edge : edges)
+        {
+            for (const auto vertex : Api::EdgeVertexHandles(*m_knifeMesh, edge))
+            {
+                const auto point = Api::VertexPosition(*m_knifeMesh, vertex);
+                const float distance = distanceToCursor(point);
+                if (distance < snapDistance)
+                {
+                    snapDistance = distance;
+                    vertexSnapped = true;
+                    *m_knifeHover = Api::KnifePoint{faceForEdge(edge), point};
+                }
+            }
+        }
+        if (!vertexSnapped)
+        {
+            snapDistance = 64.0f;
+            for (const auto edge : edges)
+            {
+                const auto points = Api::EdgeVertexPositions(*m_knifeMesh, edge);
+                const auto axis = points[1] - points[0];
+                const float dot = axis.Dot(direction);
+                const float denominator = axis.GetLengthSq() - dot * dot;
+                if (denominator <= axis.GetLengthSq() * 1e-6f) { continue; }
+                const auto offset = origin - points[0];
+                const float t = AZStd::clamp(
+                    (axis.Dot(offset) - dot * direction.Dot(offset)) / denominator, 0.0f, 1.0f);
+                const auto point = points[0].Lerp(points[1], t);
+                const float distance = distanceToCursor(point);
+                if (distance < snapDistance)
+                {
+                    snapDistance = distance;
+                    *m_knifeHover = Api::KnifePoint{faceForEdge(edge), point};
+                }
+            }
+        }
+
+        Api::KnifePoint next = *m_knifeHover;
+        if (m_knifeAnchor)
+        {
+            m_knifeHoverMesh = Api::CloneMesh(*m_knifeMesh);
+            if (!Api::KnifeCut(*m_knifeHoverMesh, *m_knifeAnchor, next, direction, m_knifeHoverLines, m_knifeError))
+            {
+                m_knifeHoverMesh.reset();
+            }
+        }
+        if (event.m_mouseEvent == Viewport::MouseEvent::Down && buttons.Left())
+        {
+            if (!m_knifeAnchor) { m_knifeAnchor = m_knifeHover; }
+            else if (m_knifeHoverMesh)
+            {
+                m_knifeMesh = AZStd::move(m_knifeHoverMesh);
+                m_knifeLines.insert(m_knifeLines.end(), m_knifeHoverLines.begin(), m_knifeHoverLines.end());
+                m_knifeHoverLines.clear();
+                m_knifeAnchor = next;
+            }
+        }
+        return true;
+    }
+
+    void TransformMode::ConfirmKnife()
+    {
+        auto* component = FindWhiteBoxComponent(m_entityComponentIdPair);
+        if (!component || component->GetActiveLayerId() != m_knifeLayerId || !m_knifeMesh)
+        {
+            Refresh();
+            return;
+        }
+        if (m_knifeLines.empty())
+        {
+            m_knifeError = "Click at least two surface points before applying the cut.";
+            return;
+        }
+        auto* mesh = component->GetWhiteBoxMesh();
+        if (!mesh) { Refresh(); return; }
+        Api::WhiteBoxMeshStream current;
+        if (!Api::WriteMesh(*mesh, current))
+        {
+            m_knifeError = "Could not verify the source mesh. The cut has not been applied.";
+            return;
+        }
+        if (current != m_knifeSourceBytes)
+        {
+            Refresh(); // another operation replaced the mesh; never overwrite that edit
+            return;
+        }
+        AzToolsFramework::ScopedUndoBatch undo("White Box Knife");
+        Api::AssignMesh(*mesh, *m_knifeMesh);
+        Refresh();
+        component->BakeParametricLayer(component->GetActiveLayerIndex());
+        component->SerializeWhiteBox();
+        EditorWhiteBoxComponentNotificationBus::Event(
+            m_entityComponentIdPair, &EditorWhiteBoxComponentNotifications::OnWhiteBoxMeshModified);
+        undo.MarkEntityDirty(m_entityComponentIdPair.GetEntityId());
     }
 
     void TransformMode::BeginLoopCut()
@@ -1319,8 +1588,9 @@ namespace WhiteBox
     {
         CancelActiveDrag();
         m_numericInput.Reset();
+        HideToolStatus();
         m_modelingLatch = latch;
-        if (m_loopCutActive) { Refresh(); }
+        if (m_loopCutActive || m_knifeActive) { Refresh(); }
         RefreshManipulator();
     }
 
