@@ -616,6 +616,15 @@ namespace WhiteBox
                         "Cut this mesh with another entity's mesh.")
                     ->Attribute(AZ::Edit::Attributes::Visibility, AZ::Edit::PropertyVisibility::ShowChildrenOnly)
                     ->Attribute(AZ::Edit::Attributes::ChangeNotify, &EditorWhiteBoxComponent::OnLiveBooleanChange)
+                    ->DataElement(
+                        AZ::Edit::UIHandlers::ComboBox, &EditorWhiteBoxComponent::m_csgSolver, "Solver",
+                        "CSG solver for every boolean on this component: the layer Combine modes and the entity boolean. "
+                        "Fast (BSP) is brush-style and face-based; it handles inward-facing rooms, inverted normals and "
+                        "open or non-manifold meshes, and suits blocky level geometry. Manifold is volumetric and precise, "
+                        "but needs closed watertight meshes and treats inverted normals as the shape's complement.")
+                    ->EnumAttribute(Api::CsgSolver::Manifold, "Manifold")
+                    ->EnumAttribute(Api::CsgSolver::Fast, "Fast (BSP)")
+                    ->Attribute(AZ::Edit::Attributes::ChangeNotify, &EditorWhiteBoxComponent::OnCsgSolverChange)
 
                     ->ClassElement(AZ::Edit::ClassElements::Group, "Mesh / Asset")
                     ->Attribute(AZ::Edit::Attributes::AutoExpand, false)

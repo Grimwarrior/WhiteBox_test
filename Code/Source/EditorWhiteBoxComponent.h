@@ -853,6 +853,8 @@ namespace WhiteBox
         void UpdateBooleanSourceListener();
         //! ChangeNotify for the live-boolean / operation fields.
         AZ::u32 OnLiveBooleanChange();
+        //! ChangeNotify for the card's Solver field: cached layer combines were built with the old solver.
+        AZ::u32 OnCsgSolverChange();
         //! ChangeNotify for the Boolean Source field: like OnLiveBooleanChange but forces a
         //! full tree rebuild so the Boolean group shows/hides when a source is set/cleared.
         AZ::u32 OnBooleanSourceChange();

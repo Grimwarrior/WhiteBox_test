@@ -95,9 +95,8 @@ namespace WhiteBox
         //! would bury a pair of coincident faces inside the wall and double its thickness.
         //!
         //! Optionally caps the interior with a floor slab (below z=0) and/or a
-        //! ceiling slab (above z=height). Emitted as several closed, outward-wound solids appended
-        //! together (walls compose cleanly without any CSG - this is a shell, so a boolean is not
-        //! used). All faces are wound outward / into the interior as appropriate.
+        //! ceiling slab (above z=height). Walls and slabs form one closed, outward-wound shell sharing vertices
+        //! wherever they meet, so no coincident faces are left for a later boolean to trip over. No CSG is used.
         void BuildRoomSolid(
             WhiteBoxMesh& mesh, float interiorWidth, float interiorDepth, float interiorHeight, float wallThickness,
             float cavityGap, bool floor, bool ceiling);

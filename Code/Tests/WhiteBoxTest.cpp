@@ -4918,4 +4918,89 @@ namespace UnitTest
         }
         EXPECT_GT(projected, 0u);
     }
+
+    TEST_F(WhiteBoxTestFixture, RoomWithSlabsIsOneClosedShellThatCarvesCleanly)
+    {
+        namespace Api = WhiteBox::Api;
+        const float width = 2.0f;
+        const float depth = 3.0f;
+        const float height = 2.5f;
+        const float thickness = 0.2f;
+        for (const float gap : { 0.0f, 0.1f })
+        {
+            for (const bool floor : { false, true })
+            {
+                for (const bool ceiling : { false, true })
+                {
+                    SCOPED_TRACE(gap);
+                    SCOPED_TRACE(floor);
+                    SCOPED_TRACE(ceiling);
+                    auto room = WhiteBox::BuildParametricShapeMesh(
+                        WhiteBox::DrawShapeType::Room, width, depth, height, 4, 1, thickness, gap, floor, ceiling);
+                    ASSERT_TRUE(room != nullptr);
+
+                    // Slabs and walls share their vertices instead of stacking coincident faces.
+                    for (const auto edge : Api::MeshEdgeHandles(*room))
+                    {
+                        EXPECT_EQ(Api::EdgeFaceHandles(*room, edge).size(), 2);
+                    }
+                    const auto positions = Api::MeshVertexPositions(*room);
+                    for (size_t i = 0; i < positions.size(); ++i)
+                    {
+                        for (size_t j = i + 1; j < positions.size(); ++j)
+                        {
+                            EXPECT_FALSE(positions[i].IsClose(positions[j], 1e-5f));
+                        }
+                    }
+
+                    // Volume: each leaf spans the slabs it stands on; interior and cavity hold only the slabs.
+                    const float slabs = (floor ? thickness : 0.0f) + (ceiling ? thickness : 0.0f);
+                    const auto rect = [width, depth](const float offset)
+                    {
+                        return static_cast<double>((width + 2.0f * offset) * (depth + 2.0f * offset));
+                    };
+                    const double leafHeight = height + slabs;
+                    double expected = rect(0.0f) * slabs + (rect(thickness) - rect(0.0f)) * leafHeight;
+                    if (gap > 0.0f)
+                    {
+                        expected += (rect(thickness + gap) - rect(thickness)) * slabs +
+                            (rect(2.0f * thickness + gap) - rect(thickness + gap)) * leafHeight;
+                    }
+                    double volume = 0.0;
+                    for (const auto face : Api::MeshFaceHandles(*room))
+                    {
+                        const auto p = Api::FaceVertexPositions(*room, face);
+                        volume += static_cast<double>(p[0].Dot(p[1].Cross(p[2]))) / 6.0;
+                    }
+                    EXPECT_NEAR(volume, expected, 1e-3);
+
+                    // A window through the front wall, clear of the slabs: the carve used to fail once slabs were on.
+                    auto cutter = Api::CreateWhiteBoxMesh();
+                    Api::InitializeAsUnitCube(*cutter);
+                    const float wallSpan = gap > 0.0f ? 2.0f * thickness + gap : thickness;
+                    const AZ::Vector3 size(0.8f, 2.0f, 1.0f);
+                    const AZ::Vector3 centre(0.0f, -(depth * 0.5f + wallSpan * 0.5f), 1.0f);
+                    for (const auto vertex : Api::MeshVertexHandles(*cutter))
+                    {
+                        Api::SetVertexPosition(*cutter, vertex, Api::VertexPosition(*cutter, vertex) * size + centre);
+                    }
+                    Api::CalculateNormals(*cutter);
+                    ASSERT_TRUE(Api::ApplyMeshBoolean(
+                        *room, *cutter, AZ::Transform::CreateIdentity(), Api::BooleanOperation::Subtraction));
+                    for (const auto edge : Api::MeshEdgeHandles(*room))
+                    {
+                        EXPECT_EQ(Api::EdgeFaceHandles(*room, edge).size(), 2);
+                    }
+                    double carved = 0.0;
+                    for (const auto face : Api::MeshFaceHandles(*room))
+                    {
+                        const auto p = Api::FaceVertexPositions(*room, face);
+                        carved += static_cast<double>(p[0].Dot(p[1].Cross(p[2]))) / 6.0;
+                    }
+                    const double solidWall = gap > 0.0f ? 2.0 * thickness : thickness;
+                    EXPECT_NEAR(carved, expected - 0.8 * 1.0 * solidWall, 1e-3);
+                }
+            }
+        }
+    }
 }
