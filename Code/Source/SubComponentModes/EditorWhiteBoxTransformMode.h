@@ -100,6 +100,8 @@ namespace WhiteBox
         void BeginLoopCut() override;
         void BeginKnife() override;
         bool IsKnifeActive() const override { return m_knifeActive; }
+        void BeginInsertVertex() override;
+        bool IsInsertVertexActive() const override { return m_insertVertexActive; }
         bool ExpandEdgeSelection(bool ring) override;
 
         // Numeric input bus overrides
@@ -237,6 +239,16 @@ namespace WhiteBox
         AZStd::string m_knifeError;
 
         bool HandleLoopCut(const ModeMouseInteraction& mouse, WhiteBoxMesh& mesh);
+        bool HandleInsertVertex(const ModeMouseInteraction& mouse, WhiteBoxMesh& mesh);
+        //! Leave Insert Vertex with everything it added selected, ready for Connect.
+        void FinishInsertVertex();
+        bool m_insertVertexActive = false;
+        Api::EdgeHandle m_insertVertexEdge; //!< Hovered border edge; invalid when the cursor is over nothing usable.
+        float m_insertVertexFraction = 0.5f;
+        AZ::Vector3 m_insertVertexPoint = AZ::Vector3::CreateZero();
+        AZStd::array<AZ::Vector3, 2> m_insertVertexLine = { AZ::Vector3::CreateZero(), AZ::Vector3::CreateZero() };
+        Api::VertexHandles m_insertedVertices;
+        AZStd::string m_insertVertexError;
         bool m_loopCutActive = false;
         bool m_loopCutSliding = false;
         float m_loopCutSlide = 0.0f;

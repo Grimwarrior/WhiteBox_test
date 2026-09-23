@@ -503,4 +503,292 @@ namespace WhiteBox::ModelingOps
         }
         return { true, "Live bevel: adjust Width, Segments and Profile, then Bake or Cancel." };
     }
+
+    bool CanGrowShrink(const Selection& selection)
+    {
+        return CanSelectLinked(selection);
+    }
+
+    bool CanDetach(const Selection& selection)
+    {
+        return selection.m_editable && !selection.m_polygons.empty();
+    }
+
+    bool CanConnectVertices(const Selection& selection)
+    {
+        return selection.m_editable && selection.m_vertices.size() >= 2;
+    }
+
+    bool CanProjectUvs(const Selection& selection)
+    {
+        return selection.m_editable && !selection.m_polygons.empty();
+    }
+
+    // Grow and shrink share everything but the step, so both run through here.
+    static Result StepSelection(const AZ::EntityComponentIdPair& pair, const bool grow)
+    {
+        EditorWhiteBoxComponent* component = EditableComponentFor(pair);
+        if (component == nullptr)
+        {
+            return { false, "No editable White Box mesh." };
+        }
+        const WhiteBoxMesh& mesh = *component->GetWhiteBoxMesh();
+        const auto polygons = SelectedPolygons(pair);
+        const auto edges = SelectedEdges(pair);
+        const auto vertices = SelectedVertices(pair);
+        size_t before = 0;
+        size_t after = 0;
+        const char* noun = "";
+        if (!polygons.empty())
+        {
+            const auto stepped = grow ? Api::GrowPolygonSelection(mesh, polygons) : Api::ShrinkPolygonSelection(mesh, polygons);
+            before = polygons.size();
+            after = stepped.size();
+            noun = "polygons";
+            if (after != before && after > 0)
+            {
+                EditorWhiteBoxTransformModeRequestBus::Event(pair, &EditorWhiteBoxTransformModeRequests::SetSelectedPolygons, stepped);
+            }
+        }
+        else if (!edges.empty())
+        {
+            const auto stepped = grow ? Api::GrowEdgeSelection(mesh, edges) : Api::ShrinkEdgeSelection(mesh, edges);
+            before = edges.size();
+            after = stepped.size();
+            noun = "edges";
+            if (after != before && after > 0)
+            {
+                EditorWhiteBoxTransformModeRequestBus::Event(pair, &EditorWhiteBoxTransformModeRequests::SetSelectedEdges, stepped);
+            }
+        }
+        else if (!vertices.empty())
+        {
+            const auto stepped = grow ? Api::GrowVertexSelection(mesh, vertices) : Api::ShrinkVertexSelection(mesh, vertices);
+            before = vertices.size();
+            after = stepped.size();
+            noun = "vertices";
+            if (after != before && after > 0)
+            {
+                EditorWhiteBoxTransformModeRequestBus::Event(pair, &EditorWhiteBoxTransformModeRequests::SetSelectedVertices, stepped);
+            }
+        }
+        else
+        {
+            return { false, "Select something to grow or shrink first." };
+        }
+        if (grow && after <= before)
+        {
+            return { false, "Nothing further to add - everything next to the selection is already selected." };
+        }
+        if (!grow && after == 0)
+        {
+            return { false, "Shrinking would empty the selection, so it was kept." };
+        }
+        if (!grow && after == before)
+        {
+            return { false, "Nothing to drop - no selected element touches an unselected one." };
+        }
+        return { true, AZStd::string::format("%zu %s selected.", after, noun) };
+    }
+
+    Result GrowSelection(const AZ::EntityComponentIdPair& entityComponentIdPair)
+    {
+        return StepSelection(entityComponentIdPair, true);
+    }
+
+    Result ShrinkSelection(const AZ::EntityComponentIdPair& entityComponentIdPair)
+    {
+        return StepSelection(entityComponentIdPair, false);
+    }
+
+    Result ConvertSelection(
+        const AZ::EntityComponentIdPair& entityComponentIdPair, const Api::SelectionElement target, const bool touching)
+    {
+        EditorWhiteBoxComponent* component = EditableComponentFor(entityComponentIdPair);
+        if (component == nullptr)
+        {
+            return { false, "No editable White Box mesh." };
+        }
+        Api::ElementSelection source;
+        source.m_polygons = SelectedPolygons(entityComponentIdPair);
+        source.m_edges = SelectedEdges(entityComponentIdPair);
+        source.m_vertices = SelectedVertices(entityComponentIdPair);
+        const auto countOf = [target](const Api::ElementSelection& selection)
+        {
+            return target == Api::SelectionElement::Polygon ? selection.m_polygons.size()
+                : target == Api::SelectionElement::Edge     ? selection.m_edges.size()
+                                                            : selection.m_vertices.size();
+        };
+        // Nothing selected, or already the wanted type: the filter change alone is the whole job.
+        if ((source.m_polygons.empty() && source.m_edges.empty() && source.m_vertices.empty()) || countOf(source) > 0)
+        {
+            return { true, {} };
+        }
+        const WhiteBoxMesh& mesh = *component->GetWhiteBoxMesh();
+        auto converted = Api::ConvertSelection(mesh, source, target, touching);
+        // Nothing enclosed (one vertex into faces, say): take what it touches rather than drop the selection.
+        if (countOf(converted) == 0 && !touching)
+        {
+            converted = Api::ConvertSelection(mesh, source, target, true);
+        }
+        if (target == Api::SelectionElement::Polygon)
+        {
+            EditorWhiteBoxTransformModeRequestBus::Event(
+                entityComponentIdPair, &EditorWhiteBoxTransformModeRequests::SetSelectedPolygons, converted.m_polygons);
+        }
+        else if (target == Api::SelectionElement::Edge)
+        {
+            EditorWhiteBoxTransformModeRequestBus::Event(
+                entityComponentIdPair, &EditorWhiteBoxTransformModeRequests::SetSelectedEdges, converted.m_edges);
+        }
+        else
+        {
+            EditorWhiteBoxTransformModeRequestBus::Event(
+                entityComponentIdPair, &EditorWhiteBoxTransformModeRequests::SetSelectedVertices, converted.m_vertices);
+        }
+        return { true, AZStd::string::format("%zu selected after conversion.", countOf(converted)) };
+    }
+
+    Result DetachToLayer(const AZ::EntityComponentIdPair& entityComponentIdPair)
+    {
+        EditorWhiteBoxComponent* component = EditableComponentFor(entityComponentIdPair);
+        if (component == nullptr)
+        {
+            return { false, "No editable White Box mesh." };
+        }
+        const Api::PolygonHandles polygons = SelectedPolygons(entityComponentIdPair);
+
+        AZStd::string error;
+        size_t detached = 0;
+        {
+            AzToolsFramework::ScopedUndoBatch undoBatch("White Box Detach to Layer");
+            // Success refreshes component mode, which drops the old handles; failure leaves the selection alone.
+            if (!component->DetachPolygonsToLayer(polygons, error))
+            {
+                return { false, error };
+            }
+            EditorWhiteBoxComponentNotificationBus::Event(
+                entityComponentIdPair, &EditorWhiteBoxComponentNotifications::OnWhiteBoxMeshModified);
+            // The new layer is active and holds exactly what was detached, so select all of it.
+            const Api::PolygonHandles moved = Api::MeshPolygonHandles(*component->GetWhiteBoxMesh());
+            detached = moved.size();
+            EditorWhiteBoxTransformModeRequestBus::Event(
+                entityComponentIdPair, &EditorWhiteBoxTransformModeRequests::SetSelectedPolygons, moved);
+            undoBatch.MarkEntityDirty(entityComponentIdPair.GetEntityId());
+        }
+        return { true, AZStd::string::format(
+            "%zu polygon%s moved to a new layer. Undo puts them back.", detached, detached == 1 ? "" : "s") };
+    }
+
+    Result ConnectVertices(const AZ::EntityComponentIdPair& entityComponentIdPair)
+    {
+        EditorWhiteBoxComponent* component = EditableComponentFor(entityComponentIdPair);
+        if (component == nullptr)
+        {
+            return { false, "No editable White Box mesh." };
+        }
+        const Api::VertexHandles vertices = SelectedVertices(entityComponentIdPair);
+
+        AZStd::string error;
+        Api::EdgeHandles created;
+        {
+            AzToolsFramework::ScopedUndoBatch undoBatch("White Box Connect Vertices");
+            if (!Api::ConnectVertices(*component->GetWhiteBoxMesh(), vertices, error, &created))
+            {
+                return { false, error };
+            }
+            CommitMeshEdit(*component, entityComponentIdPair);
+            // The new edges are selected so they can be slid or beveled straight away.
+            EditorWhiteBoxTransformModeRequestBus::Event(
+                entityComponentIdPair, &EditorWhiteBoxTransformModeRequests::SetSelectedEdges, created);
+            undoBatch.MarkEntityDirty(entityComponentIdPair.GetEntityId());
+        }
+        return { true, AZStd::string::format("%zu edge%s added.", created.size(), created.size() == 1 ? "" : "s") };
+    }
+
+    Result BeginInsertVertex(const AZ::EntityComponentIdPair& entityComponentIdPair)
+    {
+        if (EditableComponentFor(entityComponentIdPair) == nullptr)
+        {
+            return { false, "No editable White Box mesh." };
+        }
+        EditorWhiteBoxTransformModeRequestBus::Event(entityComponentIdPair, &EditorWhiteBoxTransformModeRequests::BeginInsertVertex);
+        return { true, "Click polygon edges to add vertices. Ctrl: midpoint. Shift: tenths. Esc / right-click: finish." };
+    }
+
+    // The selected polygons that still exist; a stale handle would otherwise index a face that moved.
+    static Api::PolygonHandles LivePolygons(const WhiteBoxMesh& mesh, const Api::PolygonHandles& polygons)
+    {
+        const Api::PolygonHandles all = Api::MeshPolygonHandles(mesh);
+        Api::PolygonHandles live;
+        for (const auto& polygon : polygons)
+        {
+            if (AZStd::find(all.begin(), all.end(), polygon) != all.end())
+            {
+                live.push_back(polygon);
+            }
+        }
+        return live;
+    }
+
+    AZStd::optional<Api::UvProjection> SelectedUvProjection(const AZ::EntityComponentIdPair& entityComponentIdPair)
+    {
+        EditorWhiteBoxComponent* component = EditableComponentFor(entityComponentIdPair);
+        if (component == nullptr)
+        {
+            return AZStd::nullopt;
+        }
+        const auto polygons = LivePolygons(*component->GetWhiteBoxMesh(), SelectedPolygons(entityComponentIdPair));
+        if (polygons.empty())
+        {
+            return AZStd::nullopt;
+        }
+        return Api::FaceUvProjection(*component->GetWhiteBoxMesh(), polygons.front().m_faceHandles.front());
+    }
+
+    // Shared by Apply and Fit: the polygons keep their handles, so the selection survives the edit.
+    template<typename Edit>
+    static Result EditUvProjection(const AZ::EntityComponentIdPair& pair, const char* undoName, Edit&& edit)
+    {
+        EditorWhiteBoxComponent* component = EditableComponentFor(pair);
+        if (component == nullptr)
+        {
+            return { false, "No editable White Box mesh." };
+        }
+        const auto polygons = LivePolygons(*component->GetWhiteBoxMesh(), SelectedPolygons(pair));
+        if (polygons.empty())
+        {
+            return { false, "Select one or more polygons in Transform mode." };
+        }
+        {
+            AzToolsFramework::ScopedUndoBatch undoBatch(undoName);
+            edit(*component->GetWhiteBoxMesh(), polygons);
+            // A parametric layer would regenerate over the stored projection, so it is frozen like any face edit.
+            component->BakeParametricLayer(component->GetActiveLayerIndex());
+            component->SerializeWhiteBox();
+            EditorWhiteBoxComponentNotificationBus::Event(pair, &EditorWhiteBoxComponentNotifications::OnWhiteBoxMeshModified);
+            undoBatch.MarkEntityDirty(pair.GetEntityId());
+        }
+        return { true, AZStd::string::format("UVs updated on %zu polygon%s.", polygons.size(), polygons.size() == 1 ? "" : "s") };
+    }
+
+    Result ApplyUvProjection(const AZ::EntityComponentIdPair& entityComponentIdPair, const Api::UvProjection& projection)
+    {
+        return EditUvProjection(
+            entityComponentIdPair, "White Box UV Projection",
+            [&projection](WhiteBoxMesh& mesh, const Api::PolygonHandles& polygons)
+            {
+                Api::SetPolygonUvProjection(mesh, polygons, projection);
+            });
+    }
+
+    Result FitUvProjection(const AZ::EntityComponentIdPair& entityComponentIdPair)
+    {
+        return EditUvProjection(
+            entityComponentIdPair, "White Box Fit UVs",
+            [](WhiteBoxMesh& mesh, const Api::PolygonHandles& polygons)
+            {
+                Api::FitPolygonUvProjection(mesh, polygons);
+            });
+    }
 } // namespace WhiteBox::ModelingOps

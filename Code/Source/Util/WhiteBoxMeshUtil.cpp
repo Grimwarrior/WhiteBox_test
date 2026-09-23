@@ -52,12 +52,7 @@ namespace WhiteBox
             }
             if (!faceVertHandles.empty())
             {
-                const Api::PolygonHandle added = Api::AddPolygon(dest, faceVertHandles);
-                for (size_t face = 0; face < added.m_faceHandles.size() && face < polygon.m_faceHandles.size(); ++face)
-                {
-                    Api::SetFaceMaterial(dest, added.m_faceHandles[face], Api::FaceMaterial(src, polygon.m_faceHandles[face]));
-                    Api::SetFacePaintColor(dest, added.m_faceHandles[face], Api::FacePaintColor(src, polygon.m_faceHandles[face]));
-                }
+                Api::CopyFaceAttributes(dest, Api::AddPolygon(dest, faceVertHandles).m_faceHandles, src, polygon.m_faceHandles);
             }
         }
     }
@@ -145,12 +140,7 @@ namespace WhiteBox
             }
             if (!faceVertHandles.empty())
             {
-                const Api::PolygonHandle added = Api::AddPolygon(*dest, faceVertHandles);
-                for (size_t face = 0; face < added.m_faceHandles.size() && face < polygon.m_faceHandles.size(); ++face)
-                {
-                    Api::SetFaceMaterial(*dest, added.m_faceHandles[face], Api::FaceMaterial(src, polygon.m_faceHandles[face]));
-                    Api::SetFacePaintColor(*dest, added.m_faceHandles[face], Api::FacePaintColor(src, polygon.m_faceHandles[face]));
-                }
+                Api::CopyFaceAttributes(*dest, Api::AddPolygon(*dest, faceVertHandles).m_faceHandles, src, polygon.m_faceHandles);
             }
         }
 

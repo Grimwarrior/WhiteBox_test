@@ -253,6 +253,18 @@ namespace WhiteBox
     using VertexBoolPropertyHandle = OpenMesh::VPropHandleT<bool>;
     // unique string to lookup the vertex custom property via get_property_handle
     static const char* const VertexHiddenProp = "vertex-hidden-props";
+    // stored form of Api::UvProjection; new faces value-initialise to the original mapping
+    struct FaceUvProjectionInternal
+    {
+        AZ::u32 m_mode = 0;
+        float m_scaleU = 1.0f;
+        float m_scaleV = 1.0f;
+        float m_offsetU = 0.0f;
+        float m_offsetV = 0.0f;
+        float m_rotation = 0.0f;
+    };
+    using FaceUvProjectionPropertyHandle = OpenMesh::FPropHandleT<FaceUvProjectionInternal>;
+    static const char* const FaceUvProjectionProp = "WhiteBoxFaceUvProjection";
 } // namespace WhiteBox
 
 namespace OpenMesh::IO
@@ -402,6 +414,48 @@ namespace OpenMesh::IO
                 _v[value_type::key_type(key)] = val;
             }
 
+            return _is.good() ? bytes : 0;
+        }
+    };
+
+    template<>
+    struct binary<WhiteBox::FaceUvProjectionInternal>
+    {
+        using value_type = WhiteBox::FaceUvProjectionInternal;
+        static const bool is_streamable = true;
+
+        static std::string type_identifier(void) { return "WhiteBox::FaceUvProjection"; }
+
+        // UnknownSize keeps PropertyT on its per-element path instead of a raw memory copy.
+        static size_t size_of()
+        {
+            return UnknownSize;
+        }
+
+        static size_t size_of(const value_type& /*_v*/)
+        {
+            return sizeof(uint32_t) + 5 * sizeof(float);
+        }
+
+        static size_t store(std::ostream& _os, const value_type& _v, bool _swap = false)
+        {
+            size_t bytes = IO::store(_os, static_cast<uint32_t>(_v.m_mode), _swap);
+            for (const float value : { _v.m_scaleU, _v.m_scaleV, _v.m_offsetU, _v.m_offsetV, _v.m_rotation })
+            {
+                bytes += IO::store(_os, value, _swap);
+            }
+            return _os.good() ? bytes : 0;
+        }
+
+        static size_t restore(std::istream& _is, value_type& _v, bool _swap = false)
+        {
+            uint32_t mode = 0;
+            size_t bytes = IO::restore(_is, mode, _swap);
+            _v.m_mode = mode;
+            for (float* value : { &_v.m_scaleU, &_v.m_scaleV, &_v.m_offsetU, &_v.m_offsetV, &_v.m_rotation })
+            {
+                bytes += IO::restore(_is, *value, _swap);
+            }
             return _is.good() ? bytes : 0;
         }
     };
@@ -596,6 +650,13 @@ namespace WhiteBox
                 whiteBox.mesh.add_property(colorProperty, "WhiteBoxFacePaintColor");
             }
             whiteBox.mesh.property(colorProperty).set_persistent(true);
+
+            FaceUvProjectionPropertyHandle uvProjectionProperty;
+            if (!whiteBox.mesh.get_property_handle(uvProjectionProperty, FaceUvProjectionProp))
+            {
+                whiteBox.mesh.add_property(uvProjectionProperty, FaceUvProjectionProp);
+            }
+            whiteBox.mesh.property(uvProjectionProperty).set_persistent(true);
 
             // request default properties required for all white box meshes
             whiteBox.mesh.request_face_normals();
@@ -1768,12 +1829,9 @@ namespace WhiteBox
                 const auto newFrom = AddVertex(*candidate, fromPosition + displacement);
                 const auto polygon = AddQuadWithoutFallback(*candidate, {{from, to, newTo, newFrom}});
                 if (polygon.m_faceHandles.size() != 2) { return edgeHandle; }
-                const auto material = FaceMaterial(whiteBox, neighbors[0]);
-                const auto paint = FacePaintColor(whiteBox, neighbors[0]);
                 for (const auto face : polygon.m_faceHandles)
                 {
-                    SetFaceMaterial(*candidate, face, material);
-                    SetFacePaintColor(*candidate, face, paint);
+                    CopyFaceAttributes(*candidate, face, whiteBox, neighbors[0]);
                 }
                 CalculateNormals(*candidate);
                 CalculatePlanarUVs(*candidate, polygon.m_faceHandles);
@@ -2099,23 +2157,124 @@ namespace WhiteBox
             return faces;
         }
 
+        static UvProjection ToUvProjection(const FaceUvProjectionInternal& stored)
+        {
+            UvProjection projection;
+            projection.m_mode = stored.m_mode == static_cast<AZ::u32>(UvProjectionMode::Planar) ? UvProjectionMode::Planar
+                                                                                                : UvProjectionMode::World;
+            projection.m_scale = AZ::Vector2(stored.m_scaleU, stored.m_scaleV);
+            projection.m_offset = AZ::Vector2(stored.m_offsetU, stored.m_offsetV);
+            projection.m_rotationDegrees = stored.m_rotation;
+            return projection;
+        }
+
+        static FaceUvProjectionInternal ToFaceUvProjectionInternal(const UvProjection& projection)
+        {
+            FaceUvProjectionInternal stored;
+            stored.m_mode = static_cast<AZ::u32>(projection.m_mode);
+            stored.m_scaleU = projection.m_scale.GetX();
+            stored.m_scaleV = projection.m_scale.GetY();
+            stored.m_offsetU = projection.m_offset.GetX();
+            stored.m_offsetV = projection.m_offset.GetY();
+            stored.m_rotation = projection.m_rotationDegrees;
+            return stored;
+        }
+
+        // Exact field test, cheap enough for every face of every recalculation.
+        static bool IsDefaultFaceUvProjection(const FaceUvProjectionInternal& stored)
+        {
+            return stored.m_mode == 0 && stored.m_scaleU == 1.0f && stored.m_scaleV == 1.0f && stored.m_offsetU == 0.0f &&
+                stored.m_offsetV == 0.0f && stored.m_rotation == 0.0f;
+        }
+
+        // Maps one face's positions to UVs, with the per-face work done once.
+        class FaceUvMapper
+        {
+        public:
+            FaceUvMapper(const UvProjection& projection, const AZ::Vector3& normal)
+                : m_projection(projection)
+                , m_normal(normal)
+                , m_default(projection.IsDefault())
+            {
+                if (projection.m_mode == UvProjectionMode::Planar)
+                {
+                    // Sign the normal by its largest component so both windings of a face map alike.
+                    AZ::Vector3 facing = normal.GetNormalizedSafe();
+                    if (facing.GetElement(FindLargestElement(facing)) < 0.0f)
+                    {
+                        facing = -facing;
+                    }
+                    // U stays horizontal so wall textures stand upright; a flat face falls back to X.
+                    m_uAxis = AZ::Vector3::CreateAxisZ().Cross(facing);
+                    m_uAxis = m_uAxis.GetLengthSq() < 1e-6f ? AZ::Vector3::CreateAxisX() : m_uAxis.GetNormalized();
+                    m_vAxis = facing.Cross(m_uAxis);
+                }
+                if (!m_default && projection.m_rotationDegrees != 0.0f)
+                {
+                    const float radians = AZ::DegToRad(projection.m_rotationDegrees);
+                    m_cos = std::cos(radians);
+                    m_sin = std::sin(radians);
+                }
+            }
+
+            // The projected coordinate before scale and offset.
+            AZ::Vector2 Rotated(const AZ::Vector3& position) const
+            {
+                // Image rows run downward, so V is negated to keep up on the surface up in the texture.
+                const AZ::Vector2 raw = m_projection.m_mode == UvProjectionMode::Planar
+                    ? AZ::Vector2(position.Dot(m_uAxis), -position.Dot(m_vAxis))
+                    : CreatePlanarUVFromVertex(m_normal, position);
+                return AZ::Vector2(raw.GetX() * m_cos - raw.GetY() * m_sin, raw.GetX() * m_sin + raw.GetY() * m_cos);
+            }
+
+            AZ::Vector2 operator()(const AZ::Vector3& position) const
+            {
+                return m_default ? CreatePlanarUVFromVertex(m_normal, position)
+                                 : Rotated(position) * m_projection.m_scale + m_projection.m_offset;
+            }
+
+        private:
+            UvProjection m_projection;
+            AZ::Vector3 m_normal;
+            AZ::Vector3 m_uAxis = AZ::Vector3::CreateAxisX();
+            AZ::Vector3 m_vAxis = AZ::Vector3::CreateAxisY();
+            float m_cos = 1.0f;
+            float m_sin = 0.0f;
+            bool m_default = true;
+        };
+
         void CalculatePlanarUVs(WhiteBoxMesh& whiteBox, const FaceHandles& faceHandles)
         {
             AZ_PROFILE_FUNCTION(AzToolsFramework);
 
             auto& mesh = whiteBox.mesh;
+            FaceUvProjectionPropertyHandle projectionProperty;
+            const bool hasProjections = mesh.get_property_handle(projectionProperty, FaceUvProjectionProp);
             for (const auto& faceHandle : faceHandles)
             {
+                const AZ::Vector3 normal = FaceNormal(whiteBox, faceHandle);
+                const FaceUvProjectionInternal* stored =
+                    hasProjections ? &mesh.property(projectionProperty, om_fh(faceHandle)) : nullptr;
+                // Nearly every face uses the default, so it skips the mapper and its trigonometry entirely.
+                if (stored == nullptr || IsDefaultFaceUvProjection(*stored))
+                {
+                    for (Mesh::ConstFaceHalfedgeCCWIter faceHalfedgeIt = mesh.fh_ccwiter(om_fh(faceHandle));
+                         faceHalfedgeIt.is_valid(); ++faceHalfedgeIt)
+                    {
+                        const Mesh::HalfedgeHandle heh = *faceHalfedgeIt;
+                        const AZ::Vector3 position = mesh.point(mesh.to_vertex_handle(heh));
+                        const Mesh::TexCoord2D uv = CreatePlanarUVFromVertex(normal, position);
+                        mesh.set_texcoord2D(heh, uv);
+                    }
+                    continue;
+                }
+                const FaceUvMapper mapper(ToUvProjection(*stored), normal);
                 for (Mesh::ConstFaceHalfedgeCCWIter faceHalfedgeIt = mesh.fh_ccwiter(om_fh(faceHandle));
                      faceHalfedgeIt.is_valid(); ++faceHalfedgeIt)
                 {
                     const Mesh::HalfedgeHandle heh = *faceHalfedgeIt;
-                    const Mesh::VertexHandle vh = mesh.to_vertex_handle(heh);
-
-                    const AZ::Vector3 position = mesh.point(vh);
-                    const AZ::Vector3 normal = FaceNormal(whiteBox, faceHandle);
-                    const Mesh::TexCoord2D uv = CreatePlanarUVFromVertex(normal, position);
-
+                    const AZ::Vector3 position = mesh.point(mesh.to_vertex_handle(heh));
+                    const Mesh::TexCoord2D uv = mapper(position);
                     mesh.set_texcoord2D(heh, uv);
                 }
             }
@@ -3589,6 +3748,160 @@ namespace WhiteBox
             }
         }
 
+        bool UvProjection::IsDefault() const
+        {
+            return *this == UvProjection{};
+        }
+
+        bool UvProjection::operator==(const UvProjection& other) const
+        {
+            return m_mode == other.m_mode && m_scale.IsClose(other.m_scale, 1e-6f) && m_offset.IsClose(other.m_offset, 1e-6f) &&
+                AZ::IsClose(m_rotationDegrees, other.m_rotationDegrees, 1e-6f);
+        }
+
+        UvProjection FaceUvProjection(const WhiteBoxMesh& whiteBox, const FaceHandle face)
+        {
+            FaceUvProjectionPropertyHandle property;
+            return whiteBox.mesh.get_property_handle(property, FaceUvProjectionProp)
+                ? ToUvProjection(whiteBox.mesh.property(property, om_fh(face))) : UvProjection{};
+        }
+
+        void SetFaceUvProjection(WhiteBoxMesh& whiteBox, const FaceHandle face, const UvProjection& projection)
+        {
+            FaceUvProjectionPropertyHandle property;
+            if (!whiteBox.mesh.get_property_handle(property, FaceUvProjectionProp))
+            {
+                whiteBox.mesh.add_property(property, FaceUvProjectionProp);
+            }
+            whiteBox.mesh.property(property).set_persistent(true);
+            whiteBox.mesh.property(property, om_fh(face)) = ToFaceUvProjectionInternal(projection);
+        }
+
+        void SetPolygonUvProjection(WhiteBoxMesh& whiteBox, const PolygonHandles& polygons, const UvProjection& projection)
+        {
+            FaceHandles faces;
+            for (const auto& polygon : polygons)
+            {
+                for (const FaceHandle face : polygon.m_faceHandles)
+                {
+                    SetFaceUvProjection(whiteBox, face, projection);
+                    faces.push_back(face);
+                }
+            }
+            CalculatePlanarUVs(whiteBox, faces);
+        }
+
+        void FitPolygonUvProjection(WhiteBoxMesh& whiteBox, const PolygonHandles& polygons)
+        {
+            FaceHandles faces;
+            for (const auto& polygon : polygons)
+            {
+                if (polygon.m_faceHandles.empty())
+                {
+                    continue;
+                }
+                // Mode and rotation come from the polygon; only the placement is fitted.
+                UvProjection projection = FaceUvProjection(whiteBox, polygon.m_faceHandles.front());
+                projection.m_scale = AZ::Vector2(1.0f, 1.0f);
+                projection.m_offset = AZ::Vector2::CreateZero();
+                AZ::Vector2 low(AZ::Constants::FloatMax, AZ::Constants::FloatMax);
+                AZ::Vector2 high(-AZ::Constants::FloatMax, -AZ::Constants::FloatMax);
+                for (const FaceHandle face : polygon.m_faceHandles)
+                {
+                    const FaceUvMapper mapper(projection, FaceNormal(whiteBox, face));
+                    for (const auto& position : FaceVertexPositions(whiteBox, face))
+                    {
+                        const AZ::Vector2 uv = mapper.Rotated(position);
+                        low = low.GetMin(uv);
+                        high = high.GetMax(uv);
+                    }
+                }
+                const AZ::Vector2 extent = high - low;
+                // A polygon seen edge-on has no extent on one axis; leave that axis unscaled rather than divide by zero.
+                projection.m_scale = AZ::Vector2(
+                    extent.GetX() > 1e-6f ? 1.0f / extent.GetX() : 1.0f, extent.GetY() > 1e-6f ? 1.0f / extent.GetY() : 1.0f);
+                projection.m_offset = -low * projection.m_scale;
+                for (const FaceHandle face : polygon.m_faceHandles)
+                {
+                    SetFaceUvProjection(whiteBox, face, projection);
+                    faces.push_back(face);
+                }
+            }
+            CalculatePlanarUVs(whiteBox, faces);
+        }
+
+        // Raw per-face attribute storage resolved once, so copies skip the name lookups and the asset id round trip.
+        struct FaceAttributeProperties
+        {
+            OpenMesh::FPropHandleT<std::string> m_material;
+            OpenMesh::FPropHandleT<unsigned int> m_paint;
+            FaceUvProjectionPropertyHandle m_uvProjection;
+            bool m_hasMaterial = false;
+            bool m_hasPaint = false;
+            bool m_hasUvProjection = false;
+
+            explicit FaceAttributeProperties(const WhiteBoxMesh& whiteBox)
+            {
+                m_hasMaterial = whiteBox.mesh.get_property_handle(m_material, "WhiteBoxFaceMaterial");
+                m_hasPaint = whiteBox.mesh.get_property_handle(m_paint, "WhiteBoxFacePaintColor");
+                m_hasUvProjection = whiteBox.mesh.get_property_handle(m_uvProjection, FaceUvProjectionProp);
+            }
+
+            // Target side: every property exists and persists, as the Set functions would leave it.
+            explicit FaceAttributeProperties(WhiteBoxMesh& whiteBox)
+                : FaceAttributeProperties(static_cast<const WhiteBoxMesh&>(whiteBox))
+            {
+                if (!m_hasMaterial)
+                {
+                    whiteBox.mesh.add_property(m_material, "WhiteBoxFaceMaterial");
+                    whiteBox.mesh.property(m_material).set_persistent(true);
+                }
+                if (!m_hasPaint)
+                {
+                    whiteBox.mesh.add_property(m_paint, "WhiteBoxFacePaintColor");
+                    whiteBox.mesh.property(m_paint).set_persistent(true);
+                }
+                if (!m_hasUvProjection)
+                {
+                    whiteBox.mesh.add_property(m_uvProjection, FaceUvProjectionProp);
+                    whiteBox.mesh.property(m_uvProjection).set_persistent(true);
+                }
+                m_hasMaterial = m_hasPaint = m_hasUvProjection = true;
+            }
+        };
+
+        static void CopyFaceAttributes(
+            WhiteBoxMesh& target, const FaceAttributeProperties& to, const FaceHandle targetFace, const WhiteBoxMesh& source,
+            const FaceAttributeProperties& from, const FaceHandle sourceFace)
+        {
+            const auto sourceHandle = om_fh(sourceFace);
+            const auto targetHandle = om_fh(targetFace);
+            target.mesh.property(to.m_material, targetHandle) =
+                from.m_hasMaterial ? source.mesh.property(from.m_material, sourceHandle) : std::string{};
+            target.mesh.property(to.m_paint, targetHandle) = from.m_hasPaint ? source.mesh.property(from.m_paint, sourceHandle) : 0u;
+            target.mesh.property(to.m_uvProjection, targetHandle) =
+                from.m_hasUvProjection ? source.mesh.property(from.m_uvProjection, sourceHandle) : FaceUvProjectionInternal{};
+        }
+
+        void CopyFaceAttributes(
+            WhiteBoxMesh& target, const FaceHandle targetFace, const WhiteBoxMesh& source, const FaceHandle sourceFace)
+        {
+            const FaceAttributeProperties from(source);
+            const FaceAttributeProperties to(target);
+            CopyFaceAttributes(target, to, targetFace, source, from, sourceFace);
+        }
+
+        void CopyFaceAttributes(
+            WhiteBoxMesh& target, const FaceHandles& targetFaces, const WhiteBoxMesh& source, const FaceHandles& sourceFaces)
+        {
+            const FaceAttributeProperties from(source);
+            const FaceAttributeProperties to(target);
+            for (size_t i = 0; i < targetFaces.size() && i < sourceFaces.size(); ++i)
+            {
+                CopyFaceAttributes(target, to, targetFaces[i], source, from, sourceFaces[i]);
+            }
+        }
+
         bool WriteMesh(const WhiteBoxMesh& whiteBox, WhiteBoxMeshStream& output)
         {
             AZ_PROFILE_FUNCTION(AzToolsFramework);
@@ -3859,8 +4172,6 @@ namespace WhiteBox
                 AZStd::reverse(second.begin(), second.end());
             }
 
-            const auto material = FaceMaterial(whiteBox, sourceFace);
-            const auto paint = FacePaintColor(whiteBox, sourceFace);
             auto candidate = CloneMesh(whiteBox);
             if (!removedFaces.empty())
             {
@@ -3894,8 +4205,7 @@ namespace WhiteBox
                 for (const auto face : newPolygon.m_faceHandles)
                 {
                     addedFaces.push_back(face);
-                    SetFaceMaterial(*candidate, face, material);
-                    SetFacePaintColor(*candidate, face, paint);
+                    CopyFaceAttributes(*candidate, face, whiteBox, sourceFace);
                 }
             }
             CalculateNormals(*candidate);
@@ -4149,8 +4459,6 @@ namespace WhiteBox
             }
 
             const auto sourceFace = EdgeFaceHandles(whiteBox, edges[0]).front();
-            const auto material = FaceMaterial(whiteBox, sourceFace);
-            const auto paint = FacePaintColor(whiteBox, sourceFace);
             auto candidate = CloneMesh(whiteBox);
             FaceHandlesInternal faces;
             faces.reserve(triangles.size());
@@ -4179,8 +4487,7 @@ namespace WhiteBox
             {
                 groups[face] = faces; // one polygon, so the fill selects and textures as a single face
                 added.push_back(wb_fh(face));
-                SetFaceMaterial(*candidate, added.back(), material);
-                SetFacePaintColor(*candidate, added.back(), paint);
+                CopyFaceAttributes(*candidate, added.back(), whiteBox, sourceFace);
             }
             CalculateNormals(*candidate);
             CalculatePlanarUVs(*candidate, added);
@@ -4675,8 +4982,7 @@ namespace WhiteBox
                 const auto added = candidate->mesh.add_face(om_vh(v[0]), om_vh(v[1]), om_vh(v[2]));
                 if (!added.is_valid()) { return fail("Weld would create invalid face connections. The mesh was left unchanged."); }
                 face.m_result = wb_fh(added);
-                SetFaceMaterial(*candidate, face.m_result, FaceMaterial(whiteBox, face.m_source));
-                SetFacePaintColor(*candidate, face.m_result, FacePaintColor(whiteBox, face.m_source));
+                CopyFaceAttributes(*candidate, face.m_result, whiteBox, face.m_source);
                 for (size_t i = 0; i < 3; ++i)
                 {
                     const auto halfedge = candidate->mesh.find_halfedge(om_vh(v[(i + 2) % 3]), om_vh(v[i]));
@@ -4879,6 +5185,1056 @@ namespace WhiteBox
             return FindPolygonStrip(whiteBox, seeds, true);
         }
 
+        // Polygon index of every face, so adjacency questions become array lookups.
+        static AZStd::vector<int> FacePolygonIndices(const WhiteBoxMesh& whiteBox, const PolygonHandles& polygons)
+        {
+            AZStd::vector<int> owner(whiteBox.mesh.n_faces(), -1);
+            for (size_t i = 0; i < polygons.size(); ++i)
+            {
+                for (const auto face : polygons[i].m_faceHandles)
+                {
+                    if (face.IsValid() && static_cast<size_t>(face.Index()) < owner.size())
+                    {
+                        owner[face.Index()] = static_cast<int>(i);
+                    }
+                }
+            }
+            return owner;
+        }
+
+        // Index of a seed among the mesh's polygons, or -1 when the seed is stale.
+        static int PolygonIndex(const PolygonHandles& polygons, const AZStd::vector<int>& owner, const PolygonHandle& seed)
+        {
+            if (seed.m_faceHandles.empty() || !seed.m_faceHandles.front().IsValid() ||
+                static_cast<size_t>(seed.m_faceHandles.front().Index()) >= owner.size())
+            {
+                return -1;
+            }
+            const int index = owner[seed.m_faceHandles.front().Index()];
+            return index >= 0 && polygons[index] == seed ? index : -1;
+        }
+
+        // Seeds first in their own order, then every other marked polygon in mesh order.
+        static PolygonHandles MarkedPolygons(
+            const PolygonHandles& polygons, const AZStd::vector<int>& owner, const PolygonHandles& seeds,
+            const AZStd::vector<bool>& marked)
+        {
+            PolygonHandles result;
+            AZStd::vector<bool> taken(polygons.size(), false);
+            for (const auto& seed : seeds)
+            {
+                const int index = PolygonIndex(polygons, owner, seed);
+                if (index >= 0 && marked[index] && !taken[index])
+                {
+                    taken[index] = true;
+                    result.push_back(polygons[index]);
+                }
+            }
+            for (size_t i = 0; i < polygons.size(); ++i)
+            {
+                if (marked[i] && !taken[i])
+                {
+                    result.push_back(polygons[i]);
+                }
+            }
+            return result;
+        }
+
+        // Calls visit with the index of every polygon sharing a corner with the given one, itself included.
+        template<typename Visit>
+        static void ForEachCornerNeighbour(
+            const WhiteBoxMesh& whiteBox, const PolygonHandle& polygon, const AZStd::vector<int>& owner, Visit&& visit)
+        {
+            for (const auto face : polygon.m_faceHandles)
+            {
+                for (const auto vertex : FaceVertexHandles(whiteBox, face))
+                {
+                    for (const auto halfedge : VertexOutgoingHalfedgeHandles(whiteBox, vertex))
+                    {
+                        const auto neighbour = HalfedgeFaceHandle(whiteBox, halfedge);
+                        if (neighbour.IsValid() && owner[neighbour.Index()] >= 0)
+                        {
+                            visit(owner[neighbour.Index()]);
+                        }
+                    }
+                }
+            }
+        }
+
+        PolygonHandles GrowPolygonSelection(const WhiteBoxMesh& whiteBox, const PolygonHandles& seeds)
+        {
+            AZ_PROFILE_FUNCTION(AzToolsFramework);
+
+            const auto polygons = MeshPolygonHandles(whiteBox);
+            const auto owner = FacePolygonIndices(whiteBox, polygons);
+            AZStd::vector<bool> grown(polygons.size(), false);
+            for (const auto& seed : seeds)
+            {
+                if (const int index = PolygonIndex(polygons, owner, seed); index >= 0)
+                {
+                    grown[index] = true;
+                    ForEachCornerNeighbour(
+                        whiteBox, polygons[index], owner,
+                        [&grown](const int neighbour)
+                        {
+                            grown[neighbour] = true;
+                        });
+                }
+            }
+            return MarkedPolygons(polygons, owner, seeds, grown);
+        }
+
+        PolygonHandles ShrinkPolygonSelection(const WhiteBoxMesh& whiteBox, const PolygonHandles& seeds)
+        {
+            AZ_PROFILE_FUNCTION(AzToolsFramework);
+
+            const auto polygons = MeshPolygonHandles(whiteBox);
+            const auto owner = FacePolygonIndices(whiteBox, polygons);
+            AZStd::vector<bool> chosen(polygons.size(), false);
+            for (const auto& seed : seeds)
+            {
+                if (const int index = PolygonIndex(polygons, owner, seed); index >= 0)
+                {
+                    chosen[index] = true;
+                }
+            }
+            AZStd::vector<bool> kept = chosen;
+            for (size_t i = 0; i < polygons.size(); ++i)
+            {
+                if (chosen[i])
+                {
+                    ForEachCornerNeighbour(
+                        whiteBox, polygons[i], owner,
+                        [&chosen, &kept, i](const int neighbour)
+                        {
+                            if (!chosen[neighbour])
+                            {
+                                kept[i] = false;
+                            }
+                        });
+                }
+            }
+            return MarkedPolygons(polygons, owner, seeds, kept);
+        }
+
+        // Polygon border edges: the only edges an edge selection can hold.
+        static AZStd::vector<bool> PolygonEdgeMask(const WhiteBoxMesh& whiteBox)
+        {
+            AZStd::vector<bool> mask(whiteBox.mesh.n_edges(), false);
+            for (const auto edge : MeshPolygonEdgeHandles(whiteBox))
+            {
+                mask[edge.Index()] = true;
+            }
+            return mask;
+        }
+
+        static bool EdgeInMask(const AZStd::vector<bool>& mask, const EdgeHandle edge)
+        {
+            return edge.IsValid() && static_cast<size_t>(edge.Index()) < mask.size() && mask[edge.Index()];
+        }
+
+        // Seeds first in their own order, then every other marked element in index order.
+        template<typename Handle>
+        static AZStd::vector<Handle> MarkedHandles(const AZStd::vector<Handle>& seeds, const AZStd::vector<bool>& marked)
+        {
+            AZStd::vector<Handle> result;
+            AZStd::vector<bool> taken(marked.size(), false);
+            for (const auto seed : seeds)
+            {
+                const size_t index = static_cast<size_t>(seed.Index());
+                if (seed.IsValid() && index < marked.size() && marked[index] && !taken[index])
+                {
+                    taken[index] = true;
+                    result.push_back(seed);
+                }
+            }
+            for (size_t i = 0; i < marked.size(); ++i)
+            {
+                if (marked[i] && !taken[i])
+                {
+                    result.push_back(Handle{ static_cast<int>(i) });
+                }
+            }
+            return result;
+        }
+
+        EdgeHandles GrowEdgeSelection(const WhiteBoxMesh& whiteBox, const EdgeHandles& seeds)
+        {
+            AZ_PROFILE_FUNCTION(AzToolsFramework);
+
+            const auto mask = PolygonEdgeMask(whiteBox);
+            AZStd::vector<bool> grown(mask.size(), false);
+            for (const auto edge : seeds)
+            {
+                if (!EdgeInMask(mask, edge))
+                {
+                    continue;
+                }
+                grown[edge.Index()] = true;
+                for (const auto vertex : EdgeVertexHandles(whiteBox, edge))
+                {
+                    for (const auto neighbour : VertexEdgeHandles(whiteBox, vertex))
+                    {
+                        if (EdgeInMask(mask, neighbour))
+                        {
+                            grown[neighbour.Index()] = true;
+                        }
+                    }
+                }
+            }
+            return MarkedHandles(seeds, grown);
+        }
+
+        EdgeHandles ShrinkEdgeSelection(const WhiteBoxMesh& whiteBox, const EdgeHandles& seeds)
+        {
+            AZ_PROFILE_FUNCTION(AzToolsFramework);
+
+            const auto mask = PolygonEdgeMask(whiteBox);
+            AZStd::vector<bool> chosen(mask.size(), false);
+            for (const auto edge : seeds)
+            {
+                if (EdgeInMask(mask, edge))
+                {
+                    chosen[edge.Index()] = true;
+                }
+            }
+            AZStd::vector<bool> kept = chosen;
+            for (size_t i = 0; i < chosen.size(); ++i)
+            {
+                if (!chosen[i])
+                {
+                    continue;
+                }
+                for (const auto vertex : EdgeVertexHandles(whiteBox, EdgeHandle{ static_cast<int>(i) }))
+                {
+                    for (const auto neighbour : VertexEdgeHandles(whiteBox, vertex))
+                    {
+                        if (EdgeInMask(mask, neighbour) && !chosen[neighbour.Index()])
+                        {
+                            kept[i] = false;
+                        }
+                    }
+                }
+            }
+            return MarkedHandles(seeds, kept);
+        }
+
+        // Cross edge from a vertex and carry on through hidden border vertices to the next visible one.
+        static VertexHandle WalkToVisibleVertex(
+            const WhiteBoxMesh& whiteBox, const AZStd::vector<bool>& mask, EdgeHandle edge, VertexHandle from)
+        {
+            for (size_t step = 0; step < mask.size(); ++step)
+            {
+                const auto ends = EdgeVertexHandles(whiteBox, edge);
+                const VertexHandle next = ends[0] == from ? ends[1] : ends[0];
+                if (!VertexIsHidden(whiteBox, next))
+                {
+                    return next;
+                }
+                // A hidden border vertex sits on a straight run, so exactly one other border edge carries on.
+                EdgeHandle onward;
+                int count = 0;
+                for (const auto candidate : VertexEdgeHandles(whiteBox, next))
+                {
+                    if (candidate != edge && EdgeInMask(mask, candidate))
+                    {
+                        onward = candidate;
+                        ++count;
+                    }
+                }
+                if (count != 1)
+                {
+                    return {};
+                }
+                from = next;
+                edge = onward;
+            }
+            return {};
+        }
+
+        static VertexHandles VisibleVertexNeighbours(
+            const WhiteBoxMesh& whiteBox, const AZStd::vector<bool>& mask, const VertexHandle vertex)
+        {
+            VertexHandles neighbours;
+            for (const auto edge : VertexEdgeHandles(whiteBox, vertex))
+            {
+                if (!EdgeInMask(mask, edge))
+                {
+                    continue;
+                }
+                const auto neighbour = WalkToVisibleVertex(whiteBox, mask, edge, vertex);
+                if (neighbour.IsValid() && neighbour != vertex &&
+                    AZStd::find(neighbours.begin(), neighbours.end(), neighbour) == neighbours.end())
+                {
+                    neighbours.push_back(neighbour);
+                }
+            }
+            return neighbours;
+        }
+
+        static bool SelectableVertex(const WhiteBoxMesh& whiteBox, const VertexHandle vertex)
+        {
+            return vertex.IsValid() && static_cast<size_t>(vertex.Index()) < whiteBox.mesh.n_vertices() &&
+                !VertexIsHidden(whiteBox, vertex);
+        }
+
+        VertexHandles GrowVertexSelection(const WhiteBoxMesh& whiteBox, const VertexHandles& seeds)
+        {
+            AZ_PROFILE_FUNCTION(AzToolsFramework);
+
+            const auto mask = PolygonEdgeMask(whiteBox);
+            AZStd::vector<bool> grown(whiteBox.mesh.n_vertices(), false);
+            for (const auto vertex : seeds)
+            {
+                if (!SelectableVertex(whiteBox, vertex))
+                {
+                    continue;
+                }
+                grown[vertex.Index()] = true;
+                for (const auto neighbour : VisibleVertexNeighbours(whiteBox, mask, vertex))
+                {
+                    grown[neighbour.Index()] = true;
+                }
+            }
+            return MarkedHandles(seeds, grown);
+        }
+
+        VertexHandles ShrinkVertexSelection(const WhiteBoxMesh& whiteBox, const VertexHandles& seeds)
+        {
+            AZ_PROFILE_FUNCTION(AzToolsFramework);
+
+            const auto mask = PolygonEdgeMask(whiteBox);
+            AZStd::vector<bool> chosen(whiteBox.mesh.n_vertices(), false);
+            for (const auto vertex : seeds)
+            {
+                if (SelectableVertex(whiteBox, vertex))
+                {
+                    chosen[vertex.Index()] = true;
+                }
+            }
+            AZStd::vector<bool> kept = chosen;
+            for (const auto vertex : seeds)
+            {
+                if (!SelectableVertex(whiteBox, vertex))
+                {
+                    continue;
+                }
+                for (const auto neighbour : VisibleVertexNeighbours(whiteBox, mask, vertex))
+                {
+                    if (!chosen[neighbour.Index()])
+                    {
+                        kept[vertex.Index()] = false;
+                    }
+                }
+            }
+            return MarkedHandles(seeds, kept);
+        }
+
+        ElementSelection ConvertSelection(
+            const WhiteBoxMesh& whiteBox, const ElementSelection& source, const SelectionElement target, const bool touching)
+        {
+            AZ_PROFILE_FUNCTION(AzToolsFramework);
+
+            ElementSelection result;
+            const auto mask = PolygonEdgeMask(whiteBox);
+            const auto addVertex = [&whiteBox, &result](const VertexHandle vertex)
+            {
+                if (SelectableVertex(whiteBox, vertex) &&
+                    AZStd::find(result.m_vertices.begin(), result.m_vertices.end(), vertex) == result.m_vertices.end())
+                {
+                    result.m_vertices.push_back(vertex);
+                }
+            };
+            const auto addEdge = [&mask, &result](const EdgeHandle edge)
+            {
+                if (EdgeInMask(mask, edge) && AZStd::find(result.m_edges.begin(), result.m_edges.end(), edge) == result.m_edges.end())
+                {
+                    result.m_edges.push_back(edge);
+                }
+            };
+            // Going up keeps a candidate when all of its parts are selected, or any of them when touching.
+            const auto qualifies = [touching](const size_t selectedParts, const size_t parts)
+            {
+                return parts > 0 && (touching ? selectedParts > 0 : selectedParts == parts);
+            };
+
+            if (!source.m_polygons.empty())
+            {
+                const auto allPolygons = MeshPolygonHandles(whiteBox);
+                for (const auto& polygon : source.m_polygons)
+                {
+                    if (AZStd::find(allPolygons.begin(), allPolygons.end(), polygon) == allPolygons.end())
+                    {
+                        continue; // stale
+                    }
+                    if (target == SelectionElement::Polygon)
+                    {
+                        result.m_polygons.push_back(polygon);
+                    }
+                    else if (target == SelectionElement::Edge)
+                    {
+                        for (const auto edge : PolygonBorderEdgeHandlesFlattened(whiteBox, polygon))
+                        {
+                            addEdge(edge);
+                        }
+                    }
+                    else
+                    {
+                        for (const auto vertex : PolygonBorderVertexHandlesFlattened(whiteBox, polygon))
+                        {
+                            addVertex(vertex);
+                        }
+                    }
+                }
+            }
+            else if (!source.m_edges.empty())
+            {
+                AZStd::vector<bool> selected(mask.size(), false);
+                for (const auto edge : source.m_edges)
+                {
+                    if (EdgeInMask(mask, edge))
+                    {
+                        selected[edge.Index()] = true;
+                    }
+                }
+                if (target == SelectionElement::Edge)
+                {
+                    result.m_edges = MarkedHandles(source.m_edges, selected);
+                }
+                else if (target == SelectionElement::Vertex)
+                {
+                    for (const auto edge : source.m_edges)
+                    {
+                        if (EdgeInMask(mask, edge))
+                        {
+                            for (const auto vertex : EdgeVertexHandles(whiteBox, edge))
+                            {
+                                addVertex(vertex);
+                            }
+                        }
+                    }
+                }
+                else
+                {
+                    for (const auto& polygon : MeshPolygonHandles(whiteBox))
+                    {
+                        const auto borders = PolygonBorderEdgeHandlesFlattened(whiteBox, polygon);
+                        size_t count = 0;
+                        for (const auto edge : borders)
+                        {
+                            count += static_cast<size_t>(EdgeInMask(selected, edge));
+                        }
+                        if (qualifies(count, borders.size()))
+                        {
+                            result.m_polygons.push_back(polygon);
+                        }
+                    }
+                }
+            }
+            else if (!source.m_vertices.empty())
+            {
+                AZStd::vector<bool> selected(whiteBox.mesh.n_vertices(), false);
+                for (const auto vertex : source.m_vertices)
+                {
+                    if (SelectableVertex(whiteBox, vertex))
+                    {
+                        selected[vertex.Index()] = true;
+                    }
+                }
+                if (target == SelectionElement::Vertex)
+                {
+                    result.m_vertices = MarkedHandles(source.m_vertices, selected);
+                }
+                else if (target == SelectionElement::Edge)
+                {
+                    for (size_t i = 0; i < mask.size(); ++i)
+                    {
+                        if (!mask[i])
+                        {
+                            continue;
+                        }
+                        // A run through hidden vertices is judged by the visible corners at its two ends.
+                        const EdgeHandle edge{ static_cast<int>(i) };
+                        const auto ends = EdgeVertexHandles(whiteBox, edge);
+                        const auto first = WalkToVisibleVertex(whiteBox, mask, edge, ends[1]);
+                        const auto second = WalkToVisibleVertex(whiteBox, mask, edge, ends[0]);
+                        const size_t count = static_cast<size_t>(first.IsValid() && selected[first.Index()]) +
+                            static_cast<size_t>(second.IsValid() && selected[second.Index()]);
+                        if (qualifies(count, 2))
+                        {
+                            addEdge(edge);
+                        }
+                    }
+                }
+                else
+                {
+                    for (const auto& polygon : MeshPolygonHandles(whiteBox))
+                    {
+                        size_t corners = 0;
+                        size_t count = 0;
+                        for (const auto vertex : PolygonBorderVertexHandlesFlattened(whiteBox, polygon))
+                        {
+                            if (!VertexIsHidden(whiteBox, vertex))
+                            {
+                                ++corners;
+                                count += static_cast<size_t>(selected[vertex.Index()]);
+                            }
+                        }
+                        if (qualifies(count, corners))
+                        {
+                            result.m_polygons.push_back(polygon);
+                        }
+                    }
+                }
+            }
+            return result;
+        }
+
+        bool DetachPolygons(
+            WhiteBoxMesh& whiteBox, const PolygonHandles& polygons, WhiteBoxMesh& detached, AZStd::string& error)
+        {
+            AZ_PROFILE_FUNCTION(AzToolsFramework);
+
+            error.clear();
+            const auto fail = [&error](const char* message)
+            {
+                error = message;
+                return false;
+            };
+            if (polygons.empty())
+            {
+                return fail("Select one or more polygons to detach.");
+            }
+
+            const auto allPolygons = MeshPolygonHandles(whiteBox);
+            PolygonHandles chosen;
+            FaceHandles faces;
+            for (const auto& polygon : polygons)
+            {
+                if (polygon.m_faceHandles.empty() ||
+                    AZStd::find(allPolygons.begin(), allPolygons.end(), polygon) == allPolygons.end())
+                {
+                    return fail("The selection is stale. Select the polygons again.");
+                }
+                if (AZStd::find(chosen.begin(), chosen.end(), polygon) == chosen.end())
+                {
+                    chosen.push_back(polygon);
+                    faces.insert(faces.end(), polygon.m_faceHandles.begin(), polygon.m_faceHandles.end());
+                }
+            }
+            if (faces.size() >= MeshFaceCount(whiteBox))
+            {
+                return fail("That is every polygon on the layer. Duplicate the layer instead, or leave some polygons behind.");
+            }
+
+            auto part = CreateWhiteBoxMesh();
+            AZStd::unordered_map<int, VertexHandle> copies;
+            const auto copyOf = [&whiteBox, &part, &copies](const VertexHandle vertex)
+            {
+                if (const auto found = copies.find(vertex.Index()); found != copies.end())
+                {
+                    return found->second;
+                }
+                const auto added = AddVertex(*part, VertexPosition(whiteBox, vertex));
+                if (VertexIsHidden(whiteBox, vertex))
+                {
+                    HideVertex(*part, added);
+                }
+                copies.emplace(vertex.Index(), added);
+                return added;
+            };
+            for (const auto& polygon : chosen)
+            {
+                FaceVertHandlesList triangles;
+                triangles.reserve(polygon.m_faceHandles.size());
+                for (const auto face : polygon.m_faceHandles)
+                {
+                    const auto halfedges = FaceHalfedgeHandles(whiteBox, face);
+                    triangles.push_back(FaceVertHandles{ { copyOf(HalfedgeVertexHandleAtTip(whiteBox, halfedges[0])),
+                                                           copyOf(HalfedgeVertexHandleAtTip(whiteBox, halfedges[1])),
+                                                           copyOf(HalfedgeVertexHandleAtTip(whiteBox, halfedges[2])) } });
+                }
+                const auto added = AddPolygon(*part, triangles);
+                if (added.m_faceHandles.size() != polygon.m_faceHandles.size())
+                {
+                    return fail("The selection could not be copied cleanly. The mesh was left unchanged.");
+                }
+                for (size_t i = 0; i < added.m_faceHandles.size(); ++i)
+                {
+                    const auto sourceFace = polygon.m_faceHandles[i];
+                    CopyFaceAttributes(*part, added.m_faceHandles[i], whiteBox, sourceFace);
+                    // Match corners by vertex, since the new face need not start at the same corner.
+                    const auto sourceHalfedges = FaceHalfedgeHandles(whiteBox, sourceFace);
+                    for (const auto halfedge : FaceHalfedgeHandles(*part, added.m_faceHandles[i]))
+                    {
+                        const auto tip = HalfedgeVertexHandleAtTip(*part, halfedge);
+                        for (const auto sourceHalfedge : sourceHalfedges)
+                        {
+                            if (copies.find(HalfedgeVertexHandleAtTip(whiteBox, sourceHalfedge).Index())->second == tip)
+                            {
+                                part->mesh.set_texcoord2D(om_heh(halfedge), HalfedgeUV(whiteBox, sourceHalfedge));
+                                break;
+                            }
+                        }
+                    }
+                }
+            }
+            CalculateNormals(*part);
+
+            auto remaining = CloneMesh(whiteBox);
+            RemoveFaces(*remaining, faces);
+            RemoveIsolatedVertices(*remaining);
+            CalculateNormals(*remaining);
+            whiteBox.mesh = remaining->mesh;
+            detached.mesh = part->mesh;
+            return true;
+        }
+
+        // Whether two segments meet, touching included; inputs are in a unit-sized frame.
+        static bool SegmentsTouch(const AZ::Vector2& p, const AZ::Vector2& q, const AZ::Vector2& r, const AZ::Vector2& s)
+        {
+            constexpr float Epsilon = 1e-6f;
+            const auto turn = [](const AZ::Vector2& a, const AZ::Vector2& b, const AZ::Vector2& c)
+            {
+                return (b.GetX() - a.GetX()) * (c.GetY() - a.GetY()) - (b.GetY() - a.GetY()) * (c.GetX() - a.GetX());
+            };
+            const auto within = [](const AZ::Vector2& a, const AZ::Vector2& b, const AZ::Vector2& c)
+            {
+                return c.GetX() >= AZ::GetMin(a.GetX(), b.GetX()) - Epsilon && c.GetX() <= AZ::GetMax(a.GetX(), b.GetX()) + Epsilon &&
+                    c.GetY() >= AZ::GetMin(a.GetY(), b.GetY()) - Epsilon && c.GetY() <= AZ::GetMax(a.GetY(), b.GetY()) + Epsilon;
+            };
+            const float d1 = turn(r, s, p);
+            const float d2 = turn(r, s, q);
+            const float d3 = turn(p, q, r);
+            const float d4 = turn(p, q, s);
+            if (((d1 > Epsilon && d2 < -Epsilon) || (d1 < -Epsilon && d2 > Epsilon)) &&
+                ((d3 > Epsilon && d4 < -Epsilon) || (d3 < -Epsilon && d4 > Epsilon)))
+            {
+                return true;
+            }
+            return (AZStd::abs(d1) <= Epsilon && within(r, s, p)) || (AZStd::abs(d2) <= Epsilon && within(r, s, q)) ||
+                (AZStd::abs(d3) <= Epsilon && within(p, q, r)) || (AZStd::abs(d4) <= Epsilon && within(p, q, s));
+        }
+
+        // Replace a polygon with the halves either side of a straight cut between two corners; only vertex handles survive.
+        static bool SplitPolygonBetween(
+            WhiteBoxMesh& whiteBox, const PolygonHandle& polygon, const VertexHandle a, const VertexHandle b, AZStd::string& error)
+        {
+            const auto fail = [&error](const char* message)
+            {
+                error = message;
+                return false;
+            };
+            const auto borders = PolygonBorderVertexHandles(whiteBox, polygon);
+            if (borders.size() != 1)
+            {
+                return fail("Connect cannot split a polygon with a hole in it.");
+            }
+            const auto& loop = borders.front();
+            const size_t count = loop.size();
+            const size_t first = static_cast<size_t>(AZStd::find(loop.begin(), loop.end(), a) - loop.begin());
+            const size_t second = static_cast<size_t>(AZStd::find(loop.begin(), loop.end(), b) - loop.begin());
+            if (first >= count || second >= count)
+            {
+                return fail("Both vertices must be corners of the same polygon.");
+            }
+
+            // Newell's normal and a right handed frame keep the loop wound the same way in 2d as around the normal.
+            AZStd::vector<AZ::Vector3> positions;
+            positions.reserve(count);
+            AZ::Vector3 centre = AZ::Vector3::CreateZero();
+            for (const auto vertex : loop)
+            {
+                positions.push_back(VertexPosition(whiteBox, vertex));
+                centre += positions.back();
+            }
+            centre /= static_cast<float>(count);
+            AZ::Vector3 normal = AZ::Vector3::CreateZero();
+            float extent = 0.0f;
+            for (size_t i = 0; i < count; ++i)
+            {
+                normal += (positions[i] - centre).Cross(positions[(i + 1) % count] - centre);
+                extent = AZ::GetMax(extent, (positions[i] - centre).GetLength());
+            }
+            if (extent <= AZ::Constants::FloatEpsilon || normal.GetLengthSq() <= 1e-20f)
+            {
+                return fail("The polygon is collapsed and has no area to split.");
+            }
+            normal.Normalize();
+            const AZ::Vector3 reference = AZStd::abs(normal.GetZ()) < 0.9f ? AZ::Vector3::CreateAxisZ() : AZ::Vector3::CreateAxisX();
+            const AZ::Vector3 uAxis = normal.Cross(reference).GetNormalized();
+            const AZ::Vector3 vAxis = normal.Cross(uAxis);
+            const auto flatten = [&centre, extent, &uAxis, &vAxis](const AZ::Vector3& position)
+            {
+                const auto offset = (position - centre) / extent;
+                return AZ::Vector2(offset.Dot(uAxis), offset.Dot(vAxis));
+            };
+            AZStd::vector<AZ::Vector2> points;
+            points.reserve(count);
+            for (const auto& position : positions)
+            {
+                points.push_back(flatten(position));
+            }
+
+            // The cut must cross no other border edge and run through the inside of the outline.
+            const AZ::Vector2 start = points[first];
+            const AZ::Vector2 end = points[second];
+            for (size_t i = 0; i < count; ++i)
+            {
+                const size_t next = (i + 1) % count;
+                if (i == first || i == second || next == first || next == second)
+                {
+                    continue;
+                }
+                if (SegmentsTouch(start, end, points[i], points[next]))
+                {
+                    return fail("The straight cut would leave the polygon or pass through another corner.");
+                }
+            }
+            const AZ::Vector2 middle = (start + end) * 0.5f;
+            bool inside = false;
+            for (size_t i = 0, j = count - 1; i < count; j = i++)
+            {
+                if ((points[i].GetY() > middle.GetY()) != (points[j].GetY() > middle.GetY()) &&
+                    middle.GetX() < (points[j].GetX() - points[i].GetX()) * (middle.GetY() - points[i].GetY()) /
+                            (points[j].GetY() - points[i].GetY()) + points[i].GetX())
+                {
+                    inside = !inside;
+                }
+            }
+            if (!inside)
+            {
+                return fail("The straight cut would run outside the polygon. Connect corners that can see each other.");
+            }
+
+            // Both halves keep the loop's winding: first to second, then second back to first.
+            AZStd::array<VertexHandles, 2> halves;
+            AZStd::array<AZStd::vector<AZ::Vector2>, 2> halfPoints;
+            for (size_t side = 0; side < 2; ++side)
+            {
+                const size_t from = side == 0 ? first : second;
+                const size_t to = side == 0 ? second : first;
+                for (size_t i = from;; i = (i + 1) % count)
+                {
+                    halves[side].push_back(loop[i]);
+                    halfPoints[side].push_back(points[i]);
+                    if (i == to)
+                    {
+                        break;
+                    }
+                }
+            }
+            AZStd::array<AZStd::vector<AZStd::array<size_t, 3>>, 2> triangles;
+            for (size_t side = 0; side < 2; ++side)
+            {
+                if (!TriangulateLoop(halfPoints[side], triangles[side]))
+                {
+                    return fail("One side of the cut could not be triangulated. Move the vertices so both halves are simple.");
+                }
+            }
+
+            // Paint is per triangle, so each new face takes the attributes of the old face it lies in.
+            struct SourceFace
+            {
+                AZStd::array<AZ::Vector2, 3> m_points;
+                AZ::Data::AssetId m_material;
+                AZ::u32 m_paint = 0;
+                UvProjection m_uvProjection;
+            };
+            AZStd::vector<SourceFace> sources;
+            for (const auto face : polygon.m_faceHandles)
+            {
+                SourceFace source;
+                source.m_material = FaceMaterial(whiteBox, face);
+                source.m_paint = FacePaintColor(whiteBox, face);
+                source.m_uvProjection = FaceUvProjection(whiteBox, face);
+                const auto corners = FaceVertexPositions(whiteBox, face);
+                for (size_t i = 0; i < 3; ++i)
+                {
+                    source.m_points[i] = flatten(corners[i]);
+                }
+                sources.push_back(source);
+            }
+            const auto sourceFor = [&sources](const AZ::Vector2& point) -> const SourceFace&
+            {
+                const auto turn = [](const AZ::Vector2& p, const AZ::Vector2& q, const AZ::Vector2& r)
+                {
+                    return (q.GetX() - p.GetX()) * (r.GetY() - p.GetY()) - (q.GetY() - p.GetY()) * (r.GetX() - p.GetX());
+                };
+                for (const auto& source : sources)
+                {
+                    const auto& t = source.m_points;
+                    const float sign = turn(t[0], t[1], t[2]) < 0.0f ? -1.0f : 1.0f;
+                    if (sign * turn(t[0], t[1], point) >= -1e-6f && sign * turn(t[1], t[2], point) >= -1e-6f &&
+                        sign * turn(t[2], t[0], point) >= -1e-6f)
+                    {
+                        return source;
+                    }
+                }
+                return sources.front();
+            };
+            AZStd::array<AZStd::vector<const SourceFace*>, 2> origins;
+            for (size_t side = 0; side < 2; ++side)
+            {
+                for (const auto& triangle : triangles[side])
+                {
+                    const auto centroid =
+                        (halfPoints[side][triangle[0]] + halfPoints[side][triangle[1]] + halfPoints[side][triangle[2]]) / 3.0f;
+                    origins[side].push_back(&sourceFor(centroid));
+                }
+            }
+
+            RemoveFaces(whiteBox, polygon.m_faceHandles);
+            // OpenMesh can refuse a triangle until its neighbours are in, so refused ones are retried until none go in.
+            AZStd::vector<AZStd::pair<size_t, size_t>> pending;
+            for (size_t side = 0; side < 2; ++side)
+            {
+                for (size_t i = 0; i < triangles[side].size(); ++i)
+                {
+                    pending.emplace_back(side, i);
+                }
+            }
+            AZStd::array<FaceHandlesInternal, 2> groups;
+            while (!pending.empty())
+            {
+                AZStd::vector<AZStd::pair<size_t, size_t>> refused;
+                for (const auto& item : pending)
+                {
+                    const size_t side = item.first;
+                    const size_t i = item.second;
+                    const auto& triangle = triangles[side][i];
+                    // Not AddPolygon: its duplicate-vertex fallback would tear the surface instead of refusing.
+                    const auto face = whiteBox.mesh.add_face(
+                        om_vh(halves[side][triangle[0]]), om_vh(halves[side][triangle[1]]), om_vh(halves[side][triangle[2]]));
+                    if (!face.is_valid())
+                    {
+                        refused.emplace_back(side, i);
+                        continue;
+                    }
+                    groups[side].push_back(face);
+                    SetFaceMaterial(whiteBox, wb_fh(face), origins[side][i]->m_material);
+                    SetFacePaintColor(whiteBox, wb_fh(face), origins[side][i]->m_paint);
+                    SetFaceUvProjection(whiteBox, wb_fh(face), origins[side][i]->m_uvProjection);
+                }
+                if (refused.size() == pending.size())
+                {
+                    return fail("The cut would create invalid face connections. The mesh was left unchanged.");
+                }
+                pending = AZStd::move(refused);
+            }
+            PolygonPropertyHandle property;
+            whiteBox.mesh.get_property_handle(property, PolygonProps);
+            auto& mapping = whiteBox.mesh.property(property);
+            for (const auto& group : groups)
+            {
+                for (const auto face : group)
+                {
+                    mapping[face] = group;
+                }
+            }
+            return true;
+        }
+
+        bool ConnectVertices(WhiteBoxMesh& whiteBox, const VertexHandles& vertices, AZStd::string& error, EdgeHandles* created)
+        {
+            AZ_PROFILE_FUNCTION(AzToolsFramework);
+
+            error.clear();
+            const auto fail = [&error](const char* message)
+            {
+                error = message;
+                return false;
+            };
+            VertexHandles corners;
+            for (const auto vertex : vertices)
+            {
+                if (!SelectableVertex(whiteBox, vertex))
+                {
+                    return fail("The selection is stale or includes a hidden vertex. Select the vertices again.");
+                }
+                if (AZStd::find(corners.begin(), corners.end(), vertex) == corners.end())
+                {
+                    corners.push_back(vertex);
+                }
+            }
+            if (corners.size() < 2)
+            {
+                return fail("Select two or more vertices on the same polygon.");
+            }
+
+            // Every polygon holding both corners; usually one, two when they already share an edge.
+            const auto sharedPolygons = [](const WhiteBoxMesh& mesh, const VertexHandle a, const VertexHandle b)
+            {
+                PolygonHandles shared;
+                for (const auto halfedge : VertexOutgoingHalfedgeHandles(mesh, a))
+                {
+                    const auto face = HalfedgeFaceHandle(mesh, halfedge);
+                    if (!face.IsValid())
+                    {
+                        continue;
+                    }
+                    const auto polygon = FacePolygonHandle(mesh, face);
+                    if (polygon.m_faceHandles.empty() || AZStd::find(shared.begin(), shared.end(), polygon) != shared.end())
+                    {
+                        continue;
+                    }
+                    const auto loop = PolygonBorderVertexHandlesFlattened(mesh, polygon);
+                    if (AZStd::find(loop.begin(), loop.end(), b) != loop.end())
+                    {
+                        shared.push_back(polygon);
+                    }
+                }
+                return shared;
+            };
+            // Joined means a visible edge; a hidden diagonal inside one polygon still leaves something to cut.
+            const auto joined = [](const WhiteBoxMesh& mesh, const VertexHandle a, const VertexHandle b)
+            {
+                const auto halfedge = mesh.mesh.find_halfedge(om_vh(a), om_vh(b));
+                if (!halfedge.is_valid())
+                {
+                    return false;
+                }
+                const auto faces = EdgeFaceHandles(mesh, wb_eh(mesh.mesh.edge_handle(halfedge)));
+                return faces.size() < 2 || FacePolygonHandle(mesh, faces[0]) != FacePolygonHandle(mesh, faces[1]);
+            };
+
+            // A path in selection order when every step shares a polygon, otherwise two corners per polygon.
+            AZStd::vector<AZStd::pair<VertexHandle, VertexHandle>> pairs;
+            bool path = true;
+            for (size_t i = 0; i + 1 < corners.size() && path; ++i)
+            {
+                path = !sharedPolygons(whiteBox, corners[i], corners[i + 1]).empty();
+            }
+            if (path)
+            {
+                for (size_t i = 0; i + 1 < corners.size(); ++i)
+                {
+                    if (!joined(whiteBox, corners[i], corners[i + 1]))
+                    {
+                        pairs.emplace_back(corners[i], corners[i + 1]);
+                    }
+                }
+            }
+            else
+            {
+                for (const auto& polygon : MeshPolygonHandles(whiteBox))
+                {
+                    VertexHandles held;
+                    for (const auto vertex : PolygonBorderVertexHandlesFlattened(whiteBox, polygon))
+                    {
+                        if (AZStd::find(corners.begin(), corners.end(), vertex) != corners.end() &&
+                            AZStd::find(held.begin(), held.end(), vertex) == held.end())
+                        {
+                            held.push_back(vertex);
+                        }
+                    }
+                    if (held.size() == 2 && !joined(whiteBox, held[0], held[1]))
+                    {
+                        pairs.emplace_back(held[0], held[1]);
+                    }
+                }
+            }
+            if (pairs.empty())
+            {
+                return fail("Nothing to connect. Select corners of one polygon that are not already joined by an edge.");
+            }
+
+            auto candidate = CloneMesh(whiteBox);
+            for (const auto& pair : pairs)
+            {
+                // Earlier cuts replace polygons, so the pair is looked up again in the edited mesh.
+                if (joined(*candidate, pair.first, pair.second))
+                {
+                    continue;
+                }
+                const auto shared = sharedPolygons(*candidate, pair.first, pair.second);
+                if (shared.empty())
+                {
+                    return fail("An earlier cut separated two of the selected vertices. Select them in a different order.");
+                }
+                AZStd::string reason;
+                bool split = false;
+                for (const auto& polygon : shared)
+                {
+                    auto attempt = CloneMesh(*candidate);
+                    if (SplitPolygonBetween(*attempt, polygon, pair.first, pair.second, reason))
+                    {
+                        AssignMesh(*candidate, *attempt);
+                        split = true;
+                        break;
+                    }
+                }
+                if (!split)
+                {
+                    error = reason;
+                    return false;
+                }
+            }
+            EdgeHandles made;
+            for (const auto& pair : pairs)
+            {
+                const auto halfedge = candidate->mesh.find_halfedge(om_vh(pair.first), om_vh(pair.second));
+                if (halfedge.is_valid())
+                {
+                    made.push_back(wb_eh(candidate->mesh.edge_handle(halfedge)));
+                }
+            }
+            // Interior hidden vertices of a split polygon are left without faces; nothing else refers to them.
+            RemoveIsolatedVertices(*candidate);
+            CalculateNormals(*candidate);
+            CalculatePlanarUVs(*candidate);
+            whiteBox.mesh = candidate->mesh;
+            if (created != nullptr)
+            {
+                *created = AZStd::move(made);
+            }
+            return true;
+        }
+
+        VertexHandle InsertVertexOnEdge(WhiteBoxMesh& whiteBox, const EdgeHandle edge, const float fraction, AZStd::string& error)
+        {
+            AZ_PROFILE_FUNCTION(AzToolsFramework);
+
+            error.clear();
+            if (!edge.IsValid() || static_cast<size_t>(edge.Index()) >= whiteBox.mesh.n_edges())
+            {
+                error = "The edge is stale. Hover it again.";
+                return {};
+            }
+            if (!AZ::IsFiniteFloat(fraction) || fraction <= 0.001f || fraction >= 0.999f)
+            {
+                error = "Place the new vertex between the edge's two ends.";
+                return {};
+            }
+            const auto polygonEdges = MeshPolygonEdgeHandles(whiteBox);
+            if (AZStd::find(polygonEdges.begin(), polygonEdges.end(), edge) == polygonEdges.end())
+            {
+                error = "Pick a polygon border edge, not a triangle diagonal inside a polygon.";
+                return {};
+            }
+            const auto ends = EdgeVertexPositions(whiteBox, edge);
+            if ((ends[1] - ends[0]).GetLengthSq() <= 1e-12f)
+            {
+                error = "The edge has no length to split.";
+                return {};
+            }
+            auto candidate = CloneMesh(whiteBox);
+            // A border edge's new vertex stays visible, and split_copy carries each face's attributes onto its halves.
+            const auto vertex = SplitEdge(*candidate, edge, ends[0].Lerp(ends[1], fraction));
+            CalculateNormals(*candidate);
+            FaceHandles touched;
+            for (const auto halfedge : VertexOutgoingHalfedgeHandles(*candidate, vertex))
+            {
+                if (const auto face = HalfedgeFaceHandle(*candidate, halfedge); face.IsValid())
+                {
+                    touched.push_back(face);
+                }
+            }
+            CalculatePlanarUVs(*candidate, touched);
+            whiteBox.mesh = candidate->mesh;
+            return vertex;
+        }
+
         void AssignMesh(WhiteBoxMesh& target, const WhiteBoxMesh& source)
         {
             target.mesh = source.mesh;
@@ -4935,8 +6291,7 @@ namespace WhiteBox
                     const auto source = EdgeFaceHandles(mesh, edge).front();
                     for (const auto face : polygon.m_faceHandles)
                     {
-                        SetFaceMaterial(*candidate, face, FaceMaterial(mesh, source));
-                        SetFacePaintColor(*candidate, face, FacePaintColor(mesh, source));
+                        CopyFaceAttributes(*candidate, face, mesh, source);
                     }
                     const auto outer = candidate->mesh.find_halfedge(
                         om_vh(top.find(b.Index())->second), om_vh(top.find(a.Index())->second));
@@ -4948,6 +6303,230 @@ namespace WhiteBox
                 }
             }
             AssignMesh(mesh, *candidate);
+            return true;
+        }
+
+        // Even-width inset for regions proportional scaling cannot take: concave, holed or folded ones.
+        static bool OffsetInsetRegion(
+            const WhiteBoxMesh& whiteBox, const FaceHandles& faces, const HalfedgeHandles& border, const VertexHandles& vertices,
+            const float amount, AZStd::map<int, AZ::Vector3>& moved, AZStd::string& error)
+        {
+            const auto fail = [&error](const char* message)
+            {
+                error = message;
+                return false;
+            };
+            // Border halfedges run with the region on their left, so every border vertex has one in and one out.
+            AZStd::map<int, HalfedgeHandle> incoming;
+            AZStd::map<int, HalfedgeHandle> outgoing;
+            for (const auto halfedge : border)
+            {
+                if (!outgoing.emplace(HalfedgeVertexHandleAtTail(whiteBox, halfedge).Index(), halfedge).second ||
+                    !incoming.emplace(HalfedgeVertexHandleAtTip(whiteBox, halfedge).Index(), halfedge).second)
+                {
+                    return fail("Inset needs a region whose border does not touch itself at a vertex.");
+                }
+            }
+            const auto faceNormal = [&whiteBox](const FaceHandle face)
+            {
+                const auto p = FaceVertexPositions(whiteBox, face);
+                return (p[1] - p[0]).Cross(p[2] - p[0]).GetNormalizedSafe();
+            };
+            // The in-surface direction into the region, square to one border edge.
+            const auto inward = [&whiteBox, &faceNormal](const HalfedgeHandle halfedge)
+            {
+                const auto along = HalfedgeVertexPositionAtTip(whiteBox, halfedge) - HalfedgeVertexPositionAtTail(whiteBox, halfedge);
+                return faceNormal(HalfedgeFaceHandle(whiteBox, halfedge)).Cross(along).GetNormalizedSafe();
+            };
+
+            // How far each border vertex travels per unit of inset depth.
+            AZStd::map<int, AZ::Vector3> directions;
+            for (const auto& entry : outgoing)
+            {
+                const auto in = incoming.find(entry.first);
+                if (in == incoming.end())
+                {
+                    return fail("Inset needs a closed region border.");
+                }
+                const AZ::Vector3 before = inward(in->second);
+                const AZ::Vector3 after = inward(entry.second);
+                if (before.IsZero() || after.IsZero())
+                {
+                    return fail("The region has a collapsed border edge. Weld it away first.");
+                }
+                AZ::Vector3 direction = AZ::Vector3::CreateZero();
+                // Across a crease the corner slides along the fold line, so it stays on both faces.
+                AZ::Vector3 fold = faceNormal(HalfedgeFaceHandle(whiteBox, in->second))
+                                       .Cross(faceNormal(HalfedgeFaceHandle(whiteBox, entry.second)));
+                if (fold.GetLengthSq() > 4e-4f)
+                {
+                    fold.Normalize();
+                    if (fold.Dot(before + after) < 0.0f)
+                    {
+                        fold = -fold;
+                    }
+                    if (const float reach = 0.5f * (fold.Dot(before) + fold.Dot(after)); reach > 0.3f)
+                    {
+                        direction = fold / reach;
+                    }
+                }
+                if (direction.IsZero())
+                {
+                    const AZ::Vector3 bisector = before + after;
+                    if (bisector.GetLengthSq() < 1e-6f)
+                    {
+                        return fail("The region's border turns straight back on itself, which cannot be inset evenly.");
+                    }
+                    // A sharp corner moves further so both of its edges end up the same distance in.
+                    const AZ::Vector3 unit = bisector.GetNormalized();
+                    direction = unit / AZStd::max(unit.Dot(before), 0.2f);
+                }
+                directions.emplace(entry.first, direction);
+            }
+
+            AZ::Vector3 centre = AZ::Vector3::CreateZero();
+            for (const auto vertex : vertices)
+            {
+                centre += VertexPosition(whiteBox, vertex);
+            }
+            centre /= static_cast<float>(vertices.size());
+            float extent = 0.0f;
+            for (const auto vertex : vertices)
+            {
+                extent = AZ::GetMax(extent, (VertexPosition(whiteBox, vertex) - centre).GetLength());
+            }
+            AZ::Vector3 normal = AZ::Vector3::CreateZero();
+            for (const auto face : faces)
+            {
+                const auto p = FaceVertexPositions(whiteBox, face);
+                normal += (p[1] - p[0]).Cross(p[2] - p[0]);
+            }
+            normal = normal.GetNormalizedSafe();
+            if (extent <= AZ::Constants::FloatEpsilon || normal.IsZero())
+            {
+                return fail("The region is collapsed and has no area to inset.");
+            }
+            // A flat outline can cross itself without any one face folding, so it also gets a 2d crossing test.
+            bool planar = true;
+            for (const auto vertex : vertices)
+            {
+                planar = planar && AZStd::abs((VertexPosition(whiteBox, vertex) - centre).Dot(normal)) <= extent * 1e-4f;
+            }
+            const AZ::Vector3 reference = AZStd::abs(normal.GetZ()) < 0.9f ? AZ::Vector3::CreateAxisZ() : AZ::Vector3::CreateAxisX();
+            const AZ::Vector3 uAxis = normal.Cross(reference).GetNormalized();
+            const AZ::Vector3 vAxis = normal.Cross(uAxis);
+            const auto flatten = [&centre, extent, &uAxis, &vAxis](const AZ::Vector3& position)
+            {
+                const auto offset = (position - centre) / extent;
+                return AZ::Vector2(offset.Dot(uAxis), offset.Dot(vAxis));
+            };
+            const auto positionAt = [&whiteBox, &directions](const VertexHandle vertex, const float depth)
+            {
+                const auto position = VertexPosition(whiteBox, vertex);
+                const auto found = directions.find(vertex.Index());
+                return found == directions.end() ? position : position + found->second * depth;
+            };
+
+            // A depth is usable while no face folds or collapses, no border edge reverses and a flat outline stays simple.
+            const auto usable = [&](const float depth)
+            {
+                for (const auto face : faces)
+                {
+                    const auto corners = FaceVertexHandles(whiteBox, face);
+                    const bool touched = AZStd::any_of(
+                        corners.begin(), corners.end(),
+                        [&directions](const VertexHandle vertex)
+                        {
+                            return directions.find(vertex.Index()) != directions.end();
+                        });
+                    if (!touched)
+                    {
+                        continue;
+                    }
+                    const auto p0 = VertexPosition(whiteBox, corners[0]);
+                    const AZ::Vector3 was = (VertexPosition(whiteBox, corners[1]) - p0).Cross(VertexPosition(whiteBox, corners[2]) - p0);
+                    const auto q0 = positionAt(corners[0], depth);
+                    const AZ::Vector3 now = (positionAt(corners[1], depth) - q0).Cross(positionAt(corners[2], depth) - q0);
+                    if (now.Dot(was) <= was.GetLengthSq() * 1e-3f)
+                    {
+                        return false;
+                    }
+                }
+                struct Segment
+                {
+                    AZ::Vector2 m_from;
+                    AZ::Vector2 m_to;
+                    int m_tail;
+                    int m_tip;
+                };
+                AZStd::vector<Segment> segments;
+                for (const auto halfedge : border)
+                {
+                    const auto tail = HalfedgeVertexHandleAtTail(whiteBox, halfedge);
+                    const auto tip = HalfedgeVertexHandleAtTip(whiteBox, halfedge);
+                    const AZ::Vector3 was = VertexPosition(whiteBox, tip) - VertexPosition(whiteBox, tail);
+                    const AZ::Vector3 from = positionAt(tail, depth);
+                    const AZ::Vector3 to = positionAt(tip, depth);
+                    if ((to - from).Dot(was) <= was.GetLengthSq() * 1e-3f)
+                    {
+                        return false;
+                    }
+                    if (planar)
+                    {
+                        segments.push_back({ flatten(from), flatten(to), tail.Index(), tip.Index() });
+                    }
+                }
+                for (size_t i = 0; i < segments.size(); ++i)
+                {
+                    for (size_t j = i + 1; j < segments.size(); ++j)
+                    {
+                        const auto& a = segments[i];
+                        const auto& b = segments[j];
+                        // Neighbouring edges share a corner and always touch there.
+                        if (a.m_tail == b.m_tail || a.m_tail == b.m_tip || a.m_tip == b.m_tail || a.m_tip == b.m_tip)
+                        {
+                            continue;
+                        }
+                        if (SegmentsTouch(a.m_from, a.m_to, b.m_from, b.m_to))
+                        {
+                            return false;
+                        }
+                    }
+                }
+                return true;
+            };
+
+            const float shallowest = extent * 1e-4f;
+            if (!usable(shallowest))
+            {
+                return fail("This region folds over at even the thinnest inset. Select fewer or flatter faces.");
+            }
+            // 100 percent is the deepest usable depth, found by bisection because the outline decides it.
+            float low = shallowest;
+            float high = extent * 2.0f;
+            if (usable(high))
+            {
+                low = high;
+            }
+            else
+            {
+                for (int step = 0; step < 32; ++step)
+                {
+                    const float middle = 0.5f * (low + high);
+                    if (usable(middle))
+                    {
+                        low = middle;
+                    }
+                    else
+                    {
+                        high = middle;
+                    }
+                }
+            }
+            for (const auto& entry : directions)
+            {
+                moved.emplace(entry.first, VertexPosition(whiteBox, VertexHandle{ entry.first }) + entry.second * (low * amount));
+            }
             return true;
         }
 
@@ -4987,6 +6566,8 @@ namespace WhiteBox
                 AZ::Vector3 m_normal = AZ::Vector3::CreateZero();
                 AZ::Vector3 m_center = AZ::Vector3::CreateZero();
                 AZStd::map<int, VertexHandle> m_top;
+                bool m_offsetInset = false; //!< Even-width inset: only border vertices move, to these positions.
+                AZStd::map<int, AZ::Vector3> m_offset;
             };
             AZStd::vector<Region> regions;
             AZStd::vector<int> faceRegion(whiteBox.mesh.n_faces(), -1);
@@ -5031,39 +6612,47 @@ namespace WhiteBox
                 region.m_center /= static_cast<float>(region.m_vertices.size());
                 if (inset)
                 {
-                    // Proportional scaling safely insets a planar convex perimeter. Refuse holes,
-                    // concave outlines and folded regions rather than producing crossing side faces.
-                    AZStd::map<int, int> next;
-                    for (const auto edge : region.m_border)
+                    // Proportional scaling suits one planar convex perimeter; anything else gets an even-width border.
+                    const auto proportional = [&whiteBox, &region]()
                     {
-                        const auto a = HalfedgeVertexHandleAtTail(whiteBox, edge);
-                        const auto b = HalfedgeVertexHandleAtTip(whiteBox, edge);
-                        if (!next.emplace(a.Index(), b.Index()).second) { return fail("Inset needs a single simple perimeter."); }
-                    }
-                    int current = next.begin()->first;
-                    const int first = current;
-                    size_t visited = 0;
-                    do
-                    {
-                        const auto it = next.find(current);
-                        if (it == next.end() || visited++ >= next.size()) { return fail("Inset needs a single simple perimeter."); }
-                        const auto after = next.find(it->second);
-                        if (after == next.end()) { return fail("Inset needs a single simple perimeter."); }
-                        const auto a = VertexPosition(whiteBox, VertexHandle{current});
-                        const auto b = VertexPosition(whiteBox, VertexHandle{it->second});
-                        const auto c = VertexPosition(whiteBox, VertexHandle{after->second});
-                        if ((b - a).Cross(c - b).Dot(region.m_normal) < -1e-6f)
+                        AZStd::map<int, int> next;
+                        for (const auto edge : region.m_border)
                         {
-                            return fail("Inset currently supports convex regions. Select a smaller convex region.");
+                            const auto a = HalfedgeVertexHandleAtTail(whiteBox, edge);
+                            const auto b = HalfedgeVertexHandleAtTip(whiteBox, edge);
+                            if (!next.emplace(a.Index(), b.Index()).second) { return false; }
                         }
-                        current = it->second;
-                    } while (current != first);
-                    if (visited != next.size()) { return fail("Inset does not yet support regions with holes."); }
-                    for (const auto vertex : region.m_vertices)
-                    {
-                        if (AZStd::abs((VertexPosition(whiteBox, vertex) - region.m_center).Dot(region.m_normal)) > 1e-4f)
+                        int current = next.begin()->first;
+                        const int first = current;
+                        size_t visited = 0;
+                        do
                         {
-                            return fail("Inset requires a planar region.");
+                            const auto it = next.find(current);
+                            if (it == next.end() || visited++ >= next.size()) { return false; }
+                            const auto after = next.find(it->second);
+                            if (after == next.end()) { return false; }
+                            const auto a = VertexPosition(whiteBox, VertexHandle{current});
+                            const auto b = VertexPosition(whiteBox, VertexHandle{it->second});
+                            const auto c = VertexPosition(whiteBox, VertexHandle{after->second});
+                            if ((b - a).Cross(c - b).Dot(region.m_normal) < -1e-6f) { return false; }
+                            current = it->second;
+                        } while (current != first);
+                        if (visited != next.size()) { return false; }
+                        for (const auto vertex : region.m_vertices)
+                        {
+                            if (AZStd::abs((VertexPosition(whiteBox, vertex) - region.m_center).Dot(region.m_normal)) > 1e-4f)
+                            {
+                                return false;
+                            }
+                        }
+                        return true;
+                    };
+                    if (!proportional())
+                    {
+                        region.m_offsetInset = true;
+                        if (!OffsetInsetRegion(whiteBox, region.m_faces, region.m_border, region.m_vertices, amount, region.m_offset, error))
+                        {
+                            return false;
                         }
                     }
                 }
@@ -5081,8 +6670,16 @@ namespace WhiteBox
                 for (const auto vertex : region.m_vertices)
                 {
                     const auto position = VertexPosition(whiteBox, vertex);
-                    const auto moved = inset ? region.m_center + (position - region.m_center) * (1.0f - amount)
-                                             : position + region.m_normal * amount;
+                    AZ::Vector3 moved = position + region.m_normal * amount;
+                    if (inset && region.m_offsetInset)
+                    {
+                        const auto offset = region.m_offset.find(vertex.Index());
+                        moved = offset != region.m_offset.end() ? offset->second : position;
+                    }
+                    else if (inset)
+                    {
+                        moved = region.m_center + (position - region.m_center) * (1.0f - amount);
+                    }
                     const auto added = AddVertex(*candidate, moved);
                     region.m_top.emplace(vertex.Index(), added);
                     if (VertexIsHidden(whiteBox, vertex)) { HideVertex(*candidate, added); }
@@ -5181,12 +6778,11 @@ namespace WhiteBox
             auto& mapping = candidate->mesh.property(property);
             AZStd::vector<FaceHandlesInternal> groups(groupCount);
             CalculateNormals(*candidate);
-            CalculatePlanarUVs(*candidate);
+            FaceHandles projectedFaces;
             for (const auto& face : faces)
             {
                 groups[face.m_group].push_back(om_fh(face.m_result));
-                SetFaceMaterial(*candidate, face.m_result, FaceMaterial(whiteBox, face.m_source));
-                SetFacePaintColor(*candidate, face.m_result, FacePaintColor(whiteBox, face.m_source));
+                CopyFaceAttributes(*candidate, face.m_result, whiteBox, face.m_source);
                 if (face.m_keepUv)
                 {
                     for (size_t i = 0; i < 3; ++i)
@@ -5196,7 +6792,13 @@ namespace WhiteBox
                         candidate->mesh.set_texcoord2D(edge, face.m_uvs[i]);
                     }
                 }
+                else
+                {
+                    projectedFaces.push_back(face.m_result);
+                }
             }
+            // After the copy, so new walls take the projection of the face they grew from.
+            CalculatePlanarUVs(*candidate, projectedFaces);
             for (const auto& group : groups)
             {
                 for (const auto face : group) { mapping[face] = group; }
@@ -5254,6 +6856,7 @@ namespace WhiteBox
                 AZ::Vector3 m_normal;
                 AZ::Data::AssetId m_material;
                 AZ::u32 m_paint;
+                UvProjection m_uvProjection;
             };
             AZStd::map<int, BevelPolygon> polygons;
             AZStd::map<int, PolygonHandles> incident;
@@ -5275,7 +6878,8 @@ namespace WhiteBox
                     return nullptr;
                 }
                 BevelPolygon data{polygon, borders[0], PolygonNormal(whiteBox, polygon),
-                    FaceMaterial(whiteBox, polygon.m_faceHandles.front()), FacePaintColor(whiteBox, polygon.m_faceHandles.front())};
+                    FaceMaterial(whiteBox, polygon.m_faceHandles.front()), FacePaintColor(whiteBox, polygon.m_faceHandles.front()),
+                    FaceUvProjection(whiteBox, polygon.m_faceHandles.front())};
                 for (const auto face : polygon.m_faceHandles)
                 {
                     if (FaceMaterial(whiteBox, face) != data.m_material || FacePaintColor(whiteBox, face) != data.m_paint)
@@ -5312,6 +6916,7 @@ namespace WhiteBox
                 AZ::Vector3 m_normal;
                 AZ::Data::AssetId m_material;
                 AZ::u32 m_paint;
+                UvProjection m_uvProjection;
             };
             AZStd::vector<NewPolygon> strips;
             // One shared vertex pool per original corner joins the ends of
@@ -5485,7 +7090,8 @@ namespace WhiteBox
                 for (int segment = 0; segment < segments; ++segment)
                 {
                     strips.push_back({{arcs[1][segment], arcs[0][segment], arcs[0][segment + 1], arcs[1][segment + 1]},
-                        (first->m_normal + second->m_normal).GetNormalizedSafe(), first->m_material, first->m_paint});
+                        (first->m_normal + second->m_normal).GetNormalizedSafe(), first->m_material, first->m_paint,
+                        first->m_uvProjection});
                 }
             }
             AZStd::vector<NewPolygon> patches;
@@ -5538,6 +7144,7 @@ namespace WhiteBox
                 const auto source = incident[item.first].front().m_faceHandles.front();
                 const auto material = FaceMaterial(whiteBox, source);
                 const auto paint = FacePaintColor(whiteBox, source);
+                const auto uvProjection = FaceUvProjection(whiteBox, source);
                 const float exponent = 2.0f * (1.0f - profile);
                 const auto gridVertex = [&](const AZ::Vector3& barycentric)
                 {
@@ -5591,7 +7198,7 @@ namespace WhiteBox
                             {
                                 patches.push_back({{
                                     grid[row][column], grid[row][column + 1],
-                                    grid[row + 1][column + 1], grid[row + 1][column]}, normal, material, paint});
+                                    grid[row + 1][column + 1], grid[row + 1][column]}, normal, material, paint, uvProjection});
                             }
                         }
                     }
@@ -5640,7 +7247,7 @@ namespace WhiteBox
                                 {
                                     patches.push_back({{
                                         grid[row][column], grid[row][column + 1],
-                                        grid[row + 1][column + 1], grid[row + 1][column]}, normal, material, paint});
+                                        grid[row + 1][column + 1], grid[row + 1][column]}, normal, material, paint, uvProjection});
                                 }
                             }
                             const auto opposite = corners[next].Lerp(a, fraction);
@@ -5651,14 +7258,14 @@ namespace WhiteBox
                                 const float v = static_cast<float>(row) / size;
                                 const auto nextLeft = gridVertex(b.Lerp(inner[sector], v));
                                 const auto nextRight = gridVertex(opposite.Lerp(inner[next], v));
-                                patches.push_back({{left, right, nextRight, nextLeft}, normal, material, paint});
+                                patches.push_back({{left, right, nextRight, nextLeft}, normal, material, paint, uvProjection});
                                 left = nextLeft;
                                 right = nextRight;
                             }
                         }
                     }
                     patches.push_back({{
-                        gridVertex(inner[0]), gridVertex(inner[1]), gridVertex(inner[2])}, normal, material, paint});
+                        gridVertex(inner[0]), gridVertex(inner[1]), gridVertex(inner[2])}, normal, material, paint, uvProjection});
                 }
             }
             FaceHandles removed;
@@ -5674,7 +7281,7 @@ namespace WhiteBox
                     if (replacement == changed.end()) { border.push_back(vertex); }
                     else { border.insert(border.end(), replacement->second.begin(), replacement->second.end()); }
                 }
-                rebuilt.push_back({AZStd::move(border), data.m_normal, data.m_material, data.m_paint});
+                rebuilt.push_back({AZStd::move(border), data.m_normal, data.m_material, data.m_paint, data.m_uvProjection});
                 removed.insert(removed.end(), data.m_polygon.m_faceHandles.begin(), data.m_polygon.m_faceHandles.end());
             }
             rebuilt.insert(rebuilt.end(), strips.begin(), strips.end());
@@ -5721,6 +7328,7 @@ namespace WhiteBox
                     const auto handle = wb_fh(face);
                     SetFaceMaterial(*candidate, handle, polygon.m_material);
                     SetFacePaintColor(*candidate, handle, polygon.m_paint);
+                    SetFaceUvProjection(*candidate, handle, polygon.m_uvProjection);
                     added.push_back(handle);
                 }
                 for (const auto face : group) { groups[face] = group; }
@@ -5781,6 +7389,7 @@ namespace WhiteBox
                 AZStd::array<AZ::Vector2, 3> m_uvs;
                 AZ::Data::AssetId m_material;
                 AZ::u32 m_paint;
+                UvProjection m_uvProjection;
                 int m_label;
                 int m_origin;
             };
@@ -5809,6 +7418,7 @@ namespace WhiteBox
                 }
                 source.m_material = FaceMaterial(*candidate, face);
                 source.m_paint = FacePaintColor(*candidate, face);
+                source.m_uvProjection = FaceUvProjection(*candidate, face);
                 source.m_label = labels.find(face.Index())->second;
                 source.m_origin = origins.find(face.Index())->second;
                 return source;
@@ -5866,6 +7476,7 @@ namespace WhiteBox
                         origins[resultFace.Index()] = source.m_origin;
                         SetFaceMaterial(*candidate, resultFace, source.m_material);
                         SetFacePaintColor(*candidate, resultFace, source.m_paint);
+                        SetFaceUvProjection(*candidate, resultFace, source.m_uvProjection);
                         for (const auto halfedge : FaceHalfedgeHandles(*candidate, resultFace))
                         {
                             const auto p = VertexPosition(*candidate, HalfedgeVertexHandleAtTip(*candidate, halfedge));
@@ -6033,6 +7644,7 @@ namespace WhiteBox
                 EdgeHandle m_exit;
                 AZ::Data::AssetId m_material;
                 AZ::u32 m_paint;
+                UvProjection m_uvProjection;
             };
             AZStd::map<int, LoopQuad> quads;
             AZStd::map<int, float> crossings;
@@ -6080,6 +7692,7 @@ namespace WhiteBox
                     quad.m_exit = HalfedgeEdgeHandle(whiteBox, border[(entry + 2) % 4]);
                     quad.m_material = FaceMaterial(whiteBox, polygon.m_faceHandles.front());
                     quad.m_paint = FacePaintColor(whiteBox, polygon.m_faceHandles.front());
+                    quad.m_uvProjection = FaceUvProjection(whiteBox, polygon.m_faceHandles.front());
                     for (const auto source : polygon.m_faceHandles)
                     {
                         if (FaceMaterial(whiteBox, source) != quad.m_material || FacePaintColor(whiteBox, source) != quad.m_paint)
@@ -6197,6 +7810,7 @@ namespace WhiteBox
                     {
                         SetFaceMaterial(*candidate, face, quad.m_material);
                         SetFacePaintColor(*candidate, face, quad.m_paint);
+                        SetFaceUvProjection(*candidate, face, quad.m_uvProjection);
                         added.push_back(face);
                     }
                 }

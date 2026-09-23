@@ -425,6 +425,8 @@ namespace WhiteBox
         void DeleteActiveLayer() { OnDeleteLayer(); }
         //! Copy the active layer, geometry and settings alike, and insert it directly above.
         void DuplicateActiveLayer() { OnDuplicateLayer(); }
+        //! Move polygons of the active layer into a new layer directly above it, which becomes active. Keeps transform and settings.
+        bool DetachPolygonsToLayer(const Api::PolygonHandles& polygons, AZStd::string& error);
         //! Move the layer at @p from so it ends up at index @p to (both are indices into the
         //! CURRENT list). Layer order matters - it is the order the combine modes accumulate in -
         //! so this is how the user restacks booleans. The active/loaded layer is tracked by its
@@ -777,7 +779,7 @@ namespace WhiteBox
         AZ::Crc32 OnDeleteLayer();           //!< Delete the active layer (keeps at least one).
         AZ::Crc32 OnDuplicateLayer();        //!< Copy the active layer and insert it directly above.
         //! @p base with a copy suffix, stepped until no other layer answers to it.
-        AZStd::string UniqueLayerName(const AZStd::string& base) const;
+        AZStd::string UniqueLayerName(const AZStd::string& base, const char* suffix = " copy") const;
         AZ::u32 OnLayersMetaChanged();       //!< Layer name/visibility edited: recombine + resync.
         void RefreshComponentMode();
         //! Rebuild the editing manipulators in place so they pick up a changed layer transform.

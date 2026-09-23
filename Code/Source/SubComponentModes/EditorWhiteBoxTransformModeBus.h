@@ -54,6 +54,9 @@ namespace WhiteBox
         virtual void BeginLoopCut() {}
         virtual void BeginKnife() {}
         virtual bool IsKnifeActive() const { return false; }
+        //! Toggle the click-to-add-vertex tool; leaving it selects what it added.
+        virtual void BeginInsertVertex() {}
+        virtual bool IsInsertVertexActive() const { return false; }
         //! Expand the current edge selection. False selects loops, true selects rings.
         virtual bool ExpandEdgeSelection(bool /*ring*/) { return false; }
 

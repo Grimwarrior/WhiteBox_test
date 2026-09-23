@@ -3500,8 +3500,8 @@ namespace UnitTest
         ASSERT_TRUE(Api::WriteMesh(*mesh, before));
         Api::PolygonHandles result;
         AZStd::string error;
-        // The top and front form one connected, non-planar region.
-        EXPECT_FALSE(Api::ExtrudeInsetRegions(*mesh, {polygons[0], polygons[2]}, 0.2f, true, result, error));
+        // The whole closed cube has no perimeter to inset from.
+        EXPECT_FALSE(Api::ExtrudeInsetRegions(*mesh, polygons, 0.2f, true, result, error));
         EXPECT_TRUE(result.empty());
         Api::WhiteBoxMeshStream after;
         ASSERT_TRUE(Api::WriteMesh(*mesh, after));
@@ -4521,5 +4521,401 @@ namespace UnitTest
         AZStd::string error;
         ASSERT_TRUE(Api::MergePolygons(*mesh, {cells[0], cells[1]}, error, &merged)) << error.c_str();
         EXPECT_EQ(Api::FindPolygonLoop(*mesh, {merged}).size(), 1);
+    }
+
+    // A flat polygon in the XY plane, facing +Z, triangulated as a fan from its first corner.
+    static WhiteBox::Api::PolygonHandle AddFlatFan(
+        WhiteBox::WhiteBoxMesh& mesh, const AZStd::vector<WhiteBox::Api::VertexHandle>& corners)
+    {
+        namespace Api = WhiteBox::Api;
+        Api::FaceVertHandlesList triangles;
+        for (size_t i = 1; i + 1 < corners.size(); ++i)
+        {
+            triangles.push_back(Api::FaceVertHandles{ { corners[0], corners[i], corners[i + 1] } });
+        }
+        return Api::AddPolygon(mesh, triangles);
+    }
+
+    static bool HasVertexNear(const WhiteBox::WhiteBoxMesh& mesh, const AZ::Vector3& point, const float tolerance)
+    {
+        namespace Api = WhiteBox::Api;
+        for (const auto vertex : Api::MeshVertexHandles(mesh))
+        {
+            if (Api::VertexPosition(mesh, vertex).IsClose(point, tolerance))
+            {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    TEST_F(WhiteBoxTestFixture, InsetGivesConcaveRegionsAnEvenBorder)
+    {
+        namespace Api = WhiteBox::Api;
+        // An L of one-unit arms: proportional scaling would push its inner corner outside the outline.
+        auto mesh = Api::CreateWhiteBoxMesh();
+        const AZStd::vector<Api::VertexHandle> corners{
+            Api::AddVertex(*mesh, AZ::Vector3(0.0f, 0.0f, 0.0f)), Api::AddVertex(*mesh, AZ::Vector3(2.0f, 0.0f, 0.0f)),
+            Api::AddVertex(*mesh, AZ::Vector3(2.0f, 1.0f, 0.0f)), Api::AddVertex(*mesh, AZ::Vector3(1.0f, 1.0f, 0.0f)),
+            Api::AddVertex(*mesh, AZ::Vector3(1.0f, 2.0f, 0.0f)), Api::AddVertex(*mesh, AZ::Vector3(0.0f, 2.0f, 0.0f)) };
+        const auto polygon = AddFlatFan(*mesh, corners);
+        Api::CalculateNormals(*mesh);
+
+        Api::PolygonHandles result;
+        AZStd::string error;
+        // Half of the deepest inset, which is half the arm width.
+        ASSERT_TRUE(Api::ExtrudeInsetRegions(*mesh, { polygon }, 0.5f, true, result, error)) << error.c_str();
+        ASSERT_EQ(result.size(), 1);
+        const float depth = 0.25f;
+        const float tolerance = 0.01f;
+        EXPECT_TRUE(HasVertexNear(*mesh, AZ::Vector3(depth, depth, 0.0f), tolerance));
+        EXPECT_TRUE(HasVertexNear(*mesh, AZ::Vector3(2.0f - depth, depth, 0.0f), tolerance));
+        EXPECT_TRUE(HasVertexNear(*mesh, AZ::Vector3(1.0f - depth, 1.0f - depth, 0.0f), tolerance)); // the reflex corner
+        EXPECT_TRUE(HasVertexNear(*mesh, AZ::Vector3(depth, 2.0f - depth, 0.0f), tolerance));
+        for (const auto vertex : Api::MeshVertexHandles(*mesh))
+        {
+            EXPECT_NEAR(Api::VertexPosition(*mesh, vertex).GetZ(), 0.0f, 1e-5f);
+        }
+        // One cap and a wall for each of the six border edges.
+        EXPECT_EQ(Api::MeshPolygonHandles(*mesh).size(), 7);
+    }
+
+    TEST_F(WhiteBoxTestFixture, InsetHandlesRegionsWithHolesAndFoldsAcrossCreases)
+    {
+        namespace Api = WhiteBox::Api;
+        {
+            // A three by three plate with its middle missing: the inner border moves away from the hole.
+            auto mesh = Api::CreateWhiteBoxMesh();
+            AZStd::vector<AZStd::vector<Api::VertexHandle>> grid;
+            for (int x = 0; x <= 3; ++x)
+            {
+                grid.push_back({});
+                for (int y = 0; y <= 3; ++y)
+                {
+                    grid.back().push_back(Api::AddVertex(*mesh, AZ::Vector3(float(x), float(y), 0.0f)));
+                }
+            }
+            Api::PolygonHandles ring;
+            for (int x = 0; x < 3; ++x)
+            {
+                for (int y = 0; y < 3; ++y)
+                {
+                    if (x != 1 || y != 1)
+                    {
+                        ring.push_back(Api::AddQuadPolygon(*mesh, grid[x][y], grid[x + 1][y], grid[x + 1][y + 1], grid[x][y + 1]));
+                    }
+                }
+            }
+            Api::CalculateNormals(*mesh);
+            Api::PolygonHandles result;
+            AZStd::string error;
+            ASSERT_TRUE(Api::ExtrudeInsetRegions(*mesh, ring, 0.5f, true, result, error)) << error.c_str();
+            EXPECT_EQ(result.size(), 8);
+            EXPECT_EQ(Api::MeshPolygonHandles(*mesh).size(), 8 + 16); // caps plus a wall per border edge, 12 out and 4 in
+            EXPECT_TRUE(HasVertexNear(*mesh, AZ::Vector3(0.25f, 0.25f, 0.0f), 0.01f));
+            EXPECT_TRUE(HasVertexNear(*mesh, AZ::Vector3(0.75f, 0.75f, 0.0f), 0.01f));
+        }
+        {
+            // The top and front of a cube fold across their shared edge; the corners on it slide along the crease.
+            auto mesh = Api::CreateWhiteBoxMesh();
+            const auto polygons = Api::InitializeAsUnitCube(*mesh);
+            Api::PolygonHandles result;
+            AZStd::string error;
+            ASSERT_TRUE(Api::ExtrudeInsetRegions(*mesh, { polygons[0], polygons[2] }, 0.5f, true, result, error))
+                << error.c_str();
+            EXPECT_EQ(result.size(), 2);
+            EXPECT_TRUE(HasVertexNear(*mesh, AZ::Vector3(0.25f, -0.5f, 0.5f), 0.01f));
+            EXPECT_TRUE(HasVertexNear(*mesh, AZ::Vector3(-0.25f, -0.5f, 0.5f), 0.01f));
+            double volume = 0.0;
+            for (const auto edge : Api::MeshEdgeHandles(*mesh))
+            {
+                EXPECT_EQ(Api::EdgeFaceHandles(*mesh, edge).size(), 2);
+            }
+            for (const auto face : Api::MeshFaceHandles(*mesh))
+            {
+                const auto p = Api::FaceVertexPositions(*mesh, face);
+                volume += p[0].Dot(p[1].Cross(p[2])) / 6.0;
+                for (const auto& point : p)
+                {
+                    EXPECT_NEAR(point.GetAbs().GetMaxElement(), 0.5f, 1e-4f); // still on the cube's surface
+                }
+            }
+            EXPECT_NEAR(volume, 1.0, 1e-4);
+        }
+    }
+
+    TEST_F(WhiteBoxTestFixture, GrowShrinkAndConvertSelectionsOnAQuadGrid)
+    {
+        namespace Api = WhiteBox::Api;
+        // Five by five, so the seed's block stays clear of the plate's edge, which never counts as unselected.
+        auto mesh = Api::CreateWhiteBoxMesh();
+        AZStd::vector<AZStd::vector<Api::VertexHandle>> grid;
+        for (int x = 0; x <= 5; ++x)
+        {
+            grid.push_back({});
+            for (int y = 0; y <= 5; ++y)
+            {
+                grid.back().push_back(Api::AddVertex(*mesh, AZ::Vector3(float(x), float(y), 0.0f)));
+            }
+        }
+        AZStd::vector<Api::PolygonHandle> cells;
+        for (int x = 0; x < 5; ++x)
+        {
+            for (int y = 0; y < 5; ++y)
+            {
+                cells.push_back(Api::AddQuadPolygon(*mesh, grid[x][y], grid[x + 1][y], grid[x + 1][y + 1], grid[x][y + 1]));
+            }
+        }
+        Api::CalculateNormals(*mesh);
+        const auto seed = cells[2 * 5 + 2];
+
+        // Corner neighbours count, so one step from a cell is the three by three block around it, and back.
+        const auto grown = Api::GrowPolygonSelection(*mesh, { seed });
+        ASSERT_EQ(grown.size(), 9);
+        EXPECT_EQ(grown.front(), seed);
+        const auto shrunk = Api::ShrinkPolygonSelection(*mesh, grown);
+        ASSERT_EQ(shrunk.size(), 1);
+        EXPECT_EQ(shrunk.front(), seed);
+        EXPECT_TRUE(Api::ShrinkPolygonSelection(*mesh, { seed }).empty());
+
+        // Vertices step one visible edge at a time.
+        const auto corner = Api::GrowVertexSelection(*mesh, { grid[0][0] });
+        EXPECT_EQ(corner.size(), 3);
+        const auto back = Api::ShrinkVertexSelection(*mesh, corner);
+        ASSERT_EQ(back.size(), 1);
+        EXPECT_EQ(back.front(), grid[0][0]);
+
+        // Down conversions take every part; up conversions take what is enclosed, or touched on request.
+        Api::ElementSelection fromCell;
+        fromCell.m_polygons = { seed };
+        EXPECT_EQ(Api::ConvertSelection(*mesh, fromCell, Api::SelectionElement::Vertex, false).m_vertices.size(), 4);
+        const auto cellEdges = Api::ConvertSelection(*mesh, fromCell, Api::SelectionElement::Edge, false).m_edges;
+        EXPECT_EQ(cellEdges.size(), 4);
+
+        Api::ElementSelection fromCorners;
+        fromCorners.m_vertices = { grid[2][2], grid[3][2], grid[3][3], grid[2][3] };
+        const auto enclosed = Api::ConvertSelection(*mesh, fromCorners, Api::SelectionElement::Polygon, false).m_polygons;
+        ASSERT_EQ(enclosed.size(), 1);
+        EXPECT_EQ(enclosed.front(), seed);
+        EXPECT_EQ(Api::ConvertSelection(*mesh, fromCorners, Api::SelectionElement::Polygon, true).m_polygons.size(), 9);
+        EXPECT_EQ(Api::ConvertSelection(*mesh, fromCorners, Api::SelectionElement::Edge, false).m_edges.size(), 4);
+
+        Api::ElementSelection fromEdges;
+        fromEdges.m_edges = cellEdges;
+        EXPECT_EQ(Api::ConvertSelection(*mesh, fromEdges, Api::SelectionElement::Polygon, false).m_polygons.size(), 1);
+        EXPECT_EQ(Api::ConvertSelection(*mesh, fromEdges, Api::SelectionElement::Polygon, true).m_polygons.size(), 5);
+
+        // Edges grow through their ends and shrink back to the ones whose ends are fully surrounded.
+        const auto grownEdges = Api::GrowEdgeSelection(*mesh, cellEdges);
+        EXPECT_EQ(grownEdges.size(), 4 + 8);
+        EXPECT_TRUE(Api::ShrinkEdgeSelection(*mesh, cellEdges).empty());
+    }
+
+    TEST_F(WhiteBoxTestFixture, DetachMovesPolygonsWithTheirAttributesAndRefusesEverything)
+    {
+        namespace Api = WhiteBox::Api;
+        auto mesh = Api::CreateWhiteBoxMesh();
+        const auto polygons = Api::InitializeAsUnitCube(*mesh);
+        const auto material = AZ::Data::AssetId::CreateString("{15214A10-CEAC-49D8-AB23-B7129F69B9F1}:3");
+        Api::UvProjection projection;
+        projection.m_mode = Api::UvProjectionMode::Planar;
+        projection.m_scale = AZ::Vector2(2.0f, 3.0f);
+        projection.m_rotationDegrees = 30.0f;
+        Api::SetPolygonMaterial(*mesh, polygons[0], material);
+        for (const auto face : polygons[0].m_faceHandles)
+        {
+            Api::SetFacePaintColor(*mesh, face, 0xff00ff00);
+        }
+        Api::SetPolygonUvProjection(*mesh, { polygons[0] }, projection);
+
+        auto detached = Api::CreateWhiteBoxMesh();
+        AZStd::string error;
+        ASSERT_TRUE(Api::DetachPolygons(*mesh, { polygons[0] }, *detached, error)) << error.c_str();
+        EXPECT_EQ(Api::MeshPolygonHandles(*detached).size(), 1);
+        EXPECT_EQ(Api::MeshFaceHandles(*detached).size(), 2);
+        EXPECT_EQ(Api::MeshVertexCount(*detached), 4u);
+        for (const auto face : Api::MeshFaceHandles(*detached))
+        {
+            EXPECT_EQ(Api::FaceMaterial(*detached, face), material);
+            EXPECT_EQ(Api::FacePaintColor(*detached, face), 0xff00ff00);
+            EXPECT_EQ(Api::FaceUvProjection(*detached, face), projection);
+            for (const auto& point : Api::FaceVertexPositions(*detached, face))
+            {
+                EXPECT_NEAR(point.GetZ(), 0.5f, 1e-6f); // placement is kept
+            }
+        }
+        EXPECT_EQ(Api::MeshPolygonHandles(*mesh).size(), 5);
+        EXPECT_EQ(Api::MeshVertexCount(*mesh), 8u); // every corner is still used by a side
+        for (const auto face : Api::MeshFaceHandles(*mesh))
+        {
+            EXPECT_TRUE(Api::FaceUvProjection(*mesh, face).IsDefault());
+        }
+
+        // Taking every face would leave an empty layer behind, so it is refused without changes.
+        Api::WhiteBoxMeshStream before;
+        ASSERT_TRUE(Api::WriteMesh(*mesh, before));
+        auto everything = Api::CreateWhiteBoxMesh();
+        EXPECT_FALSE(Api::DetachPolygons(*mesh, Api::MeshPolygonHandles(*mesh), *everything, error));
+        Api::WhiteBoxMeshStream after;
+        ASSERT_TRUE(Api::WriteMesh(*mesh, after));
+        EXPECT_EQ(before, after);
+        EXPECT_TRUE(Api::MeshFaceHandles(*everything).empty());
+    }
+
+    TEST_F(WhiteBoxTestFixture, InsertVertexThenConnectSplitsAQuadIntoTwo)
+    {
+        namespace Api = WhiteBox::Api;
+        // Two quads side by side, so the shared edge proves both neighbours gain the corner.
+        auto mesh = Api::CreateWhiteBoxMesh();
+        const auto a = Api::AddVertex(*mesh, AZ::Vector3(0.0f, 0.0f, 0.0f));
+        const auto b = Api::AddVertex(*mesh, AZ::Vector3(1.0f, 0.0f, 0.0f));
+        const auto c = Api::AddVertex(*mesh, AZ::Vector3(2.0f, 0.0f, 0.0f));
+        const auto d = Api::AddVertex(*mesh, AZ::Vector3(0.0f, 1.0f, 0.0f));
+        const auto e = Api::AddVertex(*mesh, AZ::Vector3(1.0f, 1.0f, 0.0f));
+        const auto f = Api::AddVertex(*mesh, AZ::Vector3(2.0f, 1.0f, 0.0f));
+        Api::AddQuadPolygon(*mesh, a, b, e, d);
+        Api::AddQuadPolygon(*mesh, b, c, f, e);
+        Api::CalculateNormals(*mesh);
+        for (const auto face : Api::MeshFaceHandles(*mesh))
+        {
+            Api::SetFacePaintColor(*mesh, face, 0xff123456);
+        }
+        const auto edgeBetween = [&mesh](const Api::VertexHandle from, const Api::VertexHandle to)
+        {
+            for (const auto edge : Api::MeshEdgeHandles(*mesh))
+            {
+                const auto ends = Api::EdgeVertexHandles(*mesh, edge);
+                if ((ends[0] == from && ends[1] == to) || (ends[0] == to && ends[1] == from))
+                {
+                    return edge;
+                }
+            }
+            return Api::EdgeHandle{};
+        };
+
+        AZStd::string error;
+        const auto shared = edgeBetween(b, e);
+        ASSERT_TRUE(shared.IsValid());
+        const auto sharedEnds = Api::EdgeVertexPositions(*mesh, shared);
+        const auto middle = Api::InsertVertexOnEdge(*mesh, shared, 0.25f, error);
+        ASSERT_TRUE(middle.IsValid()) << error.c_str();
+        EXPECT_FALSE(Api::VertexIsHidden(*mesh, middle));
+        EXPECT_TRUE(Api::VertexPosition(*mesh, middle).IsClose(sharedEnds[0].Lerp(sharedEnds[1], 0.25f), 1e-6f));
+        for (const auto& polygon : Api::MeshPolygonHandles(*mesh))
+        {
+            EXPECT_EQ(Api::PolygonBorderVertexHandlesFlattened(*mesh, polygon).size(), 5);
+        }
+        EXPECT_FALSE(Api::InsertVertexOnEdge(*mesh, edgeBetween(a, b), 1.0f, error).IsValid());
+
+        // A vertex on the top and bottom of the left quad, joined, cuts it in two.
+        const auto bottom = Api::InsertVertexOnEdge(*mesh, edgeBetween(a, b), 0.5f, error);
+        const auto top = Api::InsertVertexOnEdge(*mesh, edgeBetween(d, e), 0.5f, error);
+        ASSERT_TRUE(bottom.IsValid() && top.IsValid()) << error.c_str();
+        Api::EdgeHandles created;
+        ASSERT_TRUE(Api::ConnectVertices(*mesh, { bottom, top }, error, &created)) << error.c_str();
+        ASSERT_EQ(created.size(), 1);
+        EXPECT_EQ(Api::MeshPolygonHandles(*mesh).size(), 3);
+        for (const auto face : Api::MeshFaceHandles(*mesh))
+        {
+            EXPECT_EQ(Api::FacePaintColor(*mesh, face), 0xff123456);
+            const auto p = Api::FaceVertexPositions(*mesh, face);
+            EXPECT_GT((p[1] - p[0]).Cross(p[2] - p[0]).GetZ(), 0.0f); // winding kept
+        }
+        // Once joined there is nothing left to connect.
+        EXPECT_FALSE(Api::ConnectVertices(*mesh, { bottom, top }, error));
+    }
+
+    TEST_F(WhiteBoxTestFixture, ConnectVerticesStaysInsideConcaveOutlines)
+    {
+        namespace Api = WhiteBox::Api;
+        auto mesh = Api::CreateWhiteBoxMesh();
+        const AZStd::vector<Api::VertexHandle> corners{
+            Api::AddVertex(*mesh, AZ::Vector3(0.0f, 0.0f, 0.0f)), Api::AddVertex(*mesh, AZ::Vector3(2.0f, 0.0f, 0.0f)),
+            Api::AddVertex(*mesh, AZ::Vector3(2.0f, 1.0f, 0.0f)), Api::AddVertex(*mesh, AZ::Vector3(1.0f, 1.0f, 0.0f)),
+            Api::AddVertex(*mesh, AZ::Vector3(1.0f, 2.0f, 0.0f)), Api::AddVertex(*mesh, AZ::Vector3(0.0f, 2.0f, 0.0f)) };
+        AddFlatFan(*mesh, corners);
+        Api::CalculateNormals(*mesh);
+
+        // Across the notch the straight cut would leave the L, so nothing changes.
+        Api::WhiteBoxMeshStream before;
+        ASSERT_TRUE(Api::WriteMesh(*mesh, before));
+        AZStd::string error;
+        EXPECT_FALSE(Api::ConnectVertices(*mesh, { corners[2], corners[4] }, error));
+        EXPECT_FALSE(error.empty());
+        Api::WhiteBoxMeshStream after;
+        ASSERT_TRUE(Api::WriteMesh(*mesh, after));
+        EXPECT_EQ(before, after);
+
+        // From the inner corner to the outer one splits it into two quads.
+        ASSERT_TRUE(Api::ConnectVertices(*mesh, { corners[3], corners[0] }, error)) << error.c_str();
+        const auto polygons = Api::MeshPolygonHandles(*mesh);
+        ASSERT_EQ(polygons.size(), 2);
+        for (const auto& polygon : polygons)
+        {
+            EXPECT_EQ(Api::PolygonBorderVertexHandlesFlattened(*mesh, polygon).size(), 4);
+        }
+    }
+
+    TEST_F(WhiteBoxTestFixture, UvProjectionPersistsAndFitSpansThePolygonOnce)
+    {
+        namespace Api = WhiteBox::Api;
+        auto mesh = Api::CreateWhiteBoxMesh();
+        const auto polygons = Api::InitializeAsUnitCube(*mesh);
+        for (const auto face : Api::MeshFaceHandles(*mesh))
+        {
+            EXPECT_TRUE(Api::FaceUvProjection(*mesh, face).IsDefault());
+        }
+
+        // Fit leaves the top face's texture covering it exactly once.
+        Api::UvProjection planar;
+        planar.m_mode = Api::UvProjectionMode::Planar;
+        planar.m_rotationDegrees = 90.0f;
+        Api::SetPolygonUvProjection(*mesh, { polygons[0] }, planar);
+        Api::FitPolygonUvProjection(*mesh, { polygons[0] });
+        AZ::Vector2 low(1e6f, 1e6f);
+        AZ::Vector2 high(-1e6f, -1e6f);
+        for (const auto face : polygons[0].m_faceHandles)
+        {
+            for (const auto halfedge : Api::FaceHalfedgeHandles(*mesh, face))
+            {
+                low = low.GetMin(Api::HalfedgeUV(*mesh, halfedge));
+                high = high.GetMax(Api::HalfedgeUV(*mesh, halfedge));
+            }
+        }
+        EXPECT_TRUE(low.IsClose(AZ::Vector2(0.0f, 0.0f), 1e-4f));
+        EXPECT_TRUE(high.IsClose(AZ::Vector2(1.0f, 1.0f), 1e-4f));
+        const auto fitted = Api::FaceUvProjection(*mesh, polygons[0].m_faceHandles.front());
+        EXPECT_EQ(fitted.m_mode, Api::UvProjectionMode::Planar);
+        EXPECT_NEAR(fitted.m_rotationDegrees, 90.0f, 1e-5f);
+
+        // Recalculation, serialization, cloning and repair all keep it.
+        Api::CalculatePlanarUVs(*mesh);
+        for (const auto face : polygons[0].m_faceHandles)
+        {
+            for (const auto halfedge : Api::FaceHalfedgeHandles(*mesh, face))
+            {
+                const auto uv = Api::HalfedgeUV(*mesh, halfedge);
+                EXPECT_TRUE(uv.GetX() > -1e-4f && uv.GetX() < 1.0f + 1e-4f && uv.GetY() > -1e-4f && uv.GetY() < 1.0f + 1e-4f);
+            }
+        }
+        Api::WhiteBoxMeshStream stream;
+        ASSERT_TRUE(Api::WriteMesh(*mesh, stream));
+        auto loaded = Api::CreateWhiteBoxMesh();
+        ASSERT_EQ(Api::ReadMesh(*loaded, stream), Api::ReadResult::Full);
+        EXPECT_EQ(Api::FaceUvProjection(*loaded, polygons[0].m_faceHandles.front()), fitted);
+        EXPECT_TRUE(Api::FaceUvProjection(*loaded, polygons[1].m_faceHandles.front()).IsDefault());
+        auto clone = Api::CloneMesh(*mesh);
+        EXPECT_EQ(Api::FaceUvProjection(*clone, polygons[0].m_faceHandles.front()), fitted);
+
+        ASSERT_TRUE(Api::RepairMesh(*mesh));
+        size_t projected = 0;
+        for (const auto face : Api::MeshFaceHandles(*mesh))
+        {
+            const bool top = Api::FaceNormal(*mesh, face).GetZ() > 0.9f;
+            const auto projection = Api::FaceUvProjection(*mesh, face);
+            EXPECT_EQ(projection == fitted, top);
+            projected += projection == fitted ? 1 : 0;
+        }
+        EXPECT_GT(projected, 0u);
     }
 }

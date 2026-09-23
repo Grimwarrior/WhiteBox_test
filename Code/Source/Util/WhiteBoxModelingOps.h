@@ -9,6 +9,7 @@
 #pragma once
 
 #include <AzCore/Component/ComponentBus.h>
+#include <AzCore/std/optional.h>
 #include <AzCore/std/string/string.h>
 #include <WhiteBox/WhiteBoxToolApi.h>
 
@@ -52,6 +53,10 @@ namespace WhiteBox
         bool CanLoopCut(const Selection& selection);
         bool CanBevel(const Selection& selection);
         bool CanSelectEdgePattern(const Selection& selection);
+        bool CanGrowShrink(const Selection& selection);
+        bool CanDetach(const Selection& selection);
+        bool CanConnectVertices(const Selection& selection);
+        bool CanProjectUvs(const Selection& selection);
         //! A typed amount only applies to polygons. Edges extrude by dragging with the latch on.
         bool CanExtrudeInset(const Selection& selection);
 
@@ -72,6 +77,22 @@ namespace WhiteBox
         Result SelectCoplanar(const AZ::EntityComponentIdPair& entityComponentIdPair);
         //! Delete the selected polygons but keep their vertices, so the opening can be refilled.
         Result DeletePolygon(const AZ::EntityComponentIdPair& entityComponentIdPair);
+        //! Selection only: grow or shrink whatever is selected by one step of adjacency.
+        Result GrowSelection(const AZ::EntityComponentIdPair& entityComponentIdPair);
+        Result ShrinkSelection(const AZ::EntityComponentIdPair& entityComponentIdPair);
+        //! Selection only: carry the selection over to another element type, falling back to touching when nothing is enclosed.
+        Result ConvertSelection(const AZ::EntityComponentIdPair& entityComponentIdPair, Api::SelectionElement target, bool touching);
+        //! Move the selected polygons into a new layer directly above, with the same transform and settings.
+        Result DetachToLayer(const AZ::EntityComponentIdPair& entityComponentIdPair);
+        //! Split polygons along straight edges between the selected vertices.
+        Result ConnectVertices(const AZ::EntityComponentIdPair& entityComponentIdPair);
+        //! Enter the interactive Insert Vertex tool, or leave it when it is already running.
+        Result BeginInsertVertex(const AZ::EntityComponentIdPair& entityComponentIdPair);
+        //! UV projection of the selected polygons; the first selected polygon's settings, or none without a polygon.
+        AZStd::optional<Api::UvProjection> SelectedUvProjection(const AZ::EntityComponentIdPair& entityComponentIdPair);
+        Result ApplyUvProjection(const AZ::EntityComponentIdPair& entityComponentIdPair, const Api::UvProjection& projection);
+        //! Keep each selected polygon's mode and rotation, and scale and offset its texture to span it once.
+        Result FitUvProjection(const AZ::EntityComponentIdPair& entityComponentIdPair);
         //! Merge the selected vertices into one, at the selection centre or at the last one selected.
         Result Weld(const AZ::EntityComponentIdPair& entityComponentIdPair, bool atLastVertex);
         //! Enter the interactive loop cut. Switches to Transform sub-mode first if something else is active.

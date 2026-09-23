@@ -34,6 +34,7 @@ namespace WhiteBox
     class WhiteBoxBevelWindow;
     class WhiteBoxWeldWindow;
     class WhiteBoxExtrudeInsetWindow;
+    class WhiteBoxUvProjectionWindow;
     class WhiteBoxShapeOptionsWindow;
     class WhiteBoxPaintWindow;
 
@@ -77,16 +78,28 @@ namespace WhiteBox
             "Select Linked — grow the selection to every part joined to it";
         constexpr static const char* const WhiteboxSelectCoplanarTooltip =
             "Select Coplanar — grow the selection over neighbours facing the same way";
+        constexpr static const char* const WhiteboxGrowSelectionTooltip =
+            "Grow Selection — add every neighbour of the selection, one step out";
+        constexpr static const char* const WhiteboxShrinkSelectionTooltip =
+            "Shrink Selection — drop every selected element that touches something unselected";
+        constexpr static const char* const WhiteboxDetachTooltip =
+            "Detach to Layer — move the selected polygons into a new layer, keeping materials, colours and UVs";
+        constexpr static const char* const WhiteboxConnectVerticesTooltip =
+            "Connect Vertices — split polygons with straight edges between the selected vertices";
+        constexpr static const char* const WhiteboxInsertVertexTooltip =
+            "Insert Vertex — click polygon edges to add vertices; Ctrl snaps to the midpoint, Shift to tenths";
+        constexpr static const char* const WhiteboxUvProjectionTooltip =
+            "UV Projection — set how textures map onto the selected polygons";
         constexpr static const char* const WhiteboxStickySelectTooltip =
             "Sticky Select — drag across the mesh and everything the cursor crosses joins the selection";
         constexpr static const char* const WhiteboxBoxSelectTooltip =
             "Box Select — drag a rectangle to select everything inside it";
         constexpr static const char* const WhiteboxSelectVerticesTooltip =
-            "Vertex Select — only vertices can be picked. Click again for all three";
+            "Vertex Select — only vertices can be picked and the selection converts. Ctrl: touching. Click again for all three";
         constexpr static const char* const WhiteboxSelectEdgesTooltip =
-            "Edge Select — only edges can be picked. Click again for all three";
+            "Edge Select — only edges can be picked and the selection converts. Ctrl: touching. Click again for all three";
         constexpr static const char* const WhiteboxSelectPolygonsTooltip =
-            "Face Select — only polygons can be picked. Click again for all three";
+            "Face Select — only polygons can be picked and the selection converts. Ctrl: touching. Click again for all three";
         constexpr static const char* const WhiteboxModelingClusterDeletePolygonTooltip =
             "Delete Polygon — remove the selected polygons and keep their vertices";
         constexpr static const char* const WhiteboxModelingClusterLoopCutTooltip =
@@ -221,6 +234,12 @@ namespace WhiteBox
         AzToolsFramework::ViewportUi::ButtonId m_mergePolygonsButtonId;
         AzToolsFramework::ViewportUi::ButtonId m_selectCoplanarButtonId;
         AzToolsFramework::ViewportUi::ButtonId m_selectLinkedButtonId;
+        AzToolsFramework::ViewportUi::ButtonId m_growSelectionButtonId;
+        AzToolsFramework::ViewportUi::ButtonId m_shrinkSelectionButtonId;
+        AzToolsFramework::ViewportUi::ButtonId m_detachButtonId;
+        AzToolsFramework::ViewportUi::ButtonId m_connectVerticesButtonId;
+        AzToolsFramework::ViewportUi::ButtonId m_insertVertexButtonId;
+        AzToolsFramework::ViewportUi::ButtonId m_uvProjectionButtonId;
         //! Its own cluster: the modelling one's single active-button slot is taken by the latch and knife.
         AzToolsFramework::ViewportUi::ClusterId m_selectionClusterId =
             AzToolsFramework::ViewportUi::InvalidClusterId;
@@ -250,6 +269,7 @@ namespace WhiteBox
         QPointer<WhiteBoxBevelWindow> m_bevelWindow;
         QPointer<WhiteBoxWeldWindow> m_weldWindow;
         QPointer<WhiteBoxExtrudeInsetWindow> m_extrudeInsetWindow;
+        QPointer<WhiteBoxUvProjectionWindow> m_uvProjectionWindow;
 
         //! The Draw Shape primitive switcher: one entry per DrawShapeType, shown along the bottom of
         //! the viewport while Draw Shape mode is active. A cluster, so the active primitive gets the same

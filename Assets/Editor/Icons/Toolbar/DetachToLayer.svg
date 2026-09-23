@@ -4,17 +4,17 @@
    height="100"
    viewBox="2 2 20.6 20.6"
    version="1.1"
-   id="svg2"
-   sodipodi:docname="SelectLinked.svg"
+   id="svg4"
+   sodipodi:docname="DetachToLayer.svg"
    inkscape:version="1.4.3 (0d15f75, 2025-12-25)"
    xmlns:inkscape="http://www.inkscape.org/namespaces/inkscape"
    xmlns:sodipodi="http://sodipodi.sourceforge.net/DTD/sodipodi-0.dtd"
    xmlns="http://www.w3.org/2000/svg"
    xmlns:svg="http://www.w3.org/2000/svg">
   <defs
-     id="defs2" />
+     id="defs4" />
   <sodipodi:namedview
-     id="namedview2"
+     id="namedview4"
      pagecolor="#ffffff"
      bordercolor="#000000"
      borderopacity="0.25"
@@ -30,30 +30,38 @@
      inkscape:window-x="-11"
      inkscape:window-y="-11"
      inkscape:window-maximized="1"
-     inkscape:current-layer="svg2" />
+     inkscape:current-layer="svg4" />
   <title
-     id="title1">Select Linked</title>
+     id="title1">Detach to Layer</title>
   <path
-     d="M 3.1227197,12.342457 7.7687136,3.1754838 h 9.1813684 l 4.645995,9.1669732 -4.645995,9.166972 H 7.7687136 Z"
-     fill="#67c7e8"
-     fill-opacity="0.45"
-     stroke="#67c7e8"
-     stroke-width="1.72645"
+     d="m 2.9991003,17.328954 9.3093907,-4.324865 9.309391,4.324865 -9.309391,4.324867 z"
+     fill="#dadada"
+     fill-opacity="0.25"
+     stroke="#dadada"
+     stroke-width="1.33039"
      stroke-linejoin="round"
      id="path1" />
   <path
-     d="M 12.359398,3.1754838 V 21.509429 M 3.1227197,12.342457 H 21.596077"
+     d="m 8.0198955,17.328954 4.2885955,-1.946189 4.288596,1.946189 -4.288596,1.94619 z"
+     fill="none"
+     stroke="#dadada"
+     stroke-width="1.02338"
+     stroke-dasharray="1.4, 1"
+     id="path2" />
+  <path
+     d="m 8.0198955,10.192925 4.2885955,-1.9461886 4.288596,1.9461886 -4.288596,1.94619 z"
+     fill="#67c7e8"
+     fill-opacity="0.6"
+     stroke="#67c7e8"
+     stroke-width="1.43273"
+     stroke-linejoin="round"
+     id="path3" />
+  <path
+     d="M 12.308491,6.3005468 V 2.9487756 M 10.530292,4.6787219 12.308491,2.840654 14.08669,4.6787219"
      fill="none"
      stroke="#67c7e8"
-     stroke-width="1.29484"
-     stroke-opacity="0.75"
-     id="path2" />
-  <ellipse
-     cx="12.359398"
-     cy="12.342457"
-     fill="#dadada"
-     id="circle2"
-     rx="2.4336159"
-     ry="2.8404703"
-     style="stroke-width:1.19508" />
+     stroke-width="1.33039"
+     stroke-linecap="round"
+     stroke-linejoin="round"
+     id="path4" />
 </svg>

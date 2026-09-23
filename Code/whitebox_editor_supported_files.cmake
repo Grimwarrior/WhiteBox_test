@@ -42,6 +42,8 @@ set(FILES
     Source/Tools/WhiteBoxToolStatus.h
     Source/Tools/WhiteBoxWeldWindow.cpp
     Source/Tools/WhiteBoxWeldWindow.h
+    Source/Tools/WhiteBoxUvProjectionWindow.cpp
+    Source/Tools/WhiteBoxUvProjectionWindow.h
     Source/Tools/WhiteBoxExtrudeInsetWindow.cpp
     Source/Tools/WhiteBoxExtrudeInsetWindow.h
     Source/Tools/WhiteBoxLayerGizmo.cpp

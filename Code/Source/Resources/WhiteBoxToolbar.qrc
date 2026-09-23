@@ -12,6 +12,12 @@
     <file alias="MergePolygons.svg">../../../Assets/Editor/Icons/Toolbar/MergePolygons.svg</file>
     <file alias="SelectCoplanar.svg">../../../Assets/Editor/Icons/Toolbar/SelectCoplanar.svg</file>
     <file alias="SelectLinked.svg">../../../Assets/Editor/Icons/Toolbar/SelectLinked.svg</file>
+    <file alias="GrowSelection.svg">../../../Assets/Editor/Icons/Toolbar/GrowSelection.svg</file>
+    <file alias="ShrinkSelection.svg">../../../Assets/Editor/Icons/Toolbar/ShrinkSelection.svg</file>
+    <file alias="DetachToLayer.svg">../../../Assets/Editor/Icons/Toolbar/DetachToLayer.svg</file>
+    <file alias="ConnectVertices.svg">../../../Assets/Editor/Icons/Toolbar/ConnectVertices.svg</file>
+    <file alias="InsertVertex.svg">../../../Assets/Editor/Icons/Toolbar/InsertVertex.svg</file>
+    <file alias="UvProjection.svg">../../../Assets/Editor/Icons/Toolbar/UvProjection.svg</file>
     <file alias="StickySelect.svg">../../../Assets/Editor/Icons/Toolbar/StickySelect.svg</file>
     <file alias="BoxSelect.svg">../../../Assets/Editor/Icons/Toolbar/BoxSelect.svg</file>
     <file alias="LoopCut.svg">../../../Assets/Editor/Icons/Toolbar/LoopCut.svg</file>

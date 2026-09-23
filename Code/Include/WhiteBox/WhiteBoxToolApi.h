@@ -837,6 +837,39 @@ namespace WhiteBox
         void SetFaceMaterial(WhiteBoxMesh& whiteBox, FaceHandle face, const AZ::Data::AssetId& material);
         void SetPolygonMaterial(WhiteBoxMesh& whiteBox, const PolygonHandle& polygon, const AZ::Data::AssetId& material);
 
+        //! How a face's texture coordinates are generated each time UVs are recalculated.
+        enum class UvProjectionMode : AZ::u32
+        {
+            World = 0, //!< The original mapping: project along the face normal's dominant local axis.
+            Planar = 1 //!< Project onto the face's own plane, so sloped faces do not stretch.
+        };
+
+        //! Per-face texture placement applied after projection (rotate, scale, offset); the default is the original mapping.
+        struct UvProjection
+        {
+            UvProjectionMode m_mode = UvProjectionMode::World;
+            AZ::Vector2 m_scale = AZ::Vector2(1.0f, 1.0f); //!< Texture repeats per metre along U and V.
+            AZ::Vector2 m_offset = AZ::Vector2(0.0f, 0.0f);
+            float m_rotationDegrees = 0.0f;
+
+            bool IsDefault() const;
+            bool operator==(const UvProjection& other) const;
+            bool operator!=(const UvProjection& other) const { return !operator==(other); }
+        };
+
+        //! Persistent per-face projection, honoured by every CalculatePlanarUVs call.
+        UvProjection FaceUvProjection(const WhiteBoxMesh& whiteBox, FaceHandle face);
+        void SetFaceUvProjection(WhiteBoxMesh& whiteBox, FaceHandle face, const UvProjection& projection);
+        //! Set the projection on every face of the polygons and recalculate their UVs.
+        void SetPolygonUvProjection(WhiteBoxMesh& whiteBox, const PolygonHandles& polygons, const UvProjection& projection);
+        //! Keep each polygon's mode and rotation but pick scale and offset so the texture spans it exactly once.
+        void FitPolygonUvProjection(WhiteBoxMesh& whiteBox, const PolygonHandles& polygons);
+        //! Copy material, paint and UV projection from one face to another, possibly in another mesh.
+        void CopyFaceAttributes(WhiteBoxMesh& target, FaceHandle targetFace, const WhiteBoxMesh& source, FaceHandle sourceFace);
+        //! Pairwise copy for many faces at once, looking each property up only once.
+        void CopyFaceAttributes(
+            WhiteBoxMesh& target, const FaceHandles& targetFaces, const WhiteBoxMesh& source, const FaceHandles& sourceFaces);
+
         bool WriteMesh(const WhiteBoxMesh& whiteBox, WhiteBoxMeshStream& output);
 
         //! Clones the white box mesh object into a new mesh.
@@ -849,8 +882,7 @@ namespace WhiteBox
             WhiteBoxMesh& mesh, const EdgeHandles& edges, const AZ::Vector3& offset,
             EdgeHandles& result, PolygonHandles& preview, AZStd::string& error);
 
-        //! Extrude connected selected regions along their area-weighted normals, or inset planar
-        //! convex regions by a fraction (0, 1), matching Sketch's proportional inset.
+        //! Extrude regions along their normals, or inset by a fraction (0, 1): convex planar regions scale, others get an even border.
         //! Preserves polygon divisions, face materials/paint and existing UVs. Transactional on failure.
         bool ExtrudeInsetRegions(
             WhiteBoxMesh& whiteBox, const PolygonHandles& selection, float amount, bool inset,
@@ -915,6 +947,44 @@ namespace WhiteBox
         //! Expand quads into the face strip through them; loop and ring are the two directions.
         PolygonHandles FindPolygonLoop(const WhiteBoxMesh& whiteBox, const PolygonHandles& seeds);
         PolygonHandles FindPolygonRing(const WhiteBoxMesh& whiteBox, const PolygonHandles& seeds);
+
+        //! Grow one step (polygons sharing a corner, edges sharing an end, vertices one edge away); seeds stay first.
+        PolygonHandles GrowPolygonSelection(const WhiteBoxMesh& whiteBox, const PolygonHandles& seeds);
+        EdgeHandles GrowEdgeSelection(const WhiteBoxMesh& whiteBox, const EdgeHandles& seeds);
+        VertexHandles GrowVertexSelection(const WhiteBoxMesh& whiteBox, const VertexHandles& seeds);
+        //! The inverse of grow: drop every seed that touches an unselected neighbour. May return empty.
+        PolygonHandles ShrinkPolygonSelection(const WhiteBoxMesh& whiteBox, const PolygonHandles& seeds);
+        EdgeHandles ShrinkEdgeSelection(const WhiteBoxMesh& whiteBox, const EdgeHandles& seeds);
+        VertexHandles ShrinkVertexSelection(const WhiteBoxMesh& whiteBox, const VertexHandles& seeds);
+
+        //! One element type's worth of selection; conversion reads whichever member is filled.
+        struct ElementSelection
+        {
+            PolygonHandles m_polygons;
+            EdgeHandles m_edges;
+            VertexHandles m_vertices;
+        };
+        //! Which element type a selection converts to.
+        enum class SelectionElement
+        {
+            Vertex,
+            Edge,
+            Polygon
+        };
+        //! Convert to another element type: down takes every part, up takes what is enclosed (or touched when touching).
+        ElementSelection ConvertSelection(
+            const WhiteBoxMesh& whiteBox, const ElementSelection& source, SelectionElement target, bool touching);
+
+        //! Move polygons into detached with all face attributes and UVs; refuses every face. Transactional.
+        bool DetachPolygons(
+            WhiteBoxMesh& whiteBox, const PolygonHandles& polygons, WhiteBoxMesh& detached, AZStd::string& error);
+
+        //! Split polygons along straight cuts: a path in selection order, else polygons with two selected corners. Transactional.
+        bool ConnectVertices(
+            WhiteBoxMesh& whiteBox, const VertexHandles& vertices, AZStd::string& error, EdgeHandles* created = nullptr);
+
+        //! Add a visible corner on a polygon border edge at fraction (0, 1) from its first endpoint; invalid on failure.
+        VertexHandle InsertVertexOnEdge(WhiteBoxMesh& whiteBox, EdgeHandle edge, float fraction, AZStd::string& error);
 
         //! Bevel convex edges, including connected selections at simple corners. Width is the face offset.
         //! Segments (1-32) controls the rounded profile. Failure leaves the mesh unchanged.

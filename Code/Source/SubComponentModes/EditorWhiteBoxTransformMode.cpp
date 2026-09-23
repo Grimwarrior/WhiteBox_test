@@ -89,6 +89,22 @@ namespace WhiteBox
     const constexpr char* SwitchToRotationModeDesc = "Switch to Rotation Mode";
     const constexpr char* SwitchToScaleModeDesc = "Switch to Scale Mode";
 
+    // A drag step refreshes the render mesh now and debounces the collider cook and game bake until the drag settles.
+    static void PublishDragStep(const AZ::EntityComponentIdPair& entityComponentIdPair)
+    {
+        auto* component = FindWhiteBoxComponent(entityComponentIdPair);
+        if (component == nullptr || component->AssetInUse())
+        {
+            // A shared asset has to tell its other users, which only the full notification does.
+            EditorWhiteBoxComponentNotificationBus::Event(
+                entityComponentIdPair, &EditorWhiteBoxComponentNotificationBus::Events::OnWhiteBoxMeshModified);
+            return;
+        }
+        component->RebuildWhiteBoxDeferred();
+        EditorWhiteBoxComponentModeRequestBus::Event(
+            entityComponentIdPair, &EditorWhiteBoxComponentModeRequestBus::Events::MarkWhiteBoxIntersectionDataDirty);
+    }
+
     static void SetViewportUiClusterActiveButton(
         AzToolsFramework::ViewportUi::ClusterId clusterId, AzToolsFramework::ViewportUi::ButtonId buttonId)
     {
@@ -579,7 +595,7 @@ namespace WhiteBox
 
     void TransformMode::ChangeTransformType(TransformType subModeType)
     {
-        if (m_loopCutActive || m_knifeActive) { Refresh(); }
+        if (m_loopCutActive || m_knifeActive || m_insertVertexActive) { Refresh(); }
         m_transformType = subModeType;
         RefreshManipulator();
     }
@@ -603,6 +619,10 @@ namespace WhiteBox
         m_loopCutSeed = Api::EdgeHandle{};
         m_loopCutLines.clear();
         m_loopCutError.clear();
+        m_insertVertexActive = false;
+        m_insertVertexEdge = Api::EdgeHandle{};
+        m_insertedVertices.clear();
+        m_insertVertexError.clear();
         // Refresh is also called after replacing the active layer's working mesh.
         // Hover handles belong to that old mesh just as selection handles do.
         m_whiteBoxSelection.reset();
@@ -711,6 +731,15 @@ namespace WhiteBox
             instructions.prepend(count + dot);
             error = QString::fromUtf8(m_loopCutError.c_str());
         }
+        else if (m_insertVertexActive)
+        {
+            instructions = QObject::tr("Click edge add%1Ctrl midpoint%1Shift tenths%1Esc finish").arg(dot);
+            if (!m_insertedVertices.empty())
+            {
+                instructions.prepend(QObject::tr("%n added", nullptr, static_cast<int>(m_insertedVertices.size())) + dot);
+            }
+            error = QString::fromUtf8(m_insertVertexError.c_str());
+        }
         else if (m_modelingLatch != TransformModelingLatch::None)
         {
             const bool extrude = m_modelingLatch == TransformModelingLatch::Extrude;
@@ -783,6 +812,38 @@ namespace WhiteBox
             debugDisplay.DrawLines(m_loopCutLines, AZ::Color(1.0f, 0.8f, 0.1f, 1.0f));
             debugDisplay.SetLineWidth(1.0f);
             debugDisplay.PopMatrix();
+            return;
+        }
+
+        if (m_insertVertexActive)
+        {
+            // Undo can shrink the mesh under the tool, so only still-existing vertices are drawn.
+            Api::VertexHandles inserted;
+            for (const auto vertex : m_insertedVertices)
+            {
+                if (whiteBox && static_cast<AZ::u64>(vertex.Index()) < Api::MeshVertexCount(*whiteBox))
+                {
+                    inserted.push_back(vertex);
+                }
+            }
+            if (whiteBox && !inserted.empty())
+            {
+                DrawPoints(debugDisplay, whiteBox, worldFromLocal, viewportInfo, inserted, ed_whiteBoxVertexSelection);
+            }
+            // Drawn from stored points rather than the edge handle, which an undo can invalidate between frames.
+            if (m_insertVertexEdge.IsValid())
+            {
+                debugDisplay.SetLineWidth(3.0f);
+                debugDisplay.SetColor(AZ::Color(0.2f, 1.0f, 0.6f, 1.0f));
+                debugDisplay.DrawLine(m_insertVertexLine[0], m_insertVertexLine[1]);
+                debugDisplay.SetLineWidth(1.0f);
+            }
+            debugDisplay.PopMatrix();
+            if (m_insertVertexEdge.IsValid())
+            {
+                debugDisplay.SetColor(AZ::Color(0.2f, 1.0f, 0.6f, 1.0f));
+                debugDisplay.DrawTextLabel(worldFromLocal.TransformPoint(m_insertVertexPoint), 1.6f, "+", true, 0, 0);
+            }
             return;
         }
 
@@ -1079,6 +1140,10 @@ namespace WhiteBox
         if (m_loopCutActive && whiteBox)
         {
             return HandleLoopCut(mouse, *whiteBox);
+        }
+        if (m_insertVertexActive && whiteBox)
+        {
+            return HandleInsertVertex(mouse, *whiteBox);
         }
 
         bool mouseOverManipulator = false;
@@ -1416,6 +1481,11 @@ namespace WhiteBox
 
     bool TransformMode::HandleEscape()
     {
+        if (m_insertVertexActive)
+        {
+            FinishInsertVertex();
+            return true;
+        }
         if (m_loopCutActive || m_knifeActive)
         {
             Refresh();
@@ -1751,6 +1821,160 @@ namespace WhiteBox
             event.m_mouseEvent == Viewport::MouseEvent::Move;
     }
 
+    void TransformMode::BeginInsertVertex()
+    {
+        // The button toggles, so a second press finishes the way Escape does.
+        if (m_insertVertexActive)
+        {
+            FinishInsertVertex();
+            return;
+        }
+        CancelActiveDrag();
+        Refresh();
+        m_modelingLatch = TransformModelingLatch::None;
+        m_insertVertexActive = true;
+    }
+
+    void TransformMode::FinishInsertVertex()
+    {
+        Api::VertexHandles inserted = AZStd::move(m_insertedVertices);
+        Refresh();
+        WhiteBoxMesh* mesh = nullptr;
+        EditorWhiteBoxComponentRequestBus::EventResult(
+            mesh, m_entityComponentIdPair, &EditorWhiteBoxComponentRequests::GetWhiteBoxMesh);
+        if (mesh == nullptr)
+        {
+            return;
+        }
+        // An undo inside the tool can take some of them away again.
+        const AZ::u64 vertexCount = Api::MeshVertexCount(*mesh);
+        inserted.erase(
+            AZStd::remove_if(
+                inserted.begin(), inserted.end(),
+                [vertexCount, mesh](const Api::VertexHandle vertex)
+                {
+                    return static_cast<AZ::u64>(vertex.Index()) >= vertexCount || Api::VertexIsHidden(*mesh, vertex);
+                }),
+            inserted.end());
+        if (!inserted.empty())
+        {
+            SetSelectedVertices(inserted);
+        }
+    }
+
+    bool TransformMode::HandleInsertVertex(const ModeMouseInteraction& mouse, WhiteBoxMesh& mesh)
+    {
+        namespace Viewport = AzToolsFramework::ViewportInteraction;
+        const auto& event = mouse.m_mouseInteraction;
+        const auto& interaction = event.m_mouseInteraction;
+        const auto& buttons = interaction.m_mouseButtons;
+        if (interaction.m_keyboardModifiers.Alt() || buttons.Middle() || event.m_mouseEvent == Viewport::MouseEvent::Wheel)
+        {
+            return false; // orbit, pan and zoom keep working
+        }
+        if (event.m_mouseEvent == Viewport::MouseEvent::Down && buttons.Right())
+        {
+            FinishInsertVertex();
+            return true;
+        }
+
+        // The hovered edge, or the hovered polygon's border edge nearest the hit, picked the way loop cut picks its seed.
+        Api::EdgeHandle edge;
+        if (mouse.m_edgeIntersection &&
+            (!mouse.m_polygonIntersection ||
+             mouse.m_edgeIntersection->m_intersection.m_closestDistance <=
+                 mouse.m_polygonIntersection->m_intersection.m_closestDistance + 0.01f))
+        {
+            edge = mouse.m_edgeIntersection->GetHandle();
+        }
+        else if (mouse.m_polygonIntersection)
+        {
+            const auto& hit = *mouse.m_polygonIntersection;
+            float closest = AZ::Constants::FloatMax;
+            for (const auto candidate : Api::PolygonBorderEdgeHandlesFlattened(mesh, hit.GetHandle()))
+            {
+                const auto points = Api::EdgeVertexPositions(mesh, candidate);
+                const auto direction = points[1] - points[0];
+                const float lengthSq = direction.GetLengthSq();
+                if (lengthSq <= 1e-10f)
+                {
+                    continue;
+                }
+                const float t = AZStd::clamp(
+                    (hit.m_intersection.m_localIntersectionPoint - points[0]).Dot(direction) / lengthSq, 0.0f, 1.0f);
+                const float distance = (hit.m_intersection.m_localIntersectionPoint - points[0].Lerp(points[1], t)).GetLengthSq();
+                if (distance < closest)
+                {
+                    closest = distance;
+                    edge = candidate;
+                }
+            }
+        }
+
+        m_insertVertexEdge = Api::EdgeHandle{};
+        if (edge.IsValid())
+        {
+            // The point on the edge nearest the cursor ray, in the mesh's own space.
+            const AZ::Transform localFromWorld = mouse.m_worldFromLocal.GetInverse();
+            const AZ::Vector3 origin = localFromWorld.TransformPoint(interaction.m_mousePick.m_rayOrigin);
+            const AZ::Vector3 ray = localFromWorld.TransformVector(interaction.m_mousePick.m_rayDirection).GetNormalizedSafe();
+            const auto points = Api::EdgeVertexPositions(mesh, edge);
+            const AZ::Vector3 along = points[1] - points[0];
+            const AZ::Vector3 gap = points[0] - origin;
+            const float a = along.Dot(along);
+            const float b = along.Dot(ray);
+            const float denominator = a - b * b;
+            float fraction = denominator > 1e-10f ? (b * ray.Dot(gap) - along.Dot(gap)) / denominator : 0.5f;
+            fraction = AZStd::clamp(fraction, 0.0f, 1.0f);
+            if (interaction.m_keyboardModifiers.Ctrl())
+            {
+                fraction = 0.5f;
+            }
+            else if (interaction.m_keyboardModifiers.Shift())
+            {
+                fraction = static_cast<float>(static_cast<int>(fraction * 10.0f + 0.5f)) / 10.0f; // fraction is never negative here
+            }
+            m_insertVertexEdge = edge;
+            m_insertVertexFraction = fraction;
+            m_insertVertexLine = { points[0], points[1] };
+            m_insertVertexPoint = points[0].Lerp(points[1], fraction);
+        }
+
+        if (event.m_mouseEvent == Viewport::MouseEvent::Down && buttons.Left())
+        {
+            if (!m_insertVertexEdge.IsValid())
+            {
+                m_insertVertexError = "Hover a polygon edge to place the vertex.";
+                return true;
+            }
+            auto* component = FindWhiteBoxComponent(m_entityComponentIdPair);
+            if (!component)
+            {
+                return true;
+            }
+            AzToolsFramework::ScopedUndoBatch undoBatch("White Box Insert Vertex");
+            const auto vertex = Api::InsertVertexOnEdge(mesh, m_insertVertexEdge, m_insertVertexFraction, m_insertVertexError);
+            if (!vertex.IsValid())
+            {
+                return true;
+            }
+            m_insertedVertices.push_back(vertex);
+            // The split edge is gone; the next move picks whichever half is under the cursor.
+            m_insertVertexEdge = Api::EdgeHandle{};
+            component->BakeParametricLayer(component->GetActiveLayerIndex());
+            component->SerializeWhiteBox();
+            EditorWhiteBoxComponentNotificationBus::Event(
+                m_entityComponentIdPair, &EditorWhiteBoxComponentNotifications::OnWhiteBoxMeshModified);
+            undoBatch.MarkEntityDirty(m_entityComponentIdPair.GetEntityId());
+            return true;
+        }
+        if (event.m_mouseEvent == Viewport::MouseEvent::Move && m_insertVertexEdge.IsValid())
+        {
+            m_insertVertexError.clear();
+        }
+        return buttons.Left() || event.m_mouseEvent == Viewport::MouseEvent::Move;
+    }
+
     void TransformMode::PublishLatchMesh()
     {
         // The deferred rebuild rather than the OnWhiteBoxMeshModified notification Sketch mode sends:
@@ -1835,7 +2059,7 @@ namespace WhiteBox
         m_numericInput.Reset();
         HideToolStatus();
         m_modelingLatch = latch;
-        if (m_loopCutActive || m_knifeActive) { Refresh(); }
+        if (m_loopCutActive || m_knifeActive || m_insertVertexActive) { Refresh(); }
         RefreshManipulator();
     }
 
@@ -2217,8 +2441,7 @@ namespace WhiteBox
             Api::CalculateNormals(*whiteBox);
             Api::CalculatePlanarUVs(*whiteBox);
 
-            EditorWhiteBoxComponentNotificationBus::Event(
-                entityComponentIdPair, &EditorWhiteBoxComponentNotificationBus::Events::OnWhiteBoxMeshModified);
+            PublishDragStep(entityComponentIdPair);
         };
 
         auto mouseUpHandlerFn = [mouseMoveHandlerFn, entityComponentIdPair = m_entityComponentIdPair,
@@ -2255,6 +2478,9 @@ namespace WhiteBox
             transformSelection->m_snapOffset = AZ::Vector3::CreateZero();
             SnapUtil::ClearActiveSnapTarget();
 
+            // The drag only refreshed what is on screen; release pays for the collider and game bake once.
+            EditorWhiteBoxComponentNotificationBus::Event(
+                entityComponentIdPair, &EditorWhiteBoxComponentNotificationBus::Events::OnWhiteBoxMeshModified);
             EditorWhiteBoxComponentRequestBus::Event(entityComponentIdPair, &EditorWhiteBoxComponentRequests::SerializeWhiteBox);
         };
 
@@ -2332,8 +2558,7 @@ namespace WhiteBox
 
                 Api::CalculateNormals(*whiteBox);
                 Api::CalculatePlanarUVs(*whiteBox);
-                EditorWhiteBoxComponentNotificationBus::Event(
-                    entityComponentIdPair, &EditorWhiteBoxComponentNotificationBus::Events::OnWhiteBoxMeshModified);
+                PublishDragStep(entityComponentIdPair);
             };
 
         rotationManipulators->InstallMouseMoveCallback(mouseMoveHandlerFn);
@@ -2362,6 +2587,9 @@ namespace WhiteBox
                 {
                     manipulator->SetLocalOrientation(transformSelection->m_localRotation);
                 }
+                // The drag only refreshed what is on screen; release pays for the collider and game bake once.
+                EditorWhiteBoxComponentNotificationBus::Event(
+                    entityComponentIdPair, &EditorWhiteBoxComponentNotificationBus::Events::OnWhiteBoxMeshModified);
                 EditorWhiteBoxComponentRequestBus::Event(entityComponentIdPair, &EditorWhiteBoxComponentRequests::SerializeWhiteBox);
             });
 
@@ -2442,8 +2670,7 @@ namespace WhiteBox
 
             Api::CalculateNormals(*whiteBox);
             Api::CalculatePlanarUVs(*whiteBox);
-            EditorWhiteBoxComponentNotificationBus::Event(
-                entityComponentIdPair, &EditorWhiteBoxComponentNotificationBus::Events::OnWhiteBoxMeshModified);
+            PublishDragStep(entityComponentIdPair);
         };
 
         auto mouseUpHandlerFn =
@@ -2465,6 +2692,9 @@ namespace WhiteBox
             mouseMoveHandlerFn(action, scaleType);
             transformSelection->m_vertexPositions = Api::VertexPositions(*whiteBox, transformSelection->m_vertexHandles);
 
+            // The drag only refreshed what is on screen; release pays for the collider and game bake once.
+            EditorWhiteBoxComponentNotificationBus::Event(
+                entityComponentIdPair, &EditorWhiteBoxComponentNotificationBus::Events::OnWhiteBoxMeshModified);
             EditorWhiteBoxComponentRequestBus::Event(entityComponentIdPair, &EditorWhiteBoxComponentRequests::SerializeWhiteBox);
         };
 
