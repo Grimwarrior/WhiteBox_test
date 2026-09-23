@@ -882,6 +882,15 @@ namespace WhiteBox
         //! its partner stays. Duplicate handles in the selection are ignored.
         bool DeleteFaces(WhiteBoxMesh& whiteBox, const FaceHandles& selection, AZStd::string& error);
 
+        //! Merge a connected run of polygons into one by hiding every border they share. Transactional.
+        bool MergePolygons(
+            WhiteBoxMesh& whiteBox, const PolygonHandles& polygons, AZStd::string& error,
+            PolygonHandle* merged = nullptr);
+
+        //! Grow a polygon selection over neighbours facing the same way. Does not modify the mesh.
+        PolygonHandles FindCoplanarRegion(
+            const WhiteBoxMesh& whiteBox, const PolygonHandles& seeds, float toleranceDegrees = 1.0f);
+
         //! Merge selected vertices at their average position or the last selected vertex.
         //! Collapsed triangles are removed; surviving face properties and UVs are retained.
         //! Connected corner collapses may leave open face patches meeting at the merged point.

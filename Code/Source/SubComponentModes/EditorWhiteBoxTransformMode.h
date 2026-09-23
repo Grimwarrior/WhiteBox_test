@@ -16,6 +16,7 @@
 
 #include <AzCore/Math/Quaternion.h>
 #include <AzCore/Math/Vector2.h>
+#include <AzFramework/Viewport/ScreenGeometry.h> // ScreenPoint, held by value below
 #include <AzCore/std/containers/variant.h>
 #include <AzCore/std/containers/unordered_map.h>
 #include <QPointer>
@@ -177,6 +178,15 @@ namespace WhiteBox
         AZStd::optional<EdgeIntersection> m_edgeIntersection = AZStd::nullopt;
         AZStd::optional<VertexIntersection> m_vertexIntersection = AZStd::nullopt;
 
+        //! Run the finished marquee against the mesh and take what falls inside it.
+        void ApplyBoxSelection(const ModeMouseInteraction& mouse);
+        //! Armed on mouse down; only becomes a real marquee once the cursor actually travels.
+        bool m_boxSelectPending = false;
+        bool m_boxSelectActive = false;
+        AzFramework::ScreenPoint m_boxSelectAnchor;
+        AzFramework::ScreenPoint m_boxSelectCursor;
+        //! Add whatever the cursor is over to the selection, never removing. True if it grew.
+        bool AddHitToSelection(const ModeMouseInteraction& mouse, GeometryIntersection hit);
         void SetSelectedEdges(const Api::EdgeHandles& edges);
         bool BeginLatchedDrag(const ModeMouseInteraction& mouse, WhiteBoxMesh& mesh, GeometryIntersection hit);
         bool HandleLatchedDrag(const ModeMouseInteraction& mouse);

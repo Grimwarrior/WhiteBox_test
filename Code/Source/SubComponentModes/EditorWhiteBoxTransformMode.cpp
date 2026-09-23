@@ -864,6 +864,203 @@ namespace WhiteBox
             debugDisplay.SetColor(AZ::Colors::White);
             debugDisplay.DrawTextLabel(worldPos, 1.5f, statusText.c_str(), true, 0, 0);
         }
+
+        if (m_boxSelectActive)
+        {
+            // DrawLine2d takes y-down normalised coords, which is the mouse's own axis: scale, do not flip.
+            const auto camera = AzToolsFramework::GetCameraState(viewportInfo.m_viewportId);
+            const float width = AZStd::max(aznumeric_cast<float>(camera.m_viewportSize.m_width), 1.0f);
+            const float height = AZStd::max(aznumeric_cast<float>(camera.m_viewportSize.m_height), 1.0f);
+            const auto normalised = [width, height](const AzFramework::ScreenPoint& point)
+            {
+                return AZ::Vector2(
+                    aznumeric_cast<float>(point.m_x) / width, aznumeric_cast<float>(point.m_y) / height);
+            };
+            const auto from = normalised(m_boxSelectAnchor);
+            const auto to = normalised(m_boxSelectCursor);
+            // The two corners the drag does not touch, named for the axis they borrow from the anchor.
+            const AZ::Vector2 acrossX(from.GetX(), to.GetY());
+            const AZ::Vector2 acrossY(to.GetX(), from.GetY());
+            debugDisplay.SetColor(ed_whiteBoxOutlineSelection);
+            debugDisplay.SetLineWidth(2.0f);
+            debugDisplay.DrawLine2d(from, acrossX, 1.0f);
+            debugDisplay.DrawLine2d(acrossX, to, 1.0f);
+            debugDisplay.DrawLine2d(to, acrossY, 1.0f);
+            debugDisplay.DrawLine2d(acrossY, from, 1.0f);
+            debugDisplay.SetLineWidth(1.0f);
+        }
+    }
+
+    void TransformMode::ApplyBoxSelection(const ModeMouseInteraction& mouse)
+    {
+        WhiteBoxMesh* whiteBox = nullptr;
+        EditorWhiteBoxComponentRequestBus::EventResult(
+            whiteBox, m_entityComponentIdPair, &EditorWhiteBoxComponentRequests::GetWhiteBoxMesh);
+        if (whiteBox == nullptr)
+        {
+            return;
+        }
+
+        const auto& interaction = mouse.m_mouseInteraction.m_mouseInteraction;
+        const auto camera = AzToolsFramework::GetCameraState(interaction.m_interactionId.m_viewportId);
+        const int left = AZStd::min(m_boxSelectAnchor.m_x, m_boxSelectCursor.m_x);
+        const int right = AZStd::max(m_boxSelectAnchor.m_x, m_boxSelectCursor.m_x);
+        const int top = AZStd::min(m_boxSelectAnchor.m_y, m_boxSelectCursor.m_y);
+        const int bottom = AZStd::max(m_boxSelectAnchor.m_y, m_boxSelectCursor.m_y);
+        // A box this small is a click that wandered a pixel or two, not a marquee.
+        if (right - left < 2 && bottom - top < 2)
+        {
+            return;
+        }
+        const auto inside = [&](const AZ::Vector3& local)
+        {
+            const auto screen = AzFramework::WorldToScreen(mouse.m_worldFromLocal.TransformPoint(local), camera);
+            return screen.m_x >= left && screen.m_x <= right && screen.m_y >= top && screen.m_y <= bottom;
+        };
+
+        Api::PolygonHandles polygons;
+        Api::EdgeHandles edges;
+        Api::VertexHandles vertices;
+        switch (mouse.m_selectionFilter)
+        {
+        case SelectionFilter::Vertices:
+            for (const auto vertex : Api::MeshVertexHandles(*whiteBox))
+            {
+                if (inside(Api::VertexPosition(*whiteBox, vertex)))
+                {
+                    vertices.push_back(vertex);
+                }
+            }
+            break;
+        case SelectionFilter::Edges:
+            // Both ends have to be in, so a box never takes an edge that only passes through it.
+            for (const auto edge : Api::MeshPolygonEdgeHandles(*whiteBox))
+            {
+                const auto endpoints = Api::EdgeVertexHandles(*whiteBox, edge);
+                if (inside(Api::VertexPosition(*whiteBox, endpoints[0])) &&
+                    inside(Api::VertexPosition(*whiteBox, endpoints[1])))
+                {
+                    edges.push_back(edge);
+                }
+            }
+            break;
+        default:
+            // Polygons, and what an unrestricted box takes: one selection cannot mix the three types.
+            for (const auto& polygon : Api::MeshPolygonHandles(*whiteBox))
+            {
+                if (inside(Api::PolygonMidpoint(*whiteBox, polygon)))
+                {
+                    polygons.push_back(polygon);
+                }
+            }
+            break;
+        }
+
+        if (vertices.empty() && edges.empty() && polygons.empty())
+        {
+            if (!interaction.m_keyboardModifiers.Ctrl())
+            {
+                m_whiteBoxSelection.reset();
+                DestroyManipulators();
+            }
+            return;
+        }
+
+        // Ctrl adds to what is already selected, the same as Ctrl-clicking does.
+        const bool extend = interaction.m_keyboardModifiers.Ctrl();
+        const auto restart = [this, extend](const IntersectionSelection& selection)
+        {
+            if (!extend || !m_whiteBoxSelection || m_whiteBoxSelection->m_selection.index() != selection.index())
+            {
+                m_whiteBoxSelection = AZStd::make_shared<VertexTransformSelection>();
+            }
+            m_whiteBoxSelection->m_selection = selection;
+        };
+        const auto merge = [](auto& handles, const auto& found)
+        {
+            for (const auto& handle : found)
+            {
+                if (AZStd::find(handles.begin(), handles.end(), handle) == handles.end())
+                {
+                    handles.push_back(handle);
+                }
+            }
+        };
+        if (!vertices.empty())
+        {
+            restart(VertexIntersection{});
+            merge(m_whiteBoxSelection->m_vertices, vertices);
+        }
+        else if (!edges.empty())
+        {
+            restart(EdgeIntersection{});
+            merge(m_whiteBoxSelection->m_edges, edges);
+        }
+        else
+        {
+            restart(PolygonIntersection{});
+            merge(m_whiteBoxSelection->m_polygons, polygons);
+        }
+
+        m_numericInput.Reset();
+        RefreshManipulator();
+    }
+
+    bool TransformMode::AddHitToSelection(const ModeMouseInteraction& mouse, const GeometryIntersection hit)
+    {
+        // Starts a fresh selection when the element type changes, matching what a click does.
+        const auto begin = [this](const auto& intersection)
+        {
+            const IntersectionSelection selection = intersection;
+            if (!m_whiteBoxSelection || m_whiteBoxSelection->m_selection.index() != selection.index())
+            {
+                m_whiteBoxSelection = AZStd::make_shared<VertexTransformSelection>();
+            }
+            m_whiteBoxSelection->m_selection = selection;
+        };
+        const auto append = [](auto& handles, const auto& handle)
+        {
+            if (AZStd::find(handles.begin(), handles.end(), handle) != handles.end())
+            {
+                return false;
+            }
+            handles.push_back(handle);
+            return true;
+        };
+
+        bool added = false;
+        switch (hit)
+        {
+        case GeometryIntersection::Polygon:
+            if (mouse.m_polygonIntersection.has_value())
+            {
+                begin(mouse.m_polygonIntersection.value());
+                added = append(m_whiteBoxSelection->m_polygons, mouse.m_polygonIntersection->GetHandle());
+            }
+            break;
+        case GeometryIntersection::Edge:
+            if (mouse.m_edgeIntersection.has_value())
+            {
+                begin(mouse.m_edgeIntersection.value());
+                added = append(m_whiteBoxSelection->m_edges, mouse.m_edgeIntersection->GetHandle());
+            }
+            break;
+        case GeometryIntersection::Vertex:
+            if (mouse.m_vertexIntersection.has_value())
+            {
+                begin(mouse.m_vertexIntersection.value());
+                added = append(m_whiteBoxSelection->m_vertices, mouse.m_vertexIntersection->GetHandle());
+            }
+            break;
+        default:
+            break;
+        }
+        if (added)
+        {
+            m_numericInput.Reset();
+            RefreshManipulator();
+        }
+        return added;
     }
 
     bool TransformMode::HandleMouseInteraction(const ModeMouseInteraction& mouse)
@@ -926,6 +1123,54 @@ namespace WhiteBox
         default:
             // do nothing
             break;
+        }
+
+        // Box select owns the drag: down anchors, move stretches, up takes whatever fell inside.
+        if (mouse.m_selectionTool == SelectionTool::Box && mouseInteraction.m_mouseInteraction.m_mouseButtons.Left())
+        {
+            const auto cursor = mouseInteraction.m_mouseInteraction.m_mousePick.m_screenCoordinates;
+            const auto event = mouseInteraction.m_mouseEvent;
+            if (event == AzToolsFramework::ViewportInteraction::MouseEvent::Down && !mouseOverManipulator)
+            {
+                // Armed only - a click that never travels falls through and selects as it always did.
+                m_boxSelectPending = true;
+                m_boxSelectAnchor = cursor;
+                m_boxSelectCursor = cursor;
+            }
+            else if (event == AzToolsFramework::ViewportInteraction::MouseEvent::Move && m_boxSelectPending)
+            {
+                m_boxSelectCursor = cursor;
+                constexpr int travelled = 2;
+                m_boxSelectActive = m_boxSelectActive ||
+                    AZStd::abs(cursor.m_x - m_boxSelectAnchor.m_x) > travelled ||
+                    AZStd::abs(cursor.m_y - m_boxSelectAnchor.m_y) > travelled;
+                if (m_boxSelectActive)
+                {
+                    return true;
+                }
+            }
+            else if (event == AzToolsFramework::ViewportInteraction::MouseEvent::Up)
+            {
+                const bool dragged = m_boxSelectActive;
+                m_boxSelectPending = false;
+                m_boxSelectActive = false;
+                if (dragged)
+                {
+                    m_boxSelectCursor = cursor;
+                    ApplyBoxSelection(mouse);
+                    return true;
+                }
+            }
+        }
+
+        // Sticky paints with the button held, only ever adding, so crossing back does not undo.
+        if (mouse.m_selectionTool == SelectionTool::Sticky && !mouseOverManipulator &&
+            mouseInteraction.m_mouseInteraction.m_mouseButtons.Left() &&
+            (mouseInteraction.m_mouseEvent == AzToolsFramework::ViewportInteraction::MouseEvent::Down ||
+             mouseInteraction.m_mouseEvent == AzToolsFramework::ViewportInteraction::MouseEvent::Move))
+        {
+            AddHitToSelection(mouse, closestIntersection);
+            return closestIntersection != GeometryIntersection::None;
         }
 
         if (mouseInteraction.m_mouseInteraction.m_mouseButtons.Left() &&

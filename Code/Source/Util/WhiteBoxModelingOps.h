@@ -44,6 +44,8 @@ namespace WhiteBox
         //! run are decided by the same code.
         bool CanBridge(const Selection& selection);
         bool CanFillHole(const Selection& selection);
+        bool CanMergePolygons(const Selection& selection);
+        bool CanSelectCoplanar(const Selection& selection);
         bool CanDeletePolygon(const Selection& selection);
         bool CanWeld(const Selection& selection);
         bool CanLoopCut(const Selection& selection);
@@ -61,6 +63,10 @@ namespace WhiteBox
         Result Bridge(const AZ::EntityComponentIdPair& entityComponentIdPair);
         //! Close the single planar hole bordered by the selected open edges, and select the new cap.
         Result FillHole(const AZ::EntityComponentIdPair& entityComponentIdPair);
+        //! Merge the selected polygons into one by hiding every border they share.
+        Result MergePolygons(const AZ::EntityComponentIdPair& entityComponentIdPair);
+        //! Selection only: grow the polygon selection across neighbours that face the same way.
+        Result SelectCoplanar(const AZ::EntityComponentIdPair& entityComponentIdPair);
         //! Delete the selected polygons but keep their vertices, so the opening can be refilled.
         Result DeletePolygon(const AZ::EntityComponentIdPair& entityComponentIdPair);
         //! Merge the selected vertices into one, at the selection centre or at the last one selected.

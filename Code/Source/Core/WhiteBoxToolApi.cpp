@@ -2371,9 +2371,15 @@ namespace WhiteBox
             combinedFaceHandles.insert(
                 combinedFaceHandles.end(), firstPolygonHandle.m_faceHandles.begin(),
                 firstPolygonHandle.m_faceHandles.end());
-            combinedFaceHandles.insert(
-                combinedFaceHandles.end(), secondPolygonHandle.m_faceHandles.begin(),
-                secondPolygonHandle.m_faceHandles.end());
+            // Closing a ring hides an edge whose sides are already one polygon; appending would double it.
+            for (const auto& faceHandle : secondPolygonHandle.m_faceHandles)
+            {
+                if (AZStd::find(combinedFaceHandles.begin(), combinedFaceHandles.end(), faceHandle) ==
+                    combinedFaceHandles.end())
+                {
+                    combinedFaceHandles.push_back(faceHandle);
+                }
+            }
 
             // get polygon property handle from mesh
             PolygonPropertyHandle polygonPropsHandle;
@@ -4256,6 +4262,124 @@ namespace WhiteBox
                 faces.insert(faces.end(), polygon.m_faceHandles.begin(), polygon.m_faceHandles.end());
             }
             return DeleteFaces(whiteBox, faces, error);
+        }
+
+        PolygonHandles FindCoplanarRegion(
+            const WhiteBoxMesh& whiteBox, const PolygonHandles& seeds, const float toleranceDegrees)
+        {
+            const auto allPolygons = MeshPolygonHandles(whiteBox);
+            PolygonHandles region;
+            for (const auto& seed : seeds)
+            {
+                if (!seed.m_faceHandles.empty() &&
+                    AZStd::find(allPolygons.begin(), allPolygons.end(), seed) != allPolygons.end() &&
+                    AZStd::find(region.begin(), region.end(), seed) == region.end())
+                {
+                    region.push_back(seed);
+                }
+            }
+            if (region.empty())
+            {
+                return region;
+            }
+
+            const float limit = cosf(AZ::DegToRad(AZ::GetMax(toleranceDegrees, 0.0f)));
+            // Compared against each region member, not the previous step, so a curve cannot creep away.
+            for (size_t i = 0; i < region.size(); ++i)
+            {
+                const auto normal = PolygonNormal(whiteBox, region[i]);
+                for (const auto edge : PolygonBorderEdgeHandlesFlattened(whiteBox, region[i]))
+                {
+                    for (const auto face : EdgeFaceHandles(whiteBox, edge))
+                    {
+                        const auto neighbour = FacePolygonHandle(whiteBox, face);
+                        if (neighbour.m_faceHandles.empty() ||
+                            AZStd::find(region.begin(), region.end(), neighbour) != region.end())
+                        {
+                            continue;
+                        }
+                        if (PolygonNormal(whiteBox, neighbour).Dot(normal) >= limit)
+                        {
+                            region.push_back(neighbour);
+                        }
+                    }
+                }
+            }
+            return region;
+        }
+
+        bool MergePolygons(
+            WhiteBoxMesh& whiteBox, const PolygonHandles& polygons, AZStd::string& error, PolygonHandle* merged)
+        {
+            AZ_PROFILE_FUNCTION(AzToolsFramework);
+
+            error.clear();
+            const auto fail = [&error](const char* message)
+            {
+                error = message;
+                return false;
+            };
+            if (polygons.size() < 2)
+            {
+                return fail("Select two or more polygons that share an edge.");
+            }
+
+            const auto allPolygons = MeshPolygonHandles(whiteBox);
+            FaceHandles selected;
+            for (const auto& polygon : polygons)
+            {
+                if (polygon.m_faceHandles.empty() ||
+                    AZStd::find(allPolygons.begin(), allPolygons.end(), polygon) == allPolygons.end())
+                {
+                    return fail("The selection is stale. Select the polygons again.");
+                }
+                for (const auto face : polygon.m_faceHandles)
+                {
+                    if (AZStd::find(selected.begin(), selected.end(), face) == selected.end())
+                    {
+                        selected.push_back(face);
+                    }
+                }
+            }
+
+            // Hiding an edge leaves it in the mesh as an internal one, so these handles stay valid.
+            const auto isSelected = [&selected](const FaceHandle face)
+            {
+                return AZStd::find(selected.begin(), selected.end(), face) != selected.end();
+            };
+            EdgeHandles seams;
+            for (const auto edge : MeshPolygonEdgeHandles(whiteBox))
+            {
+                const auto faces = EdgeFaceHandles(whiteBox, edge);
+                if (faces.size() == 2 && isSelected(faces[0]) && isSelected(faces[1]) &&
+                    FacePolygonHandle(whiteBox, faces[0]) != FacePolygonHandle(whiteBox, faces[1]))
+                {
+                    seams.push_back(edge);
+                }
+            }
+            if (seams.empty())
+            {
+                return fail("Those polygons do not touch. Select polygons that share an edge.");
+            }
+
+            auto candidate = CloneMesh(whiteBox);
+            for (const auto edge : seams)
+            {
+                HideEdge(*candidate, edge);
+            }
+            // Read the group off the mesh: the last hide says nothing useful for an already-merged seam.
+            const auto result = FacePolygonHandle(*candidate, selected.front());
+            if (result.m_faceHandles.size() != selected.size())
+            {
+                return fail("Those polygons are not all joined. Select one region that connects edge to edge.");
+            }
+            CalculateNormals(*candidate);
+            whiteBox.mesh = candidate->mesh;
+            if (merged != nullptr)
+            {
+                *merged = result;
+            }
+            return true;
         }
 
         bool WeldVertices(

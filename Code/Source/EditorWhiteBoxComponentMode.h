@@ -21,6 +21,7 @@
 #include <QPointer>
 #include <EditorWhiteBoxComponentModeBus.h>
 #include <EditorWhiteBoxComponentModeTypes.h>
+#include "Viewport/WhiteBoxModifierUtil.h" // SelectionFilter, held by value below
 #include <WhiteBox/EditorWhiteBoxComponentBus.h>
 
 namespace WhiteBox
@@ -70,6 +71,20 @@ namespace WhiteBox
             "Weld — choose how to merge two or more selected vertices";
         constexpr static const char* const WhiteboxModelingClusterFillHoleTooltip =
             "Fill Hole — close the flat hole bordered by the selected open edges";
+        constexpr static const char* const WhiteboxMergePolygonsTooltip =
+            "Merge Polygons — hide every border the selected polygons share, making them one";
+        constexpr static const char* const WhiteboxSelectCoplanarTooltip =
+            "Select Coplanar — grow the selection over neighbours facing the same way";
+        constexpr static const char* const WhiteboxStickySelectTooltip =
+            "Sticky Select — drag across the mesh and everything the cursor crosses joins the selection";
+        constexpr static const char* const WhiteboxBoxSelectTooltip =
+            "Box Select — drag a rectangle to select everything inside it";
+        constexpr static const char* const WhiteboxSelectVerticesTooltip =
+            "Vertex Select — only vertices can be picked. Click again for all three";
+        constexpr static const char* const WhiteboxSelectEdgesTooltip =
+            "Edge Select — only edges can be picked. Click again for all three";
+        constexpr static const char* const WhiteboxSelectPolygonsTooltip =
+            "Face Select — only polygons can be picked. Click again for all three";
         constexpr static const char* const WhiteboxModelingClusterDeletePolygonTooltip =
             "Delete Polygon — remove the selected polygons and keep their vertices";
         constexpr static const char* const WhiteboxModelingClusterLoopCutTooltip =
@@ -201,6 +216,24 @@ namespace WhiteBox
         AzToolsFramework::ViewportUi::ButtonId m_weldButtonId;
         AzToolsFramework::ViewportUi::ButtonId m_fillHoleButtonId;
         AzToolsFramework::ViewportUi::ButtonId m_deletePolygonButtonId;
+        AzToolsFramework::ViewportUi::ButtonId m_mergePolygonsButtonId;
+        AzToolsFramework::ViewportUi::ButtonId m_selectCoplanarButtonId;
+        //! Its own cluster: the modelling one's single active-button slot is taken by the latch and knife.
+        AzToolsFramework::ViewportUi::ClusterId m_selectionClusterId =
+            AzToolsFramework::ViewportUi::InvalidClusterId;
+        AZ::Event<AzToolsFramework::ViewportUi::ButtonId>::Handler m_selectionHandler;
+        AzToolsFramework::ViewportUi::ButtonId m_selectVerticesButtonId;
+        AzToolsFramework::ViewportUi::ButtonId m_selectEdgesButtonId;
+        AzToolsFramework::ViewportUi::ButtonId m_selectPolygonsButtonId;
+        //! A third cluster, because a filter and a tool have to be able to show as lit at once.
+        AzToolsFramework::ViewportUi::ClusterId m_toolClusterId = AzToolsFramework::ViewportUi::InvalidClusterId;
+        AZ::Event<AzToolsFramework::ViewportUi::ButtonId>::Handler m_toolHandler;
+        AzToolsFramework::ViewportUi::ButtonId m_stickySelectButtonId;
+        AzToolsFramework::ViewportUi::ButtonId m_boxSelectButtonId;
+        //! At most one selection tool runs at a time, so they share the filter cluster's neighbour.
+        SelectionTool m_selectionTool = SelectionTool::None;
+        //! Restricts what a click can hit. None lets all three through, as before.
+        SelectionFilter m_selectionFilter = SelectionFilter::None;
         AzToolsFramework::ViewportUi::ButtonId m_loopCutButtonId;
         AzToolsFramework::ViewportUi::ButtonId m_knifeButtonId;
         AzToolsFramework::ViewportUi::ButtonId m_bevelButtonId;
@@ -273,6 +306,8 @@ namespace WhiteBox
         void RefreshShapeSwitcherActive();
 
         void CreateModelingCluster();
+        void RefreshSelectionClusterState();
+        void RefreshToolClusterState();
         void RemoveModelingCluster();
         //! Enable each modeling button according to what the current selection allows, so a disabled
         //! button says "not with this selection" before it is clicked rather than after, and highlight

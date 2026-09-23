@@ -142,6 +142,16 @@ namespace WhiteBox::ModelingOps
         return selection.m_editable && !selection.m_edges.empty();
     }
 
+    bool CanMergePolygons(const Selection& selection)
+    {
+        return selection.m_editable && selection.m_polygons.size() >= 2;
+    }
+
+    bool CanSelectCoplanar(const Selection& selection)
+    {
+        return selection.m_editable && !selection.m_polygons.empty();
+    }
+
     bool CanDeletePolygon(const Selection& selection)
     {
         return selection.m_editable && !selection.m_polygons.empty();
@@ -216,6 +226,55 @@ namespace WhiteBox::ModelingOps
             undoBatch.MarkEntityDirty(entityComponentIdPair.GetEntityId());
         }
         return { true, "Hole filled. Undo restores the open border." };
+    }
+
+    Result SelectCoplanar(const AZ::EntityComponentIdPair& entityComponentIdPair)
+    {
+        EditorWhiteBoxComponent* component = EditableComponentFor(entityComponentIdPair);
+        if (component == nullptr)
+        {
+            return { false, "No editable White Box mesh." };
+        }
+        const auto seeds = SelectedPolygons(entityComponentIdPair);
+        if (seeds.empty())
+        {
+            return { false, "Select a polygon to grow from first." };
+        }
+        const auto region = Api::FindCoplanarRegion(*component->GetWhiteBoxMesh(), seeds);
+        if (region.size() <= seeds.size())
+        {
+            return { false, "Nothing further to add - the neighbours face a different way." };
+        }
+        EditorWhiteBoxTransformModeRequestBus::Event(
+            entityComponentIdPair, &EditorWhiteBoxTransformModeRequests::SetSelectedPolygons, region);
+        return { true, AZStd::string::format("%zu polygons selected.", region.size()) };
+    }
+
+    Result MergePolygons(const AZ::EntityComponentIdPair& entityComponentIdPair)
+    {
+        EditorWhiteBoxComponent* component = EditableComponentFor(entityComponentIdPair);
+        if (component == nullptr)
+        {
+            return { false, "No editable White Box mesh." };
+        }
+
+        const Api::PolygonHandles polygons = SelectedPolygons(entityComponentIdPair);
+
+        AZStd::string error;
+        Api::PolygonHandle merged;
+        {
+            AzToolsFramework::ScopedUndoBatch undoBatch("White Box Merge Polygons");
+            if (!Api::MergePolygons(*component->GetWhiteBoxMesh(), polygons, error, &merged))
+            {
+                return { false, error };
+            }
+            CommitMeshEdit(*component, entityComponentIdPair);
+            EditorWhiteBoxTransformModeRequestBus::Event(
+                entityComponentIdPair, &EditorWhiteBoxTransformModeRequests::SetSelectedPolygons,
+                Api::PolygonHandles{ merged });
+            undoBatch.MarkEntityDirty(entityComponentIdPair.GetEntityId());
+        }
+        return { true, AZStd::string::format("%zu polygons merged into one.", polygons.size()) };
     }
 
     Result DeletePolygon(const AZ::EntityComponentIdPair& entityComponentIdPair)

@@ -4290,4 +4290,117 @@ namespace UnitTest
         EXPECT_EQ(Api::MeshFaceHandles(*mesh).size(), 1);
         EXPECT_EQ(Api::MeshVertexHandles(*mesh).size(), 6);
     }
+
+    TEST_F(WhiteBoxTestFixture, MergePolygonsCollapsesAFlatRunAndSelectCoplanarFindsIt)
+    {
+        namespace Api = WhiteBox::Api;
+        // A flat 3x3 plate plus one quad turned out of plane, which the grow must refuse to take.
+        auto mesh = Api::CreateWhiteBoxMesh();
+        AZStd::vector<AZStd::vector<Api::VertexHandle>> grid;
+        for (int x = 0; x <= 3; ++x)
+        {
+            grid.push_back({});
+            for (int y = 0; y <= 3; ++y)
+            {
+                grid.back().push_back(Api::AddVertex(*mesh, AZ::Vector3(float(x), float(y), 0.0f)));
+            }
+        }
+        for (int x = 0; x < 3; ++x)
+        {
+            for (int y = 0; y < 3; ++y)
+            {
+                Api::AddQuadPolygon(*mesh, grid[x][y], grid[x + 1][y], grid[x + 1][y + 1], grid[x][y + 1]);
+            }
+        }
+        const auto lifted0 = Api::AddVertex(*mesh, AZ::Vector3(0.0f, 3.0f, 1.0f));
+        const auto lifted1 = Api::AddVertex(*mesh, AZ::Vector3(1.0f, 3.0f, 1.0f));
+        Api::AddQuadPolygon(*mesh, grid[0][3], grid[1][3], lifted1, lifted0);
+        Api::CalculateNormals(*mesh);
+        ASSERT_EQ(Api::MeshPolygonHandles(*mesh).size(), 10);
+
+        Api::PolygonHandle flatSeed;
+        for (const auto& polygon : Api::MeshPolygonHandles(*mesh))
+        {
+            if (Api::PolygonNormal(*mesh, polygon).IsClose(AZ::Vector3::CreateAxisZ(), 0.001f))
+            {
+                flatSeed = polygon;
+                break;
+            }
+        }
+        ASSERT_FALSE(flatSeed.m_faceHandles.empty());
+        const auto region = Api::FindCoplanarRegion(*mesh, {flatSeed});
+        // The nine plate quads, never the one bent up out of their plane.
+        EXPECT_EQ(region.size(), 9);
+        for (const auto& polygon : region)
+        {
+            EXPECT_TRUE(Api::PolygonNormal(*mesh, polygon).IsClose(AZ::Vector3::CreateAxisZ(), 0.001f));
+        }
+
+        AZStd::string error;
+        Api::WhiteBoxMeshStream before;
+        ASSERT_TRUE(Api::WriteMesh(*mesh, before));
+        const auto unchanged = [&mesh, &before]()
+        {
+            Api::WhiteBoxMeshStream after;
+            return Api::WriteMesh(*mesh, after) && after == before;
+        };
+        EXPECT_FALSE(Api::MergePolygons(*mesh, {flatSeed}, error));
+        EXPECT_FALSE(error.empty());
+        EXPECT_TRUE(unchanged());
+
+        const size_t faceCount = Api::MeshFaceHandles(*mesh).size();
+        Api::PolygonHandle merged;
+        ASSERT_TRUE(Api::MergePolygons(*mesh, region, error, &merged)) << error.c_str();
+        // One polygon where nine were, over the same triangles: merging hides borders, it removes nothing.
+        EXPECT_EQ(merged.m_faceHandles.size(), 18);
+        EXPECT_EQ(Api::MeshFaceHandles(*mesh).size(), faceCount);
+        EXPECT_EQ(Api::MeshPolygonHandles(*mesh).size(), 2);
+    }
+
+    TEST_F(WhiteBoxTestFixture, MergePolygonsClosesARingIntoOneAnnulusPolygon)
+    {
+        namespace Api = WhiteBox::Api;
+        // A pipe annulus: the seam closing the ring has one polygon on both sides by the time it goes.
+        constexpr int sides = 8;
+        auto mesh = Api::CreateWhiteBoxMesh();
+        AZStd::vector<Api::VertexHandle> outer;
+        AZStd::vector<Api::VertexHandle> inner;
+        for (int i = 0; i < sides; ++i)
+        {
+            const float angle = AZ::Constants::TwoPi * i / sides;
+            const AZ::Vector3 direction(std::cos(angle), std::sin(angle), 0.0f);
+            outer.push_back(Api::AddVertex(*mesh, direction * 1.0f));
+            inner.push_back(Api::AddVertex(*mesh, direction * 0.5f));
+        }
+        for (int i = 0; i < sides; ++i)
+        {
+            const int j = (i + 1) % sides;
+            Api::AddQuadPolygon(*mesh, outer[i], inner[i], inner[j], outer[j]);
+        }
+        Api::CalculateNormals(*mesh);
+        const auto ring = Api::MeshPolygonHandles(*mesh);
+        ASSERT_EQ(ring.size(), sides);
+
+        // Every quad faces the same way, so growing from one must find the whole ring.
+        const auto region = Api::FindCoplanarRegion(*mesh, {ring.front()});
+        EXPECT_EQ(region.size(), sides);
+
+        AZStd::string error;
+        Api::PolygonHandle merged;
+        ASSERT_TRUE(Api::MergePolygons(*mesh, ring, error, &merged)) << error.c_str();
+        EXPECT_EQ(Api::MeshPolygonHandles(*mesh).size(), 1);
+        // Each quad is two triangles, each listed once - a ring used to list them all twice over.
+        EXPECT_EQ(merged.m_faceHandles.size(), sides * 2);
+        Api::FaceHandles distinct;
+        for (const auto face : merged.m_faceHandles)
+        {
+            if (AZStd::find(distinct.begin(), distinct.end(), face) == distinct.end())
+            {
+                distinct.push_back(face);
+            }
+        }
+        EXPECT_EQ(distinct.size(), merged.m_faceHandles.size());
+        // An annulus keeps both of its borders: the outer circle and the hole.
+        EXPECT_EQ(Api::PolygonBorderVertexHandles(*mesh, merged).size(), 2);
+    }
 }

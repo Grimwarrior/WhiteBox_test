@@ -368,6 +368,17 @@ namespace WhiteBox
             m_intersectionAndRenderData->m_whiteBoxIntersectionData, localRayOrigin, localRayDirection,
             m_worldFromLocal, cameraState);
 
+        // Dropping excluded hits here gates hover and picking for every mode in one place.
+        const auto allowed = [this](const SelectionFilter kind, auto intersection)
+        {
+            using Intersection = decltype(intersection);
+            return m_selectionFilter == SelectionFilter::None || m_selectionFilter == kind
+                ? intersection : Intersection{};
+        };
+        const auto selectableEdge = allowed(SelectionFilter::Edges, edgeIntersection);
+        const auto selectablePolygon = allowed(SelectionFilter::Polygons, polygonIntersection);
+        const auto selectableVertex = allowed(SelectionFilter::Vertices, vertexIntersection);
+
         // interactionHandled will be set to true if the mouse interaction has been handled by this white box component
         // which involves either interacting with a manipulator from this white box or clicking on the white box mesh
         // itself
@@ -379,9 +390,11 @@ namespace WhiteBox
             GetEntityComponentIdPair(),
             m_worldFromLocal,
             m_intersectionAndRenderData.value(),
-            edgeIntersection,
-            polygonIntersection,
-            vertexIntersection};
+            selectableEdge,
+            selectablePolygon,
+            selectableVertex,
+            m_selectionTool,
+            m_selectionFilter};
 
         bool interactionHandled = AZStd::visit(
             [&mouseContext](auto& mode)
@@ -397,7 +410,7 @@ namespace WhiteBox
 
         if (mouseInteraction.m_mouseInteraction.m_mouseButtons.Left() &&
             mouseInteraction.m_mouseEvent == AzToolsFramework::ViewportInteraction::MouseEvent::Up &&
-            (edgeIntersection || polygonIntersection || vertexIntersection))
+            (selectableEdge || selectablePolygon || selectableVertex))
         {
             interactionHandled = true;
         }
@@ -1388,10 +1401,68 @@ namespace WhiteBox
             m_modelingClusterId, ViewportUi::DefaultViewportId,
             &ViewportUi::ViewportUiRequestBus::Events::CreateCluster, ViewportUi::Alignment::TopRight);
 
+        ViewportUi::ViewportUiRequestBus::EventResult(
+            m_selectionClusterId, ViewportUi::DefaultViewportId,
+            &ViewportUi::ViewportUiRequestBus::Events::CreateCluster, ViewportUi::Alignment::TopRight);
+        m_selectVerticesButtonId = RegisterClusterButton(m_selectionClusterId, ":/WhiteBox/Icons/SelectVertices.svg");
+        m_selectEdgesButtonId = RegisterClusterButton(m_selectionClusterId, ":/WhiteBox/Icons/SelectEdges.svg");
+        m_selectPolygonsButtonId = RegisterClusterButton(m_selectionClusterId, ":/WhiteBox/Icons/SelectPolygons.svg");
+        const auto selectionTooltip = [this](const ViewportUi::ButtonId buttonId, const char* text)
+        {
+            ViewportUi::ViewportUiRequestBus::Event(
+                ViewportUi::DefaultViewportId, &ViewportUi::ViewportUiRequestBus::Events::SetClusterButtonTooltip,
+                m_selectionClusterId, buttonId, AZStd::string(text));
+        };
+        selectionTooltip(m_selectVerticesButtonId, WhiteboxSelectVerticesTooltip);
+        selectionTooltip(m_selectEdgesButtonId, WhiteboxSelectEdgesTooltip);
+        selectionTooltip(m_selectPolygonsButtonId, WhiteboxSelectPolygonsTooltip);
+        m_selectionHandler = AZ::Event<ViewportUi::ButtonId>::Handler(
+            [this](const ViewportUi::ButtonId buttonId)
+            {
+                const auto wanted = buttonId == m_selectVerticesButtonId ? SelectionFilter::Vertices
+                    : buttonId == m_selectEdgesButtonId ? SelectionFilter::Edges
+                    : buttonId == m_selectPolygonsButtonId ? SelectionFilter::Polygons : SelectionFilter::None;
+                // Clicking the lit one turns the restriction off, so no fourth button is needed.
+                m_selectionFilter = m_selectionFilter == wanted ? SelectionFilter::None : wanted;
+                RefreshSelectionClusterState();
+            });
+        ViewportUi::ViewportUiRequestBus::Event(
+            ViewportUi::DefaultViewportId, &ViewportUi::ViewportUiRequestBus::Events::RegisterClusterEventHandler,
+            m_selectionClusterId, m_selectionHandler);
+        RefreshSelectionClusterState();
+
+        ViewportUi::ViewportUiRequestBus::EventResult(
+            m_toolClusterId, ViewportUi::DefaultViewportId,
+            &ViewportUi::ViewportUiRequestBus::Events::CreateCluster, ViewportUi::Alignment::TopRight);
+        m_stickySelectButtonId = RegisterClusterButton(m_toolClusterId, ":/WhiteBox/Icons/StickySelect.svg");
+        m_boxSelectButtonId = RegisterClusterButton(m_toolClusterId, ":/WhiteBox/Icons/BoxSelect.svg");
+        const auto toolTooltip = [this](const ViewportUi::ButtonId buttonId, const char* text)
+        {
+            ViewportUi::ViewportUiRequestBus::Event(
+                ViewportUi::DefaultViewportId, &ViewportUi::ViewportUiRequestBus::Events::SetClusterButtonTooltip,
+                m_toolClusterId, buttonId, AZStd::string(text));
+        };
+        toolTooltip(m_stickySelectButtonId, WhiteboxStickySelectTooltip);
+        toolTooltip(m_boxSelectButtonId, WhiteboxBoxSelectTooltip);
+        m_toolHandler = AZ::Event<ViewportUi::ButtonId>::Handler(
+            [this](const ViewportUi::ButtonId buttonId)
+            {
+                const auto wanted = buttonId == m_stickySelectButtonId ? SelectionTool::Sticky
+                    : buttonId == m_boxSelectButtonId ? SelectionTool::Box : SelectionTool::None;
+                m_selectionTool = m_selectionTool == wanted ? SelectionTool::None : wanted;
+                RefreshToolClusterState();
+            });
+        ViewportUi::ViewportUiRequestBus::Event(
+            ViewportUi::DefaultViewportId, &ViewportUi::ViewportUiRequestBus::Events::RegisterClusterEventHandler,
+            m_toolClusterId, m_toolHandler);
+        RefreshToolClusterState();
+
         m_transformExtrudeButtonId = RegisterClusterButton(m_modelingClusterId, ":/WhiteBox/Icons/Extrude.svg");
         m_transformInsetButtonId = RegisterClusterButton(m_modelingClusterId, ":/WhiteBox/Icons/Inset.svg");
         m_edgeLoopButtonId = RegisterClusterButton(m_modelingClusterId, ":/WhiteBox/Icons/EdgeLoop.svg");
         m_edgeRingButtonId = RegisterClusterButton(m_modelingClusterId, ":/WhiteBox/Icons/EdgeRing.svg");
+        m_selectCoplanarButtonId = RegisterClusterButton(m_modelingClusterId, ":/WhiteBox/Icons/SelectCoplanar.svg");
+        m_mergePolygonsButtonId = RegisterClusterButton(m_modelingClusterId, ":/WhiteBox/Icons/MergePolygons.svg");
         m_bridgeButtonId = RegisterClusterButton(m_modelingClusterId, ":/WhiteBox/Icons/Bridge.svg");
         m_weldButtonId = RegisterClusterButton(m_modelingClusterId, ":/WhiteBox/Icons/Weld.svg");
         m_fillHoleButtonId = RegisterClusterButton(m_modelingClusterId, ":/WhiteBox/Icons/FillHole.svg");
@@ -1410,6 +1481,8 @@ namespace WhiteBox
         tooltip(m_transformInsetButtonId, "Inset - type a percentage, or latch it and drag any planar convex region");
         tooltip(m_edgeLoopButtonId, "Select Edge Loop: follow connected edges from the selection");
         tooltip(m_edgeRingButtonId, "Select Edge Ring: cross opposite edges of quads");
+        tooltip(m_selectCoplanarButtonId, WhiteboxSelectCoplanarTooltip);
+        tooltip(m_mergePolygonsButtonId, WhiteboxMergePolygonsTooltip);
         tooltip(m_bridgeButtonId, WhiteboxModelingClusterBridgeTooltip);
         tooltip(m_weldButtonId, WhiteboxModelingClusterWeldTooltip);
         tooltip(m_fillHoleButtonId, WhiteboxModelingClusterFillHoleTooltip);
@@ -1473,6 +1546,14 @@ namespace WhiteBox
                 else if (buttonId == m_fillHoleButtonId)
                 {
                     result = ModelingOps::FillHole(pair);
+                }
+                else if (buttonId == m_selectCoplanarButtonId)
+                {
+                    result = ModelingOps::SelectCoplanar(pair);
+                }
+                else if (buttonId == m_mergePolygonsButtonId)
+                {
+                    result = ModelingOps::MergePolygons(pair);
                 }
                 else if (buttonId == m_deletePolygonButtonId)
                 {
@@ -1555,8 +1636,68 @@ namespace WhiteBox
         RefreshModelingClusterState();
     }
 
+    void EditorWhiteBoxComponentMode::RefreshSelectionClusterState()
+    {
+        namespace ViewportUi = AzToolsFramework::ViewportUi;
+        if (m_selectionClusterId == ViewportUi::InvalidClusterId)
+        {
+            return;
+        }
+        if (m_selectionFilter == SelectionFilter::None)
+        {
+            ViewportUi::ViewportUiRequestBus::Event(
+                ViewportUi::DefaultViewportId, &ViewportUi::ViewportUiRequestBus::Events::ClearClusterActiveButton,
+                m_selectionClusterId);
+            return;
+        }
+        const auto active = m_selectionFilter == SelectionFilter::Vertices ? m_selectVerticesButtonId
+            : m_selectionFilter == SelectionFilter::Edges ? m_selectEdgesButtonId : m_selectPolygonsButtonId;
+        ViewportUi::ViewportUiRequestBus::Event(
+            ViewportUi::DefaultViewportId, &ViewportUi::ViewportUiRequestBus::Events::SetClusterActiveButton,
+            m_selectionClusterId, active);
+    }
+
+    void EditorWhiteBoxComponentMode::RefreshToolClusterState()
+    {
+        namespace ViewportUi = AzToolsFramework::ViewportUi;
+        if (m_toolClusterId == ViewportUi::InvalidClusterId)
+        {
+            return;
+        }
+        if (m_selectionTool == SelectionTool::None)
+        {
+            ViewportUi::ViewportUiRequestBus::Event(
+                ViewportUi::DefaultViewportId, &ViewportUi::ViewportUiRequestBus::Events::ClearClusterActiveButton,
+                m_toolClusterId);
+            return;
+        }
+        ViewportUi::ViewportUiRequestBus::Event(
+            ViewportUi::DefaultViewportId, &ViewportUi::ViewportUiRequestBus::Events::SetClusterActiveButton,
+            m_toolClusterId,
+            m_selectionTool == SelectionTool::Sticky ? m_stickySelectButtonId : m_boxSelectButtonId);
+    }
+
     void EditorWhiteBoxComponentMode::RemoveModelingCluster()
     {
+        namespace ViewportUi = AzToolsFramework::ViewportUi;
+        if (m_toolClusterId != ViewportUi::InvalidClusterId)
+        {
+            m_toolHandler.Disconnect();
+            ViewportUi::ViewportUiRequestBus::Event(
+                ViewportUi::DefaultViewportId, &ViewportUi::ViewportUiRequestBus::Events::RemoveCluster,
+                m_toolClusterId);
+            m_toolClusterId = ViewportUi::InvalidClusterId;
+        }
+
+        if (m_selectionClusterId != ViewportUi::InvalidClusterId)
+        {
+            m_selectionHandler.Disconnect();
+            ViewportUi::ViewportUiRequestBus::Event(
+                ViewportUi::DefaultViewportId, &ViewportUi::ViewportUiRequestBus::Events::RemoveCluster,
+                m_selectionClusterId);
+            m_selectionClusterId = ViewportUi::InvalidClusterId;
+        }
+
         if (m_extrudeInsetWindow)
         {
             m_extrudeInsetWindow->Dismiss();
@@ -1572,7 +1713,6 @@ namespace WhiteBox
             m_bevelWindow->Dismiss();
             m_bevelWindow.clear();
         }
-        namespace ViewportUi = AzToolsFramework::ViewportUi;
         if (m_modelingClusterId == ViewportUi::InvalidClusterId)
         {
             return;
@@ -1604,6 +1744,8 @@ namespace WhiteBox
         const bool weld = ModelingOps::CanWeld(selection);
         const bool fillHole = ModelingOps::CanFillHole(selection);
         const bool deletePolygon = ModelingOps::CanDeletePolygon(selection);
+        const bool mergePolygons = ModelingOps::CanMergePolygons(selection);
+        const bool selectCoplanar = ModelingOps::CanSelectCoplanar(selection);
         const bool loopCut = ModelingOps::CanLoopCut(selection);
         const bool bevel = ModelingOps::CanBevel(selection) || selection.m_liveBevel;
         bool knife = false;
@@ -1615,7 +1757,8 @@ namespace WhiteBox
         // Nothing below touches the widget unless one of those answers moved.
         const AZ::u32 state = (static_cast<AZ::u32>(latch) << 5) | (edgeSelection ? 1u : 0u) |
             (bridge ? 2u : 0u) | (weld ? 4u : 0u) | (loopCut ? 8u : 0u) | (bevel ? 16u : 0u) | (knife ? 128u : 0u) |
-            (fillHole ? 256u : 0u) | (deletePolygon ? 512u : 0u);
+            (fillHole ? 256u : 0u) | (deletePolygon ? 512u : 0u) | (mergePolygons ? 1024u : 0u) |
+            (selectCoplanar ? 2048u : 0u);
         if (m_modelingClusterState == state)
         {
             return;
@@ -1655,6 +1798,8 @@ namespace WhiteBox
         enable(m_weldButtonId, weld);
         enable(m_fillHoleButtonId, fillHole);
         enable(m_deletePolygonButtonId, deletePolygon);
+        enable(m_mergePolygonsButtonId, mergePolygons);
+        enable(m_selectCoplanarButtonId, selectCoplanar);
         enable(m_loopCutButtonId, loopCut);
         enable(m_knifeButtonId, loopCut);
         enable(m_bevelButtonId, bevel);
