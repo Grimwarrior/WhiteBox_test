@@ -45,6 +45,7 @@ namespace WhiteBox
         bool CanBridge(const Selection& selection);
         bool CanFillHole(const Selection& selection);
         bool CanMergePolygons(const Selection& selection);
+        bool CanSelectLinked(const Selection& selection);
         bool CanSelectCoplanar(const Selection& selection);
         bool CanDeletePolygon(const Selection& selection);
         bool CanWeld(const Selection& selection);
@@ -56,7 +57,7 @@ namespace WhiteBox
 
         Result ExtrudeInset(const AZ::EntityComponentIdPair& pair, float amount, bool inset);
         bool HasLiveBevel(const AZ::EntityComponentIdPair& entityComponentIdPair);
-        //! Selection only: expands all current edge seeds, without baking or editing geometry.
+        //! Selection only: grows edges into a loop or ring, or quads into a face strip.
         Result SelectEdgePattern(const AZ::EntityComponentIdPair& entityComponentIdPair, bool ring);
 
         //! Connect the selection: two open boundary edges, or two facing polygons.
@@ -65,6 +66,8 @@ namespace WhiteBox
         Result FillHole(const AZ::EntityComponentIdPair& entityComponentIdPair);
         //! Merge the selected polygons into one by hiding every border they share.
         Result MergePolygons(const AZ::EntityComponentIdPair& entityComponentIdPair);
+        //! Selection only: grow whatever is selected to the whole shell it is joined to.
+        Result SelectLinked(const AZ::EntityComponentIdPair& entityComponentIdPair);
         //! Selection only: grow the polygon selection across neighbours that face the same way.
         Result SelectCoplanar(const AZ::EntityComponentIdPair& entityComponentIdPair);
         //! Delete the selected polygons but keep their vertices, so the opening can be refilled.

@@ -95,6 +95,8 @@ namespace WhiteBox
         void ClearSelection() override;
         void RefreshManipulatorSpace() override { if (m_knifeActive) { Refresh(); } else { RefreshManipulator(); } }
         void SetSelectedPolygons(const Api::PolygonHandles& polygons) override;
+        void SetSelectedEdges(const Api::EdgeHandles& edges) override;
+        void SetSelectedVertices(const Api::VertexHandles& vertices) override;
         void BeginLoopCut() override;
         void BeginKnife() override;
         bool IsKnifeActive() const override { return m_knifeActive; }
@@ -187,7 +189,6 @@ namespace WhiteBox
         AzFramework::ScreenPoint m_boxSelectCursor;
         //! Add whatever the cursor is over to the selection, never removing. True if it grew.
         bool AddHitToSelection(const ModeMouseInteraction& mouse, GeometryIntersection hit);
-        void SetSelectedEdges(const Api::EdgeHandles& edges);
         bool BeginLatchedDrag(const ModeMouseInteraction& mouse, WhiteBoxMesh& mesh, GeometryIntersection hit);
         bool HandleLatchedDrag(const ModeMouseInteraction& mouse);
         //! Run one amount against the live mesh, always from the pristine source so the drag is not

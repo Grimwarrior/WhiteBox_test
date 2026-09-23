@@ -73,6 +73,8 @@ namespace WhiteBox
             "Fill Hole — close the flat hole bordered by the selected open edges";
         constexpr static const char* const WhiteboxMergePolygonsTooltip =
             "Merge Polygons — hide every border the selected polygons share, making them one";
+        constexpr static const char* const WhiteboxSelectLinkedTooltip =
+            "Select Linked — grow the selection to every part joined to it";
         constexpr static const char* const WhiteboxSelectCoplanarTooltip =
             "Select Coplanar — grow the selection over neighbours facing the same way";
         constexpr static const char* const WhiteboxStickySelectTooltip =
@@ -218,6 +220,7 @@ namespace WhiteBox
         AzToolsFramework::ViewportUi::ButtonId m_deletePolygonButtonId;
         AzToolsFramework::ViewportUi::ButtonId m_mergePolygonsButtonId;
         AzToolsFramework::ViewportUi::ButtonId m_selectCoplanarButtonId;
+        AzToolsFramework::ViewportUi::ButtonId m_selectLinkedButtonId;
         //! Its own cluster: the modelling one's single active-button slot is taken by the latch and knife.
         AzToolsFramework::ViewportUi::ClusterId m_selectionClusterId =
             AzToolsFramework::ViewportUi::InvalidClusterId;

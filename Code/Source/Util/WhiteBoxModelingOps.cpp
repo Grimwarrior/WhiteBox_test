@@ -91,11 +91,32 @@ namespace WhiteBox::ModelingOps
 
     bool CanSelectEdgePattern(const Selection& selection)
     {
-        return selection.m_editable && !selection.m_edges.empty();
+        return selection.m_editable && (!selection.m_edges.empty() || !selection.m_polygons.empty());
     }
 
     Result SelectEdgePattern(const AZ::EntityComponentIdPair& pair, const bool ring)
     {
+        // Whichever the selection already is: faces grow into a strip, edges into a loop or ring.
+        if (const auto polygons = SelectedPolygons(pair); !polygons.empty())
+        {
+            EditorWhiteBoxComponent* component = EditableComponentFor(pair);
+            if (component == nullptr)
+            {
+                return { false, "No editable White Box mesh." };
+            }
+            auto* mesh = component->GetWhiteBoxMesh();
+            const auto strip =
+                ring ? Api::FindPolygonRing(*mesh, polygons) : Api::FindPolygonLoop(*mesh, polygons);
+            if (strip.size() <= polygons.size())
+            {
+                return { false, "No face strip runs through that selection. Quads only, and it stops where the "
+                    "edge ring does." };
+            }
+            EditorWhiteBoxTransformModeRequestBus::Event(
+                pair, &EditorWhiteBoxTransformModeRequests::SetSelectedPolygons, strip);
+            return { true, AZStd::string::format("%zu faces selected.", strip.size()) };
+        }
+
         bool selected = false;
         EditorWhiteBoxTransformModeRequestBus::EventResult(
             selected, pair, &EditorWhiteBoxTransformModeRequests::ExpandEdgeSelection, ring);
@@ -145,6 +166,12 @@ namespace WhiteBox::ModelingOps
     bool CanMergePolygons(const Selection& selection)
     {
         return selection.m_editable && selection.m_polygons.size() >= 2;
+    }
+
+    bool CanSelectLinked(const Selection& selection)
+    {
+        return selection.m_editable &&
+            (!selection.m_polygons.empty() || !selection.m_edges.empty() || !selection.m_vertices.empty());
     }
 
     bool CanSelectCoplanar(const Selection& selection)
@@ -226,6 +253,60 @@ namespace WhiteBox::ModelingOps
             undoBatch.MarkEntityDirty(entityComponentIdPair.GetEntityId());
         }
         return { true, "Hole filled. Undo restores the open border." };
+    }
+
+    Result SelectLinked(const AZ::EntityComponentIdPair& entityComponentIdPair)
+    {
+        EditorWhiteBoxComponent* component = EditableComponentFor(entityComponentIdPair);
+        if (component == nullptr)
+        {
+            return { false, "No editable White Box mesh." };
+        }
+        auto* mesh = component->GetWhiteBoxMesh();
+
+        // Whichever element type is selected is the one that grows, matching the filter buttons.
+        const auto polygons = SelectedPolygons(entityComponentIdPair);
+        const auto edges = SelectedEdges(entityComponentIdPair);
+        const auto vertices = SelectedVertices(entityComponentIdPair);
+        size_t before = 0;
+        size_t after = 0;
+        const char* noun = "";
+        if (!polygons.empty())
+        {
+            const auto linked = Api::FindLinkedPolygons(*mesh, polygons);
+            before = polygons.size();
+            after = linked.size();
+            noun = "polygons";
+            EditorWhiteBoxTransformModeRequestBus::Event(
+                entityComponentIdPair, &EditorWhiteBoxTransformModeRequests::SetSelectedPolygons, linked);
+        }
+        else if (!edges.empty())
+        {
+            const auto linked = Api::FindLinkedEdges(*mesh, edges);
+            before = edges.size();
+            after = linked.size();
+            noun = "edges";
+            EditorWhiteBoxTransformModeRequestBus::Event(
+                entityComponentIdPair, &EditorWhiteBoxTransformModeRequests::SetSelectedEdges, linked);
+        }
+        else if (!vertices.empty())
+        {
+            const auto linked = Api::FindLinkedVertices(*mesh, vertices);
+            before = vertices.size();
+            after = linked.size();
+            noun = "vertices";
+            EditorWhiteBoxTransformModeRequestBus::Event(
+                entityComponentIdPair, &EditorWhiteBoxTransformModeRequests::SetSelectedVertices, linked);
+        }
+        else
+        {
+            return { false, "Select something to grow from first." };
+        }
+        if (after <= before)
+        {
+            return { false, "Everything joined to the selection is already selected." };
+        }
+        return { true, AZStd::string::format("%zu %s selected.", after, noun) };
     }
 
     Result SelectCoplanar(const AZ::EntityComponentIdPair& entityComponentIdPair)

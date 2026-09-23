@@ -1851,6 +1851,18 @@ namespace WhiteBox
         RefreshManipulator();
     }
 
+    void TransformMode::SetSelectedVertices(const Api::VertexHandles& vertices)
+    {
+        Refresh();
+        if (vertices.empty()) { return; }
+        m_whiteBoxSelection = AZStd::make_shared<VertexTransformSelection>();
+        VertexIntersection selection{};
+        selection.m_closestVertexWithHandle.m_handle = vertices.front();
+        m_whiteBoxSelection->m_selection = selection;
+        m_whiteBoxSelection->m_vertices = vertices;
+        RefreshManipulator();
+    }
+
     bool TransformMode::BeginLatchedDrag(
         const ModeMouseInteraction& mouse, WhiteBoxMesh& mesh, const GeometryIntersection hit)
     {

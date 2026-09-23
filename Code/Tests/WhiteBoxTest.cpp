@@ -4403,4 +4403,123 @@ namespace UnitTest
         // An annulus keeps both of its borders: the outer circle and the hole.
         EXPECT_EQ(Api::PolygonBorderVertexHandles(*mesh, merged).size(), 2);
     }
+
+    TEST_F(WhiteBoxTestFixture, SelectLinkedTakesOneShellAndLeavesTheOther)
+    {
+        namespace Api = WhiteBox::Api;
+        // Two separate strips in the same mesh: growing from one must never reach the other.
+        auto mesh = Api::CreateWhiteBoxMesh();
+        const auto strip = [&mesh](const float offset)
+        {
+            const auto a = Api::AddVertex(*mesh, AZ::Vector3(offset + 0.0f, 0.0f, 0.0f));
+            const auto b = Api::AddVertex(*mesh, AZ::Vector3(offset + 0.0f, 0.0f, 1.0f));
+            const auto c = Api::AddVertex(*mesh, AZ::Vector3(offset + 1.0f, 0.0f, 0.0f));
+            const auto d = Api::AddVertex(*mesh, AZ::Vector3(offset + 1.0f, 0.0f, 1.0f));
+            const auto e = Api::AddVertex(*mesh, AZ::Vector3(offset + 2.0f, 0.0f, 0.0f));
+            const auto f = Api::AddVertex(*mesh, AZ::Vector3(offset + 2.0f, 0.0f, 1.0f));
+            Api::AddQuadPolygon(*mesh, a, c, d, b);
+            Api::AddQuadPolygon(*mesh, c, e, f, d);
+        };
+        strip(0.0f);
+        strip(10.0f);
+        Api::CalculateNormals(*mesh);
+        const auto polygons = Api::MeshPolygonHandles(*mesh);
+        ASSERT_EQ(polygons.size(), 4);
+
+        // Whichever shell the seed is in, linking finds its two quads and stops there.
+        const auto linked = Api::FindLinkedPolygons(*mesh, {polygons.front()});
+        EXPECT_EQ(linked.size(), 2);
+        Api::VertexHandles shellCorners;
+        for (const auto& polygon : linked)
+        {
+            for (const auto corner : Api::PolygonBorderVertexHandlesFlattened(*mesh, polygon))
+            {
+                if (AZStd::find(shellCorners.begin(), shellCorners.end(), corner) == shellCorners.end())
+                {
+                    shellCorners.push_back(corner);
+                }
+            }
+        }
+        EXPECT_EQ(shellCorners.size(), 6);
+
+        // The same shell reached through an edge and through a vertex of it.
+        const auto seedEdge = Api::PolygonBorderEdgeHandlesFlattened(*mesh, linked.front()).front();
+        EXPECT_EQ(Api::FindLinkedEdges(*mesh, {seedEdge}).size(), 7);
+        EXPECT_EQ(Api::FindLinkedVertices(*mesh, {shellCorners.front()}).size(), 6);
+
+        // Seeding from both shells takes everything.
+        EXPECT_EQ(Api::FindLinkedPolygons(*mesh, polygons).size(), 4);
+        EXPECT_TRUE(Api::FindLinkedPolygons(*mesh, {}).empty());
+    }
+
+    TEST_F(WhiteBoxTestFixture, PolygonLoopAndRingRunPerpendicularStripsThroughAQuadGrid)
+    {
+        namespace Api = WhiteBox::Api;
+        // A 4x4 plate of quads: a strip through any of them is a whole row or a whole column.
+        auto mesh = Api::CreateWhiteBoxMesh();
+        AZStd::vector<AZStd::vector<Api::VertexHandle>> grid;
+        for (int x = 0; x <= 4; ++x)
+        {
+            grid.push_back({});
+            for (int y = 0; y <= 4; ++y)
+            {
+                grid.back().push_back(Api::AddVertex(*mesh, AZ::Vector3(float(x), float(y), 0.0f)));
+            }
+        }
+        AZStd::vector<Api::PolygonHandle> cells;
+        for (int x = 0; x < 4; ++x)
+        {
+            for (int y = 0; y < 4; ++y)
+            {
+                cells.push_back(
+                    Api::AddQuadPolygon(*mesh, grid[x][y], grid[x + 1][y], grid[x + 1][y + 1], grid[x][y + 1]));
+            }
+        }
+        Api::CalculateNormals(*mesh);
+        ASSERT_EQ(Api::MeshPolygonHandles(*mesh).size(), 16);
+
+        // Cell (1,1), away from every border, so neither direction is cut short.
+        const auto seed = cells[1 * 4 + 1];
+        const auto loop = Api::FindPolygonLoop(*mesh, {seed});
+        const auto ring = Api::FindPolygonRing(*mesh, {seed});
+        EXPECT_EQ(loop.size(), 4);
+        EXPECT_EQ(ring.size(), 4);
+
+        // The two directions cross at the seed and share nothing else.
+        size_t shared = 0;
+        for (const auto& polygon : loop)
+        {
+            if (AZStd::find(ring.begin(), ring.end(), polygon) != ring.end())
+            {
+                ++shared;
+            }
+        }
+        EXPECT_EQ(shared, 1);
+
+        // Each strip is straight: one axis of its midpoints never varies.
+        const auto spread = [&mesh](const Api::PolygonHandles& strip)
+        {
+            AZ::Vector3 low(1e6f, 1e6f, 1e6f);
+            AZ::Vector3 high(-1e6f, -1e6f, -1e6f);
+            for (const auto& polygon : strip)
+            {
+                const auto midpoint = Api::PolygonMidpoint(*mesh, polygon);
+                low = low.GetMin(midpoint);
+                high = high.GetMax(midpoint);
+            }
+            return high - low;
+        };
+        const auto loopSpread = spread(loop);
+        const auto ringSpread = spread(ring);
+        EXPECT_TRUE(loopSpread.GetX() < 0.001f || loopSpread.GetY() < 0.001f);
+        EXPECT_TRUE(ringSpread.GetX() < 0.001f || ringSpread.GetY() < 0.001f);
+        // And they are not the same direction.
+        EXPECT_NE(loopSpread.GetX() < 0.001f, ringSpread.GetX() < 0.001f);
+
+        // A seed that is not a plain quad keeps to itself.
+        Api::PolygonHandle merged;
+        AZStd::string error;
+        ASSERT_TRUE(Api::MergePolygons(*mesh, {cells[0], cells[1]}, error, &merged)) << error.c_str();
+        EXPECT_EQ(Api::FindPolygonLoop(*mesh, {merged}).size(), 1);
+    }
 }

@@ -1462,6 +1462,7 @@ namespace WhiteBox
         m_edgeLoopButtonId = RegisterClusterButton(m_modelingClusterId, ":/WhiteBox/Icons/EdgeLoop.svg");
         m_edgeRingButtonId = RegisterClusterButton(m_modelingClusterId, ":/WhiteBox/Icons/EdgeRing.svg");
         m_selectCoplanarButtonId = RegisterClusterButton(m_modelingClusterId, ":/WhiteBox/Icons/SelectCoplanar.svg");
+        m_selectLinkedButtonId = RegisterClusterButton(m_modelingClusterId, ":/WhiteBox/Icons/SelectLinked.svg");
         m_mergePolygonsButtonId = RegisterClusterButton(m_modelingClusterId, ":/WhiteBox/Icons/MergePolygons.svg");
         m_bridgeButtonId = RegisterClusterButton(m_modelingClusterId, ":/WhiteBox/Icons/Bridge.svg");
         m_weldButtonId = RegisterClusterButton(m_modelingClusterId, ":/WhiteBox/Icons/Weld.svg");
@@ -1479,9 +1480,10 @@ namespace WhiteBox
         };
         tooltip(m_transformExtrudeButtonId, "Extrude - type a distance, or latch it and drag any polygon or edge");
         tooltip(m_transformInsetButtonId, "Inset - type a percentage, or latch it and drag any planar convex region");
-        tooltip(m_edgeLoopButtonId, "Select Edge Loop: follow connected edges from the selection");
-        tooltip(m_edgeRingButtonId, "Select Edge Ring: cross opposite edges of quads");
+        tooltip(m_edgeLoopButtonId, "Select Loop: follow connected edges, or run a strip through selected quads");
+        tooltip(m_edgeRingButtonId, "Select Ring: cross opposite quad edges, or the strip the other way");
         tooltip(m_selectCoplanarButtonId, WhiteboxSelectCoplanarTooltip);
+        tooltip(m_selectLinkedButtonId, WhiteboxSelectLinkedTooltip);
         tooltip(m_mergePolygonsButtonId, WhiteboxMergePolygonsTooltip);
         tooltip(m_bridgeButtonId, WhiteboxModelingClusterBridgeTooltip);
         tooltip(m_weldButtonId, WhiteboxModelingClusterWeldTooltip);
@@ -1550,6 +1552,10 @@ namespace WhiteBox
                 else if (buttonId == m_selectCoplanarButtonId)
                 {
                     result = ModelingOps::SelectCoplanar(pair);
+                }
+                else if (buttonId == m_selectLinkedButtonId)
+                {
+                    result = ModelingOps::SelectLinked(pair);
                 }
                 else if (buttonId == m_mergePolygonsButtonId)
                 {
@@ -1746,6 +1752,7 @@ namespace WhiteBox
         const bool deletePolygon = ModelingOps::CanDeletePolygon(selection);
         const bool mergePolygons = ModelingOps::CanMergePolygons(selection);
         const bool selectCoplanar = ModelingOps::CanSelectCoplanar(selection);
+        const bool selectLinked = ModelingOps::CanSelectLinked(selection);
         const bool loopCut = ModelingOps::CanLoopCut(selection);
         const bool bevel = ModelingOps::CanBevel(selection) || selection.m_liveBevel;
         bool knife = false;
@@ -1758,7 +1765,7 @@ namespace WhiteBox
         const AZ::u32 state = (static_cast<AZ::u32>(latch) << 5) | (edgeSelection ? 1u : 0u) |
             (bridge ? 2u : 0u) | (weld ? 4u : 0u) | (loopCut ? 8u : 0u) | (bevel ? 16u : 0u) | (knife ? 128u : 0u) |
             (fillHole ? 256u : 0u) | (deletePolygon ? 512u : 0u) | (mergePolygons ? 1024u : 0u) |
-            (selectCoplanar ? 2048u : 0u);
+            (selectCoplanar ? 2048u : 0u) | (selectLinked ? 4096u : 0u);
         if (m_modelingClusterState == state)
         {
             return;
@@ -1800,6 +1807,7 @@ namespace WhiteBox
         enable(m_deletePolygonButtonId, deletePolygon);
         enable(m_mergePolygonsButtonId, mergePolygons);
         enable(m_selectCoplanarButtonId, selectCoplanar);
+        enable(m_selectLinkedButtonId, selectLinked);
         enable(m_loopCutButtonId, loopCut);
         enable(m_knifeButtonId, loopCut);
         enable(m_bevelButtonId, bevel);

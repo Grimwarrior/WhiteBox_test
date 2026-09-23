@@ -49,6 +49,8 @@ namespace WhiteBox
         //! Rebuild the manipulators so they pick up a changed editing space, keeping the selection.
         virtual void RefreshManipulatorSpace() {}
         virtual void SetSelectedPolygons(const Api::PolygonHandles& /*polygons*/) {}
+        virtual void SetSelectedEdges(const Api::EdgeHandles& /*edges*/) {}
+        virtual void SetSelectedVertices(const Api::VertexHandles& /*vertices*/) {}
         virtual void BeginLoopCut() {}
         virtual void BeginKnife() {}
         virtual bool IsKnifeActive() const { return false; }

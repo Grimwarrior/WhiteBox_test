@@ -891,6 +891,11 @@ namespace WhiteBox
         PolygonHandles FindCoplanarRegion(
             const WhiteBoxMesh& whiteBox, const PolygonHandles& seeds, float toleranceDegrees = 1.0f);
 
+        //! Grow a selection to the whole connected shell, crossing shared edges but not lone vertices.
+        PolygonHandles FindLinkedPolygons(const WhiteBoxMesh& whiteBox, const PolygonHandles& seeds);
+        EdgeHandles FindLinkedEdges(const WhiteBoxMesh& whiteBox, const EdgeHandles& seeds);
+        VertexHandles FindLinkedVertices(const WhiteBoxMesh& whiteBox, const VertexHandles& seeds);
+
         //! Merge selected vertices at their average position or the last selected vertex.
         //! Collapsed triangles are removed; surviving face properties and UVs are retained.
         //! Connected corner collapses may leave open face patches meeting at the merged point.
@@ -906,6 +911,10 @@ namespace WhiteBox
         EdgeHandles FindEdgeLoop(const WhiteBoxMesh& whiteBox, const EdgeHandles& seeds);
         //! Expand across opposite quad edges, stopping at non-quads and ambiguous topology.
         EdgeHandles FindEdgeRing(const WhiteBoxMesh& whiteBox, const EdgeHandles& seeds);
+
+        //! Expand quads into the face strip through them; loop and ring are the two directions.
+        PolygonHandles FindPolygonLoop(const WhiteBoxMesh& whiteBox, const PolygonHandles& seeds);
+        PolygonHandles FindPolygonRing(const WhiteBoxMesh& whiteBox, const PolygonHandles& seeds);
 
         //! Bevel convex edges, including connected selections at simple corners. Width is the face offset.
         //! Segments (1-32) controls the rounded profile. Failure leaves the mesh unchanged.

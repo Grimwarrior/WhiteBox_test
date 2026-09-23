@@ -11,6 +11,7 @@
     <file alias="SelectPolygons.svg">../../../Assets/Editor/Icons/Toolbar/SelectPolygons.svg</file>
     <file alias="MergePolygons.svg">../../../Assets/Editor/Icons/Toolbar/MergePolygons.svg</file>
     <file alias="SelectCoplanar.svg">../../../Assets/Editor/Icons/Toolbar/SelectCoplanar.svg</file>
+    <file alias="SelectLinked.svg">../../../Assets/Editor/Icons/Toolbar/SelectLinked.svg</file>
     <file alias="StickySelect.svg">../../../Assets/Editor/Icons/Toolbar/StickySelect.svg</file>
     <file alias="BoxSelect.svg">../../../Assets/Editor/Icons/Toolbar/BoxSelect.svg</file>
     <file alias="LoopCut.svg">../../../Assets/Editor/Icons/Toolbar/LoopCut.svg</file>

@@ -4308,6 +4308,133 @@ namespace WhiteBox
             return region;
         }
 
+        // Breadth first across shared edges only, so shells touching at one vertex stay separate.
+        static FaceHandles FloodLinkedFaces(const WhiteBoxMesh& whiteBox, const FaceHandles& seeds)
+        {
+            AZStd::vector<bool> visited(whiteBox.mesh.n_faces(), false);
+            FaceHandles linked;
+            const auto push = [&visited, &linked](const FaceHandle face)
+            {
+                if (!face.IsValid() || static_cast<size_t>(face.Index()) >= visited.size() ||
+                    visited[static_cast<size_t>(face.Index())])
+                {
+                    return;
+                }
+                visited[static_cast<size_t>(face.Index())] = true;
+                linked.push_back(face);
+            };
+            for (const auto face : seeds)
+            {
+                push(face);
+            }
+            // linked doubles as the queue, so indexing rather than iterating keeps it valid as it grows.
+            for (size_t i = 0; i < linked.size(); ++i)
+            {
+                for (const auto halfedge : FaceHalfedgeHandles(whiteBox, linked[i]))
+                {
+                    push(HalfedgeOppositeFaceHandle(whiteBox, halfedge));
+                }
+            }
+            return linked;
+        }
+
+        PolygonHandles FindLinkedPolygons(const WhiteBoxMesh& whiteBox, const PolygonHandles& seeds)
+        {
+            AZ_PROFILE_FUNCTION(AzToolsFramework);
+
+            FaceHandles seedFaces;
+            for (const auto& polygon : seeds)
+            {
+                seedFaces.insert(seedFaces.end(), polygon.m_faceHandles.begin(), polygon.m_faceHandles.end());
+            }
+
+            AZStd::vector<bool> claimed(whiteBox.mesh.n_faces(), false);
+            PolygonHandles linked;
+            for (const auto face : FloodLinkedFaces(whiteBox, seedFaces))
+            {
+                if (claimed[static_cast<size_t>(face.Index())])
+                {
+                    continue;
+                }
+                const auto polygon = FacePolygonHandle(whiteBox, face);
+                if (polygon.m_faceHandles.empty())
+                {
+                    continue;
+                }
+                // Claim the whole group at once, so a polygon is never added twice.
+                for (const auto member : polygon.m_faceHandles)
+                {
+                    claimed[static_cast<size_t>(member.Index())] = true;
+                }
+                linked.push_back(polygon);
+            }
+            return linked;
+        }
+
+        EdgeHandles FindLinkedEdges(const WhiteBoxMesh& whiteBox, const EdgeHandles& seeds)
+        {
+            AZ_PROFILE_FUNCTION(AzToolsFramework);
+
+            FaceHandles seedFaces;
+            for (const auto edge : seeds)
+            {
+                const auto faces = EdgeFaceHandles(whiteBox, edge);
+                seedFaces.insert(seedFaces.end(), faces.begin(), faces.end());
+            }
+
+            AZStd::vector<bool> inside(whiteBox.mesh.n_faces(), false);
+            for (const auto face : FloodLinkedFaces(whiteBox, seedFaces))
+            {
+                inside[static_cast<size_t>(face.Index())] = true;
+            }
+            // Only the borders a click could have picked; internal triangulation edges are not offered.
+            EdgeHandles linked;
+            for (const auto edge : MeshPolygonEdgeHandles(whiteBox))
+            {
+                for (const auto face : EdgeFaceHandles(whiteBox, edge))
+                {
+                    if (inside[static_cast<size_t>(face.Index())])
+                    {
+                        linked.push_back(edge);
+                        break;
+                    }
+                }
+            }
+            return linked;
+        }
+
+        VertexHandles FindLinkedVertices(const WhiteBoxMesh& whiteBox, const VertexHandles& seeds)
+        {
+            AZ_PROFILE_FUNCTION(AzToolsFramework);
+
+            FaceHandles seedFaces;
+            for (const auto vertex : seeds)
+            {
+                for (const auto edge : VertexEdgeHandles(whiteBox, vertex))
+                {
+                    const auto faces = EdgeFaceHandles(whiteBox, edge);
+                    seedFaces.insert(seedFaces.end(), faces.begin(), faces.end());
+                }
+            }
+
+            AZStd::vector<bool> taken(whiteBox.mesh.n_vertices(), false);
+            VertexHandles linked;
+            for (const auto face : FloodLinkedFaces(whiteBox, seedFaces))
+            {
+                for (const auto vertex : FaceVertexHandles(whiteBox, face))
+                {
+                    const size_t index = static_cast<size_t>(vertex.Index());
+                    // Hidden corners cannot be clicked, so linking must not hand them back either.
+                    if (!taken[index] && !VertexIsHidden(whiteBox, vertex))
+                    {
+                        taken[index] = true;
+                        linked.push_back(vertex);
+                    }
+                }
+            }
+            return linked;
+        }
+
         bool MergePolygons(
             WhiteBoxMesh& whiteBox, const PolygonHandles& polygons, AZStd::string& error, PolygonHandle* merged)
         {
@@ -4707,6 +4834,49 @@ namespace WhiteBox
         EdgeHandles FindEdgeRing(const WhiteBoxMesh& whiteBox, const EdgeHandles& seeds)
         {
             return FindEdgePattern(whiteBox, seeds, true);
+        }
+
+        // Faces sit between the edges of a ring, so the ring walk decides where the strip stops.
+        static PolygonHandles FindPolygonStrip(
+            const WhiteBoxMesh& whiteBox, const PolygonHandles& seeds, const bool perpendicular)
+        {
+            PolygonHandles strip;
+            const auto append = [&strip](const PolygonHandle& polygon)
+            {
+                if (!polygon.m_faceHandles.empty() &&
+                    AZStd::find(strip.begin(), strip.end(), polygon) == strip.end())
+                {
+                    strip.push_back(polygon);
+                }
+            };
+            for (const auto& seed : seeds)
+            {
+                append(seed);
+                const auto borders = PolygonBorderEdgeHandles(whiteBox, seed);
+                // Only a plain quad has a strip through it; anything else just keeps its seed.
+                if (borders.size() != 1 || borders.front().size() != 4)
+                {
+                    continue;
+                }
+                for (const auto edge : FindEdgeRing(whiteBox, {borders.front()[perpendicular ? 1 : 0]}))
+                {
+                    for (const auto face : EdgeFaceHandles(whiteBox, edge))
+                    {
+                        append(FacePolygonHandle(whiteBox, face));
+                    }
+                }
+            }
+            return strip;
+        }
+
+        PolygonHandles FindPolygonLoop(const WhiteBoxMesh& whiteBox, const PolygonHandles& seeds)
+        {
+            return FindPolygonStrip(whiteBox, seeds, false);
+        }
+
+        PolygonHandles FindPolygonRing(const WhiteBoxMesh& whiteBox, const PolygonHandles& seeds)
+        {
+            return FindPolygonStrip(whiteBox, seeds, true);
         }
 
         void AssignMesh(WhiteBoxMesh& target, const WhiteBoxMesh& source)
