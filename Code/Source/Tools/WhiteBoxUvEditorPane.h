@@ -15,7 +15,6 @@
 #include <QWidget>
 
 class QLabel;
-class QToolButton;
 
 namespace WhiteBox
 {
@@ -53,8 +52,5 @@ namespace WhiteBox
         WhiteBoxUvCanvas* m_canvas = nullptr;
         QLabel* m_status = nullptr;
         QLabel* m_message = nullptr; //!< What the last operation did or why it could not.
-        QToolButton* m_move = nullptr;
-        QToolButton* m_rotate = nullptr;
-        QToolButton* m_scale = nullptr;
     };
 } // namespace WhiteBox
