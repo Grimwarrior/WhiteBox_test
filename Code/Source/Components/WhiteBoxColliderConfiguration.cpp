@@ -70,20 +70,21 @@ namespace WhiteBox
                     ->Attribute(AZ::Edit::Attributes::Visibility, &WhiteBoxColliderConfiguration::SimplifiedVisibility)
                     ->DataElement(
                         AZ::Edit::UIHandlers::SpinBox, &WhiteBoxColliderConfiguration::m_maxHullsPerShell, "Max Hulls Per Shell",
-                        "Most hulls a concave shell may split into. Convex shells always use exactly one.")
+                        "Most hulls a concave shell may split into. Closed shells are cut cleanly along their own faces; "
+                        "one that is open or would need more hulls than this falls back to V-HACD's approximation.")
                     ->Attribute(AZ::Edit::Attributes::Min, 1)
-                    ->Attribute(AZ::Edit::Attributes::Max, 64)
+                    ->Attribute(AZ::Edit::Attributes::Max, 256)
                     ->Attribute(AZ::Edit::Attributes::Visibility, &WhiteBoxColliderConfiguration::PartsVisibility)
                     ->DataElement(
                         AZ::Edit::UIHandlers::SpinBox, &WhiteBoxColliderConfiguration::m_decompositionResolution, "Resolution",
-                        "Voxels V-HACD samples each concave shell with. Higher follows small detail more closely but cooks slower.")
+                        "V-HACD fallback only: voxels it samples each concave shell with. Higher follows small detail more closely but cooks slower.")
                     ->Attribute(AZ::Edit::Attributes::Min, 10000)
                     ->Attribute(AZ::Edit::Attributes::Max, 10000000)
                     ->Attribute(AZ::Edit::Attributes::Step, 10000)
                     ->Attribute(AZ::Edit::Attributes::Visibility, &WhiteBoxColliderConfiguration::PartsVisibility)
                     ->DataElement(
                         AZ::Edit::UIHandlers::SpinBox, &WhiteBoxColliderConfiguration::m_maxVerticesPerHull, "Max Vertices Per Hull",
-                        "Vertex cap for each generated hull (PhysX allows at most 255).")
+                        "V-HACD fallback only: vertex cap for each generated hull (PhysX allows at most 255).")
                     ->Attribute(AZ::Edit::Attributes::Min, 8)
                     ->Attribute(AZ::Edit::Attributes::Max, 255)
                     ->Attribute(AZ::Edit::Attributes::Visibility, &WhiteBoxColliderConfiguration::PartsVisibility);

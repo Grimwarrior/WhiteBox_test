@@ -31,7 +31,7 @@ namespace WhiteBox
     {
         TriangleMesh, //!< Follows every face; static or kinematic only, and never a trigger.
         ConvexHull,   //!< One convex shape wrapping the whole mesh.
-        ConvexParts,  //!< One hull per convex shell, concave shells split by V-HACD; keeps openings open.
+        ConvexParts,  //!< One hull per convex shell; concave shells are cut along their own faces (V-HACD if that fails).
         SimplifiedMesh //!< Triangle mesh reduced to a chosen share of its triangles (stored last so saved values keep their meaning).
     };
 
@@ -45,7 +45,7 @@ namespace WhiteBox
 
         WhiteBoxBodyType m_bodyType = WhiteBoxBodyType::Static; //!< Default the body type to Static.
         WhiteBoxColliderShape m_shape = WhiteBoxColliderShape::TriangleMesh;
-        AZ::u32 m_maxHullsPerShell = 8;             //!< V-HACD hull budget for each concave shell.
+        AZ::u32 m_maxHullsPerShell = 32;            //!< Hull budget for each concave shell (exact cuts, then V-HACD).
         AZ::u32 m_decompositionResolution = 100000; //!< V-HACD voxel count; higher follows detail more closely.
         AZ::u32 m_maxVerticesPerHull = 64;          //!< V-HACD per-hull vertex cap (PhysX allows 255).
         AZ::u32 m_meshResolution = 50;              //!< Percent of triangles Triangle Mesh (Simplified) keeps.

@@ -88,7 +88,10 @@ namespace WhiteBox
         //! One hull per convex part (Convex Parts); these go in the hull lists, not the single configurations.
         bool UseConvexParts() const;
         //! Decompose @p whiteBox and cook every part; false when nothing could be cooked.
-        bool CookConvexParts(const WhiteBoxMesh& whiteBox, AZStd::vector<Physics::CookedMeshShapeConfiguration>& outParts);
+        //! In the background, unfinished concave shells stand in as one hull each and the collider rebuilds when they land.
+        bool CookConvexParts(
+            const WhiteBoxMesh& whiteBox, AZStd::vector<Physics::CookedMeshShapeConfiguration>& outParts,
+            DecomposeWait wait = DecomposeWait::Background);
         //! Every part's hull, appended into one triangle list for the wireframe.
         void AppendPartsDebugMesh(
             const AZStd::vector<Physics::CookedMeshShapeConfiguration>& parts, AZStd::vector<AZ::Vector3>& vertices,
@@ -116,7 +119,6 @@ namespace WhiteBox
         bool m_hasBooleanMesh = false; //!< Whether a boolean-evaluated cooked mesh is available.
         AZStd::vector<Physics::CookedMeshShapeConfiguration> m_partShapeConfigurations; //!< Cooked Convex Parts of the base mesh.
         AZStd::vector<Physics::CookedMeshShapeConfiguration> m_booleanPartShapeConfigurations; //!< Cooked Convex Parts of the boolean mesh.
-        ConvexDecomposer m_decomposer; //!< Caches concave shells so edits only re-run V-HACD where they changed.
         AzPhysics::SimulatedBodyHandle m_rigidBodyHandle = AzPhysics::InvalidSimulatedBodyHandle; //!< Handle to a static rigid body to represent the White Box Mesh at edit time.
         WhiteBoxColliderConfiguration
             m_whiteBoxColliderConfiguration; //!< White Box specific collider configuration information.

@@ -11,6 +11,7 @@
 #include "WhiteBoxColliderComponent.h"
 #include "WhiteBoxMeshSimplify.h"
 
+#include <AzCore/Component/ComponentApplicationBus.h>
 #include <AzCore/Component/NonUniformScaleBus.h>
 #include <AzCore/Component/TransformBus.h>
 #include <AzCore/Math/MathUtils.h>
@@ -149,11 +150,26 @@ namespace WhiteBox
         // latest edits, falling back to the edit-time cook if that fails.
         Physics::CookedMeshShapeConfiguration baseConfiguration = m_meshShapeConfiguration;
         AZStd::vector<Physics::CookedMeshShapeConfiguration> baseParts = m_partShapeConfigurations;
+        AZStd::vector<Physics::CookedMeshShapeConfiguration> booleanParts = m_booleanPartShapeConfigurations;
         bool liveBoolean = false;
 
         if (auto* whiteBoxComponent = GetEntity()->FindComponent<WhiteBox::EditorWhiteBoxComponent>())
         {
             liveBoolean = whiteBoxComponent->GetLiveBoolean();
+
+            // The edit-time boolean parts may still hold background stand-ins; finish them here from the cached display mesh.
+            if (UseConvexParts())
+            {
+                if (auto* displayMesh = whiteBoxComponent->GetPhysicsFilteredBooleanMesh();
+                    displayMesh != nullptr && Api::MeshFaceCount(*displayMesh) > 0)
+                {
+                    AZStd::vector<Physics::CookedMeshShapeConfiguration> freshParts;
+                    if (CookConvexParts(*displayMesh, freshParts, DecomposeWait::Block))
+                    {
+                        booleanParts = AZStd::move(freshParts);
+                    }
+                }
+            }
 
             // Re-cook the base from the COLLISION-FILTERED mesh (layers with Collision off removed)
             // to pick up the latest edits. Use the STRICT accessor: it returns the cached filtered
@@ -177,7 +193,7 @@ namespace WhiteBox
                     else if (UseConvexParts())
                     {
                         AZStd::vector<Physics::CookedMeshShapeConfiguration> freshParts;
-                        if (CookConvexParts(*baseMesh, freshParts))
+                        if (CookConvexParts(*baseMesh, freshParts, DecomposeWait::Block))
                         {
                             baseParts = AZStd::move(freshParts);
                         }
@@ -206,7 +222,7 @@ namespace WhiteBox
             collider->SetDrawCollider(m_drawCollider);
             if (UseConvexParts())
             {
-                collider->SetConvexParts(baseParts, m_booleanPartShapeConfigurations);
+                collider->SetConvexParts(baseParts, booleanParts);
             }
 
             // Bake the actual cooked collider geometry so the runtime "Draw Collider" wireframe shows
@@ -568,7 +584,7 @@ namespace WhiteBox
     }
 
     bool EditorWhiteBoxColliderComponent::CookConvexParts(
-        const WhiteBoxMesh& whiteBox, AZStd::vector<Physics::CookedMeshShapeConfiguration>& outParts)
+        const WhiteBoxMesh& whiteBox, AZStd::vector<Physics::CookedMeshShapeConfiguration>& outParts, const DecomposeWait wait)
     {
         outParts.clear();
         AZStd::vector<AZ::Vector3> vertices;
@@ -584,7 +600,25 @@ namespace WhiteBox
             return false;
         }
         size_t failed = 0;
-        for (const HullPoints& hull : m_decomposer.Decompose(vertices, indices, m_whiteBoxColliderConfiguration))
+        // Rebuilt through the bus, from whatever the mesh is by then; a deleted or deactivated entity simply is not there.
+        const AZ::EntityId entityId = GetEntityId();
+        const auto rebuild = [entityId]()
+        {
+            AZ::Entity* entity = nullptr;
+            AZ::ComponentApplicationBus::BroadcastResult(entity, &AZ::ComponentApplicationRequests::FindEntity, entityId);
+            auto* whiteBoxComponent = entity != nullptr ? entity->FindComponent<EditorWhiteBoxComponent>() : nullptr;
+            if (auto* mesh = whiteBoxComponent != nullptr ? whiteBoxComponent->GetPhysicsFilteredMesh() : nullptr)
+            {
+                EditorWhiteBoxColliderRequestBus::Event(entityId, &EditorWhiteBoxColliderRequests::CreatePhysics, *mesh);
+            }
+        };
+        bool pending = false;
+        const auto hulls = ConvexDecomposer::Decompose(vertices, indices, m_whiteBoxColliderConfiguration, wait, entityId, rebuild, &pending);
+        if (pending)
+        {
+            AZ_TracePrintf("WhiteBox", "Convex Parts: splitting concave shells in the background; single hulls stand in until then.\n");
+        }
+        for (const HullPoints& hull : hulls)
         {
             AZStd::vector<AZ::u8> bytes;
             if (hull.size() < 4 || !physicsSystem->CookConvexMeshToMemory(hull.data(), static_cast<AZ::u32>(hull.size()), bytes))

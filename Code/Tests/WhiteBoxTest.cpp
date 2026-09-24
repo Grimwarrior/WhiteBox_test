@@ -5163,7 +5163,6 @@ namespace UnitTest
         WhiteBox::WhiteBoxColliderConfiguration configuration;
         configuration.m_shape = WhiteBox::WhiteBoxColliderShape::ConvexParts;
         configuration.m_decompositionResolution = 20000;
-        WhiteBox::ConvexDecomposer decomposer;
 
         // Two separate cubes are two shells, each kept as its own exact eight-point hull.
         auto cube = Api::CreateWhiteBoxMesh();
@@ -5172,7 +5171,7 @@ namespace UnitTest
         AZStd::vector<AZ::u32> indices;
         WeldedTriangles(*cube, vertices, indices);
         WeldedTriangles(*cube, vertices, indices, AZ::Vector3(5.0f, 0.0f, 0.0f));
-        const auto cubes = decomposer.Decompose(vertices, indices, configuration);
+        const auto cubes = WhiteBox::ConvexDecomposer::Decompose(vertices, indices, configuration);
         ASSERT_EQ(cubes.size(), 2u);
         EXPECT_EQ(cubes[0].size(), 8u);
         EXPECT_EQ(cubes[1].size(), 8u);
@@ -5188,7 +5187,7 @@ namespace UnitTest
         vertices.clear();
         indices.clear();
         WeldedTriangles(*plane, vertices, indices);
-        const auto flat = decomposer.Decompose(vertices, indices, configuration);
+        const auto flat = WhiteBox::ConvexDecomposer::Decompose(vertices, indices, configuration);
         ASSERT_EQ(flat.size(), 1u);
         EXPECT_EQ(flat[0].size(), 8u);
         float lowest = 0.0f;
@@ -5199,7 +5198,7 @@ namespace UnitTest
         }
         EXPECT_LT(lowest, -1e-3f);
 
-        // A cube with a pit sunk into its top is concave, so V-HACD splits it, staying inside the cube.
+        // A cube with a pit sunk into its top is concave; it is cut along its own faces into a few clean pieces inside the cube.
         auto pit = Api::CreateWhiteBoxMesh();
         const auto polygons = Api::InitializeAsUnitCube(*pit);
         Api::PolygonHandle top;
@@ -5218,8 +5217,9 @@ namespace UnitTest
         vertices.clear();
         indices.clear();
         WeldedTriangles(*pit, vertices, indices);
-        const auto parts = decomposer.Decompose(vertices, indices, configuration);
+        const auto parts = WhiteBox::ConvexDecomposer::Decompose(vertices, indices, configuration);
         EXPECT_GE(parts.size(), 2u);
+        EXPECT_LE(parts.size(), 8u); // the rim around the pit, not a cloud of voxel hulls
         for (const auto& hull : parts)
         {
             EXPECT_GE(hull.size(), 4u);
@@ -5229,7 +5229,16 @@ namespace UnitTest
             }
         }
         // The second run hits the cache and gives the same parts.
-        EXPECT_EQ(decomposer.Decompose(vertices, indices, configuration).size(), parts.size());
+        EXPECT_EQ(WhiteBox::ConvexDecomposer::Decompose(vertices, indices, configuration).size(), parts.size());
+
+        // A budget of one hull defeats the exact cuts, so V-HACD is queued: one stand-in hull, reported pending.
+        configuration.m_maxHullsPerShell = 1;
+        bool pending = false;
+        const auto standIn = WhiteBox::ConvexDecomposer::Decompose(
+            vertices, indices, configuration, WhiteBox::DecomposeWait::Background, AZ::EntityId(1234), {}, &pending);
+        EXPECT_TRUE(pending);
+        EXPECT_EQ(standIn.size(), 1u);
+        WhiteBox::ConvexDecomposer::Shutdown(); // cancels the queued work and joins the worker
     }
 
     TEST_F(WhiteBoxTestFixture, SimplifyTrianglesHitsTheBudgetAndKeepsAFlatGridFlat)
