@@ -50,6 +50,10 @@ set(FILES
     Source/Tools/WhiteBoxUvProjectionWindow.h
     Source/Tools/WhiteBoxSmoothingWindow.cpp
     Source/Tools/WhiteBoxSmoothingWindow.h
+    Source/Tools/WhiteBoxUvCanvas.cpp
+    Source/Tools/WhiteBoxUvCanvas.h
+    Source/Tools/WhiteBoxUvEditorPane.cpp
+    Source/Tools/WhiteBoxUvEditorPane.h
     Source/Tools/WhiteBoxExtrudeInsetWindow.cpp
     Source/Tools/WhiteBoxExtrudeInsetWindow.h
     Source/Tools/WhiteBoxLayerGizmo.cpp
