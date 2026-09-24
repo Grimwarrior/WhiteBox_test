@@ -45,11 +45,14 @@ namespace WhiteBox
         //! Follow the selected White Box entity and its polygon selection; skipped mid-drag.
         void Refresh();
         void ApplyEdit(const AZStd::vector<UvChange>& changes, bool final);
+        //! Run a layout operation (Unwrap or Pack) on the target faces as one undoable edit, then frame the result.
+        void ApplyLayout(const AZStd::vector<UvChange>& changes, const QString& done);
 
         AZ::EntityComponentIdPair m_pair;
         bool m_editing = false; //!< Between the first change of a gesture and its final one.
         WhiteBoxUvCanvas* m_canvas = nullptr;
         QLabel* m_status = nullptr;
+        QLabel* m_message = nullptr; //!< What the last operation did or why it could not.
         QToolButton* m_move = nullptr;
         QToolButton* m_rotate = nullptr;
         QToolButton* m_scale = nullptr;

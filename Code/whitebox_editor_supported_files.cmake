@@ -25,6 +25,8 @@ set(FILES
     Source/Util/WhiteBoxGltfExport.h
     Source/Util/WhiteBoxModelConvert.cpp
     Source/Util/WhiteBoxModelConvert.h
+    Source/Util/WhiteBoxUvOps.cpp
+    Source/Util/WhiteBoxUvOps.h
     Source/Util/WhiteBoxModelingOps.h
     Source/Util/WhiteBoxSnapUtil.cpp
     Source/Util/WhiteBoxSnapUtil.h

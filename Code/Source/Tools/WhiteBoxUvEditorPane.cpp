@@ -84,15 +84,53 @@ namespace WhiteBox
         auto* rotate90 = makeButton(tr("Rotate 90"), tr("Turn the selection (or everything) a quarter turn clockwise."), false);
         auto* fit = makeButton(tr("Fit 0-1"), tr("Scale and move the selection (or everything) uniformly to fill the unit square."), false);
         tools->addSpacing(8);
+        auto* split = makeButton(tr("Split"), tr("Tear the selected faces' UVs away from their neighbours so they move on their own."), false);
+        auto* sew = makeButton(tr("Sew"), tr("Join selected UV points that belong to the same mesh vertex, at their average."), false);
+        auto* unwrap = makeButton(
+            tr("Unwrap"),
+            tr("Unfold the selected faces (or all in view) flat, each polygon at its true shape, hinged on shared edges; "
+               "overlaps start new islands. The result is packed into the unit square."),
+            false);
+        auto* pack = makeButton(
+            tr("Pack"), tr("Arrange the islands of the selected faces (or all in view) in the unit square without overlap."), false);
+        tools->addSpacing(8);
         auto* frame = makeButton(tr("Frame"), tr("Frame the selection, or everything when nothing is selected. [F]"), false);
         auto* all = makeButton(tr("Select All"), tr("Select every UV point. [A]"), false);
         tools->addStretch();
         layout->addLayout(tools);
 
+        // Selection helpers get their own row; they work in UV space, so seams bound them.
+        auto* selection = new QHBoxLayout();
+        selection->setSpacing(2);
+        const auto makeSelectButton = [this, selection](const QString& text, const QString& tip)
+        {
+            auto* button = new QToolButton(this);
+            button->setText(text);
+            button->setToolTip(tip);
+            button->setAutoRaise(true);
+            selection->addWidget(button);
+            return button;
+        };
+        auto* selectLabel = new QLabel(tr("Select:"), this);
+        selection->addWidget(selectLabel);
+        auto* linked = makeSelectButton(tr("Linked"), tr("Every island holding a selected point. [L, or double-click a point]"));
+        auto* grow = makeSelectButton(tr("Grow"), tr("Add every point one UV edge away from the selection. [+]"));
+        auto* shrink = makeSelectButton(tr("Shrink"), tr("Drop every selected point that touches an unselected one. [-]"));
+        auto* loop = makeSelectButton(
+            tr("Loop"), tr("From each selected edge, follow polygon edges straight on through each point until the line turns or ends."));
+        auto* border = makeSelectButton(tr("Border"), tr("Points on island boundaries; limited to islands with a selection, if any."));
+        auto* invert = makeSelectButton(tr("Invert"), tr("Swap selected and unselected points. [Ctrl+I]"));
+        auto* none = makeSelectButton(tr("None"), tr("Clear the selection. [Esc]"));
+        selection->addStretch();
+        layout->addLayout(selection);
+
         m_canvas = new WhiteBoxUvCanvas(this);
         layout->addWidget(m_canvas, 1);
         m_status = new QLabel(this);
         layout->addWidget(m_status);
+        m_message = new QLabel(this);
+        m_message->setWordWrap(true);
+        layout->addWidget(m_message);
 
         m_canvas->m_onEdit = [this](const AZStd::vector<UvChange>& changes, const bool final) { ApplyEdit(changes, final); };
         m_canvas->m_onStatus = [this](const QString& message) { m_status->setText(message); };
@@ -124,8 +162,52 @@ namespace WhiteBox
             });
         });
         connect(fit, &QToolButton::clicked, this, [this]() { m_canvas->FitTargetsToUnitSquare(); });
+        connect(split, &QToolButton::clicked, this, [this]()
+        {
+            const size_t faces = m_canvas->SplitSelectedFaces();
+            m_message->setText(
+                faces == 0 ? tr("Select whole faces (every corner) to split them off.")
+                           : tr("%1 face(s) split off; drag them away to open the seam.").arg(faces));
+            Refresh();
+        });
+        connect(sew, &QToolButton::clicked, this, [this]()
+        {
+            const size_t points = m_canvas->SewSelected();
+            m_message->setText(
+                points == 0 ? tr("Select UV points on both sides of a seam; points of the same mesh vertex are joined.")
+                            : tr("%1 point(s) sewn.").arg(points));
+        });
+        connect(unwrap, &QToolButton::clicked, this, [this]()
+        {
+            auto* component = FindWhiteBoxComponent(m_pair);
+            if (const WhiteBoxMesh* mesh = component != nullptr ? component->GetWhiteBoxMesh() : nullptr)
+            {
+                ApplyLayout(UvOps::Unwrap(*mesh, m_canvas->TargetFaces()), tr("Unwrapped and packed."));
+            }
+        });
+        connect(pack, &QToolButton::clicked, this, [this]()
+        {
+            auto* component = FindWhiteBoxComponent(m_pair);
+            if (const WhiteBoxMesh* mesh = component != nullptr ? component->GetWhiteBoxMesh() : nullptr)
+            {
+                ApplyLayout(UvOps::Pack(*mesh, m_canvas->TargetFaces()), tr("Islands packed."));
+            }
+        });
         connect(frame, &QToolButton::clicked, this, [this]() { m_canvas->FrameSelection(); });
         connect(all, &QToolButton::clicked, this, [this]() { m_canvas->SelectAll(); });
+        connect(linked, &QToolButton::clicked, this, [this]() { m_canvas->SelectLinked(); });
+        connect(grow, &QToolButton::clicked, this, [this]() { m_canvas->GrowSelection(); });
+        connect(shrink, &QToolButton::clicked, this, [this]() { m_canvas->ShrinkSelection(); });
+        connect(loop, &QToolButton::clicked, this, [this]()
+        {
+            if (!m_canvas->SelectLoop())
+            {
+                m_message->setText(tr("Select the two ends of a polygon edge to follow its loop."));
+            }
+        });
+        connect(border, &QToolButton::clicked, this, [this]() { m_canvas->SelectBorder(); });
+        connect(invert, &QToolButton::clicked, this, [this]() { m_canvas->InvertSelection(); });
+        connect(none, &QToolButton::clicked, this, [this]() { m_canvas->SelectNone(); });
 
         auto* refresh = new QTimer(this);
         connect(refresh, &QTimer::timeout, this, [this]() { Refresh(); });
@@ -215,7 +297,20 @@ namespace WhiteBox
             EditorWhiteBoxTransformModeRequestBus::EventResult(
                 polygons, m_pair, &EditorWhiteBoxTransformModeRequests::GetSelectedPolygons);
         }
-        m_canvas->SetModel(mesh != nullptr ? BuildUvModel(*mesh, polygons) : UvModel{});
+        m_canvas->SetModel(mesh != nullptr ? BuildUvModel(*mesh, polygons, m_canvas->DetachedCorners()) : UvModel{});
+    }
+
+    void WhiteBoxUvEditorPane::ApplyLayout(const AZStd::vector<UvChange>& changes, const QString& done)
+    {
+        if (changes.empty())
+        {
+            m_message->setText(tr("Select polygons in Transform mode first."));
+            return;
+        }
+        ApplyEdit(changes, true);
+        Refresh();
+        m_canvas->FrameAll();
+        m_message->setText(done);
     }
 
     void WhiteBoxUvEditorPane::ApplyEdit(const AZStd::vector<UvChange>& changes, const bool final)

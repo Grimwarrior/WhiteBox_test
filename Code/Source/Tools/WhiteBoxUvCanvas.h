@@ -15,6 +15,7 @@
 #include <AzCore/std/functional.h>
 #include <AzCore/std/utils.h>
 #include <WhiteBox/WhiteBoxToolApi.h>
+#include "Util/WhiteBoxUvOps.h"
 
 #include <QPoint>
 #include <QPointF>
@@ -31,6 +32,7 @@ namespace WhiteBox
         {
             AZ::Vector2 m_uv;
             AZStd::vector<Api::HalfedgeHandle> m_corners;
+            int m_meshVertex = -1; //!< The mesh vertex every corner here sits on; Sew joins points that share it.
         };
         struct Edge
         {
@@ -42,14 +44,15 @@ namespace WhiteBox
         AZStd::vector<Vertex> m_vertices;
         AZStd::vector<Edge> m_edges;
         AZStd::vector<AZStd::array<AZ::u32, 3>> m_triangles;
+        Api::FaceHandles m_faces; //!< The face each triangle belongs to.
+        AZStd::vector<AZStd::array<Api::HalfedgeHandle, 3>> m_triangleCorners; //!< Each triangle's own corners.
         size_t m_signature = 0; //!< Changes with the selected faces, not with their UVs.
     };
 
-    //! Build the model for the selected polygons; stale handles are skipped.
-    UvModel BuildUvModel(const WhiteBoxMesh& whiteBox, const Api::PolygonHandles& polygons);
-
-    //! A corner and the UV it should take.
-    using UvChange = AZStd::pair<Api::HalfedgeHandle, AZ::Vector2>;
+    //! Build the model for the selected polygons; stale handles are skipped. Detached corners (halfedge indices) form
+    //! their own points even where they share a vertex and UV with others, so a split holds until they are moved.
+    UvModel BuildUvModel(
+        const WhiteBoxMesh& whiteBox, const Api::PolygonHandles& polygons, const AZStd::unordered_set<int>& detached = {});
 
     //! The 2D view of UvModel: pan, zoom, select points or islands, and move, rotate or scale them.
     //! V runs down the view, as rows do in a texture, so (0, 0) is the top left of the unit square.
@@ -74,6 +77,30 @@ namespace WhiteBox
         void FrameAll();
         void FrameSelection();
         void SelectAll();
+        void SelectNone();
+        void InvertSelection();
+        //! Every island that holds a selected point.
+        void SelectLinked();
+        //! Add, or drop, one step of neighbours along UV edges.
+        void GrowSelection();
+        void ShrinkSelection();
+        //! Follow polygon edges on from each selected edge, straight on through each point, until the line turns or ends.
+        //! @return false when no polygon edge has both ends selected.
+        bool SelectLoop();
+        //! Points on island boundaries: edges only one face uses in UV space. Limited to islands with a selection, if any.
+        void SelectBorder();
+
+        //! Faces whose every corner is selected; empty when no face is.
+        Api::FaceHandles SelectedFaces() const;
+        //! The selected faces, or every face in view when none is.
+        Api::FaceHandles TargetFaces() const;
+        const AZStd::unordered_set<int>& DetachedCorners() const { return m_detached; }
+        //! Tear the selected faces' corners away from their unselected neighbours; the caller rebuilds the model.
+        //! @return how many faces were split off (zero with no face selected).
+        size_t SplitSelectedFaces();
+        //! Join selected points that sit on the same mesh vertex at their average UV, as one finished edit.
+        //! @return how many points were moved.
+        size_t SewSelected();
 
         //! Apply a UV transform to the selection (every point when nothing is selected) as one finished edit.
         void TransformTargets(const AZStd::function<AZ::Vector2(const AZ::Vector2&, const AZ::Vector2& centre)>& transform);
@@ -115,6 +142,11 @@ namespace WhiteBox
         AZ::Vector2 Centre(const AZStd::vector<AZ::u32>& vertices) const;
         //! Every point joined to the given one through shared triangles.
         AZStd::vector<AZ::u32> Island(AZ::u32 vertex) const;
+        //! Points joined by an edge; polygon edges only when asked, which leaves out the diagonals inside polygons.
+        AZStd::vector<AZStd::vector<AZ::u32>> Neighbours(bool polygonEdgesOnly) const;
+        //! Replace the selection with exactly these points, then redraw and report.
+        void SelectPoints(const AZStd::vector<bool>& selected);
+        AZStd::vector<bool> SelectionMask() const;
         //! Move the targets to new UVs and report them.
         void Apply(const AZStd::vector<AZ::u32>& targets, const AZStd::vector<AZ::Vector2>& uvs, bool final);
         void UpdateTransformDrag(const QPointF& screen, bool snap, bool final);
@@ -122,6 +154,7 @@ namespace WhiteBox
 
         UvModel m_model;
         AZStd::unordered_set<int> m_selectedCorners; //!< Halfedge indices; a point is selected when any of its corners is.
+        AZStd::unordered_set<int> m_detached; //!< Halfedge indices split off by SplitSelectedFaces.
 
         QPointF m_originOnScreen = QPointF(40.0, 40.0); //!< Where UV (0, 0) is drawn.
         double m_pixelsPerUnit = 256.0;

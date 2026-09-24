@@ -48,7 +48,7 @@ namespace WhiteBox
         }
     } // namespace
 
-    UvModel BuildUvModel(const WhiteBoxMesh& whiteBox, const Api::PolygonHandles& polygons)
+    UvModel BuildUvModel(const WhiteBoxMesh& whiteBox, const Api::PolygonHandles& polygons, const AZStd::unordered_set<int>& detached)
     {
         UvModel model;
         const auto faceCount = static_cast<int>(Api::MeshFaceCount(whiteBox));
@@ -86,15 +86,22 @@ namespace WhiteBox
                 {
                     const AZ::Vector2 uv = Api::HalfedgeUV(whiteBox, halfedges[c]);
                     const int tip = Api::HalfedgeVertexHandleAtTip(whiteBox, halfedges[c]).Index();
-                    auto [slot, fresh] = vertexOf.emplace(CornerKey(tip, uv), static_cast<AZ::u32>(model.m_vertices.size()));
+                    size_t key = CornerKey(tip, uv);
+                    if (detached.find(halfedges[c].Index()) != detached.end())
+                    {
+                        AZStd::hash_combine(key, 0x5eedu); // a separate point from its undetached neighbours
+                    }
+                    auto [slot, fresh] = vertexOf.emplace(key, static_cast<AZ::u32>(model.m_vertices.size()));
                     if (fresh)
                     {
-                        model.m_vertices.push_back({ uv, {} });
+                        model.m_vertices.push_back({ uv, {}, tip });
                     }
                     model.m_vertices[slot->second].m_corners.push_back(halfedges[c]);
                     corners[c] = slot->second;
                 }
                 model.m_triangles.push_back(corners);
+                model.m_faces.push_back(face);
+                model.m_triangleCorners.push_back({ { halfedges[0], halfedges[1], halfedges[2] } });
                 // Halfedge c runs from the previous corner to corner c.
                 for (size_t c = 0; c < 3; ++c)
                 {
@@ -138,6 +145,7 @@ namespace WhiteBox
         if (selectionChanged)
         {
             m_selectedCorners.clear();
+            m_detached.clear();
             if (!m_model.m_vertices.empty())
             {
                 FrameAll();
@@ -206,6 +214,308 @@ namespace WhiteBox
         }
         update();
         Report();
+    }
+
+    AZStd::vector<AZStd::vector<AZ::u32>> WhiteBoxUvCanvas::Neighbours(const bool polygonEdgesOnly) const
+    {
+        AZStd::vector<AZStd::vector<AZ::u32>> neighbours(m_model.m_vertices.size());
+        for (const auto& edge : m_model.m_edges)
+        {
+            if (!polygonEdgesOnly || edge.m_border)
+            {
+                neighbours[edge.m_from].push_back(edge.m_to);
+                neighbours[edge.m_to].push_back(edge.m_from);
+            }
+        }
+        return neighbours;
+    }
+
+    AZStd::vector<bool> WhiteBoxUvCanvas::SelectionMask() const
+    {
+        AZStd::vector<bool> mask(m_model.m_vertices.size(), false);
+        for (AZ::u32 i = 0; i < mask.size(); ++i)
+        {
+            mask[i] = IsSelected(i);
+        }
+        return mask;
+    }
+
+    void WhiteBoxUvCanvas::SelectPoints(const AZStd::vector<bool>& selected)
+    {
+        m_selectedCorners.clear();
+        for (AZ::u32 i = 0; i < selected.size(); ++i)
+        {
+            if (selected[i])
+            {
+                SetSelected(i, true);
+            }
+        }
+        update();
+        Report();
+    }
+
+    void WhiteBoxUvCanvas::SelectNone()
+    {
+        SelectPoints(AZStd::vector<bool>(m_model.m_vertices.size(), false));
+    }
+
+    void WhiteBoxUvCanvas::InvertSelection()
+    {
+        AZStd::vector<bool> mask = SelectionMask();
+        for (AZ::u32 i = 0; i < mask.size(); ++i)
+        {
+            mask[i] = !mask[i];
+        }
+        SelectPoints(mask);
+    }
+
+    void WhiteBoxUvCanvas::SelectLinked()
+    {
+        const AZStd::vector<bool> seeds = SelectionMask();
+        AZStd::vector<bool> mask = seeds;
+        AZStd::vector<bool> covered(seeds.size(), false); // points already reached from an earlier seed's island
+        for (AZ::u32 i = 0; i < seeds.size(); ++i)
+        {
+            if (seeds[i] && !covered[i])
+            {
+                for (const AZ::u32 point : Island(i))
+                {
+                    mask[point] = true;
+                    covered[point] = true;
+                }
+            }
+        }
+        SelectPoints(mask);
+    }
+
+    void WhiteBoxUvCanvas::GrowSelection()
+    {
+        const AZStd::vector<bool> seeds = SelectionMask();
+        AZStd::vector<bool> mask = seeds;
+        const auto neighbours = Neighbours(false);
+        for (AZ::u32 i = 0; i < seeds.size(); ++i)
+        {
+            if (seeds[i])
+            {
+                for (const AZ::u32 next : neighbours[i])
+                {
+                    mask[next] = true;
+                }
+            }
+        }
+        SelectPoints(mask);
+    }
+
+    void WhiteBoxUvCanvas::ShrinkSelection()
+    {
+        const AZStd::vector<bool> seeds = SelectionMask();
+        AZStd::vector<bool> mask = seeds;
+        const auto neighbours = Neighbours(false);
+        for (AZ::u32 i = 0; i < seeds.size(); ++i)
+        {
+            for (const AZ::u32 next : neighbours[i])
+            {
+                if (seeds[i] && !seeds[next])
+                {
+                    mask[i] = false; // touches the outside
+                }
+            }
+        }
+        SelectPoints(mask);
+    }
+
+    bool WhiteBoxUvCanvas::SelectLoop()
+    {
+        const AZStd::vector<bool> seeds = SelectionMask();
+        AZStd::vector<bool> mask = seeds;
+        const auto neighbours = Neighbours(true);
+        // Straight on means within 45 degrees of the way the loop was already going.
+        const float straight = std::cos(AZ::DegToRad(45.0f));
+        const auto walk = [&](AZ::u32 from, AZ::u32 at)
+        {
+            AZStd::vector<bool> visited(m_model.m_vertices.size(), false);
+            visited[from] = true;
+            while (!visited[at])
+            {
+                visited[at] = true;
+                mask[at] = true;
+                const AZ::Vector2 heading = (m_model.m_vertices[at].m_uv - m_model.m_vertices[from].m_uv).GetNormalizedSafe();
+                int best = -1;
+                float bestDot = straight;
+                for (const AZ::u32 next : neighbours[at])
+                {
+                    if (next == from)
+                    {
+                        continue;
+                    }
+                    const float dot = (m_model.m_vertices[next].m_uv - m_model.m_vertices[at].m_uv).GetNormalizedSafe().Dot(heading);
+                    if (dot > bestDot)
+                    {
+                        bestDot = dot;
+                        best = static_cast<int>(next);
+                    }
+                }
+                if (best < 0)
+                {
+                    return;
+                }
+                from = at;
+                at = static_cast<AZ::u32>(best);
+            }
+        };
+        bool found = false;
+        for (const auto& edge : m_model.m_edges)
+        {
+            if (edge.m_border && seeds[edge.m_from] && seeds[edge.m_to])
+            {
+                found = true;
+                walk(edge.m_from, edge.m_to);
+                walk(edge.m_to, edge.m_from);
+            }
+        }
+        if (found)
+        {
+            SelectPoints(mask);
+        }
+        return found;
+    }
+
+    void WhiteBoxUvCanvas::SelectBorder()
+    {
+        // An edge one triangle uses is on an island's boundary; two means it is inside.
+        AZStd::unordered_map<AZ::u64, int> uses;
+        const auto key = [](const AZ::u32 a, const AZ::u32 b)
+        {
+            return (static_cast<AZ::u64>(AZStd::min(a, b)) << 32) | AZStd::max(a, b);
+        };
+        for (const auto& triangle : m_model.m_triangles)
+        {
+            for (size_t c = 0; c < 3; ++c)
+            {
+                ++uses[key(triangle[c], triangle[(c + 1) % 3])];
+            }
+        }
+        // Only the islands already holding a selection, or all of them when nothing is selected.
+        const AZStd::vector<bool> seeds = SelectionMask();
+        AZStd::vector<bool> inScope(m_model.m_vertices.size(), true);
+        if (AZStd::find(seeds.begin(), seeds.end(), true) != seeds.end())
+        {
+            inScope.assign(m_model.m_vertices.size(), false);
+            for (AZ::u32 i = 0; i < seeds.size(); ++i)
+            {
+                if (seeds[i] && !inScope[i])
+                {
+                    for (const AZ::u32 point : Island(i))
+                    {
+                        inScope[point] = true;
+                    }
+                }
+            }
+        }
+        AZStd::vector<bool> mask(m_model.m_vertices.size(), false);
+        for (const auto& entry : uses)
+        {
+            if (entry.second == 1)
+            {
+                const auto a = static_cast<AZ::u32>(entry.first >> 32);
+                const auto b = static_cast<AZ::u32>(entry.first & 0xffffffffu);
+                mask[a] = mask[a] || inScope[a];
+                mask[b] = mask[b] || inScope[b];
+            }
+        }
+        SelectPoints(mask);
+    }
+
+    Api::FaceHandles WhiteBoxUvCanvas::SelectedFaces() const
+    {
+        Api::FaceHandles faces;
+        for (size_t t = 0; t < m_model.m_triangles.size(); ++t)
+        {
+            const auto& triangle = m_model.m_triangles[t];
+            if (IsSelected(triangle[0]) && IsSelected(triangle[1]) && IsSelected(triangle[2]))
+            {
+                faces.push_back(m_model.m_faces[t]);
+            }
+        }
+        return faces;
+    }
+
+    Api::FaceHandles WhiteBoxUvCanvas::TargetFaces() const
+    {
+        Api::FaceHandles faces = SelectedFaces();
+        return faces.empty() ? m_model.m_faces : faces;
+    }
+
+    size_t WhiteBoxUvCanvas::SplitSelectedFaces()
+    {
+        AZStd::unordered_set<int> corners;
+        size_t faces = 0;
+        for (size_t t = 0; t < m_model.m_triangles.size(); ++t)
+        {
+            const auto& triangle = m_model.m_triangles[t];
+            if (IsSelected(triangle[0]) && IsSelected(triangle[1]) && IsSelected(triangle[2]))
+            {
+                ++faces;
+                for (const auto corner : m_model.m_triangleCorners[t])
+                {
+                    corners.insert(corner.Index());
+                }
+            }
+        }
+        if (faces == 0)
+        {
+            return 0;
+        }
+        // Their corners become their own points; the selection narrows to them, so a drag takes only the split-off faces.
+        for (const int corner : corners)
+        {
+            m_detached.insert(corner);
+        }
+        m_selectedCorners = AZStd::move(corners);
+        return faces;
+    }
+
+    size_t WhiteBoxUvCanvas::SewSelected()
+    {
+        AZStd::unordered_map<int, AZStd::vector<AZ::u32>> pointsAtVertex;
+        for (AZ::u32 i = 0; i < m_model.m_vertices.size(); ++i)
+        {
+            if (IsSelected(i))
+            {
+                pointsAtVertex[m_model.m_vertices[i].m_meshVertex].push_back(i);
+            }
+        }
+        AZStd::vector<AZ::u32> targets;
+        AZStd::vector<AZ::Vector2> uvs;
+        for (const auto& entry : pointsAtVertex)
+        {
+            const auto& points = entry.second;
+            if (points.size() < 2)
+            {
+                continue;
+            }
+            AZ::Vector2 average = AZ::Vector2::CreateZero();
+            for (const AZ::u32 point : points)
+            {
+                average += m_model.m_vertices[point].m_uv;
+            }
+            average /= static_cast<float>(points.size());
+            for (const AZ::u32 point : points)
+            {
+                targets.push_back(point);
+                uvs.push_back(average);
+                // A sewn corner is no longer torn off, or it would stay a separate point at the same spot.
+                for (const auto corner : m_model.m_vertices[point].m_corners)
+                {
+                    m_detached.erase(corner.Index());
+                }
+            }
+        }
+        if (!targets.empty())
+        {
+            Apply(targets, uvs, true);
+        }
+        return targets.size();
     }
 
     bool WhiteBoxUvCanvas::IsSelected(const AZ::u32 vertex) const
@@ -571,6 +881,22 @@ namespace WhiteBox
             break;
         case Qt::Key_A:
             SelectAll();
+            break;
+        case Qt::Key_L:
+            SelectLinked();
+            break;
+        case Qt::Key_Plus:
+        case Qt::Key_Equal:
+            GrowSelection();
+            break;
+        case Qt::Key_Minus:
+            ShrinkSelection();
+            break;
+        case Qt::Key_I:
+            if (event->modifiers().testFlag(Qt::ControlModifier))
+            {
+                InvertSelection();
+            }
             break;
         case Qt::Key_Escape:
             m_selectedCorners.clear();
