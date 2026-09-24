@@ -837,6 +837,42 @@ namespace WhiteBox
         void SetFaceMaterial(WhiteBoxMesh& whiteBox, FaceHandle face, const AZ::Data::AssetId& material);
         void SetPolygonMaterial(WhiteBoxMesh& whiteBox, const PolygonHandle& polygon, const AZ::Data::AssetId& material);
 
+        //! Smoothing group bitmask (bit n = group n + 1); faces sharing a bit smooth across shared vertices, zero is flat.
+        AZ::u32 FaceSmoothingGroups(const WhiteBoxMesh& whiteBox, FaceHandle face);
+        void SetFaceSmoothingGroups(WhiteBoxMesh& whiteBox, FaceHandle face, AZ::u32 groups);
+        //! Set, add (combine) or remove the bits on every face of the polygons.
+        enum class SmoothingEdit
+        {
+            Set,
+            Add,
+            Remove
+        };
+        void SetPolygonSmoothingGroups(WhiteBoxMesh& whiteBox, const PolygonHandles& polygons, AZ::u32 groups, SmoothingEdit edit = SmoothingEdit::Set);
+        //! Assign groups so neighbours within angleDegrees smooth together and sharper creases stay hard.
+        void AutoSmoothPolygons(WhiteBoxMesh& whiteBox, const PolygonHandles& polygons, float angleDegrees);
+        //! Per-corner normals in FaceHalfedgeHandles order: angle-weighted over faces sharing a smoothing group, else the face normal.
+        AZStd::array<AZ::Vector3, 3> FaceCornerNormals(const WhiteBoxMesh& whiteBox, FaceHandle face);
+
+        //! Which property Select Similar compares against the seed polygons.
+        enum class SimilarBy
+        {
+            Material,
+            Normal,
+            Area,
+            Sides,
+            SmoothingGroups
+        };
+        //! Every polygon matching any seed on the chosen property (normal within toleranceDegrees, area within 5 percent). Seeds stay first.
+        PolygonHandles FindSimilarPolygons(
+            const WhiteBoxMesh& whiteBox, const PolygonHandles& seeds, SimilarBy similarBy, float toleranceDegrees = 1.0f);
+        //! Edges matching any seed's length within 5 percent; vertices matching any seed's visible edge count.
+        EdgeHandles FindSimilarEdges(const WhiteBoxMesh& whiteBox, const EdgeHandles& seeds);
+        VertexHandles FindSimilarVertices(const WhiteBoxMesh& whiteBox, const VertexHandles& seeds);
+
+        //! Split each polygon into quads (one per corner, meeting at its centre); shared borders split once. Transactional.
+        bool SubdividePolygons(
+            WhiteBoxMesh& whiteBox, const PolygonHandles& polygons, AZStd::string& error, PolygonHandles* created = nullptr);
+
         //! How a face's texture coordinates are generated each time UVs are recalculated.
         enum class UvProjectionMode : AZ::u32
         {

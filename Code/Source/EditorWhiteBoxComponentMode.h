@@ -35,6 +35,7 @@ namespace WhiteBox
     class WhiteBoxWeldWindow;
     class WhiteBoxExtrudeInsetWindow;
     class WhiteBoxUvProjectionWindow;
+    class WhiteBoxSmoothingWindow;
     class WhiteBoxShapeOptionsWindow;
     class WhiteBoxPaintWindow;
 
@@ -90,6 +91,12 @@ namespace WhiteBox
             "Insert Vertex — click polygon edges to add vertices; Ctrl snaps to the midpoint, Shift to tenths";
         constexpr static const char* const WhiteboxUvProjectionTooltip =
             "UV Projection — set how textures map onto the selected polygons";
+        constexpr static const char* const WhiteboxSmoothingTooltip =
+            "Smoothing Groups — shade the selected polygons smooth by group, or Auto Smooth by angle";
+        constexpr static const char* const WhiteboxSubdivideTooltip =
+            "Subdivide — split each selected polygon into quads meeting at its centre";
+        constexpr static const char* const WhiteboxSelectSimilarTooltip =
+            "Select Similar — add polygons matching by material, facing, area, sides or smoothing; edges by length; vertices by edge count";
         constexpr static const char* const WhiteboxStickySelectTooltip =
             "Sticky Select — drag across the mesh and everything the cursor crosses joins the selection";
         constexpr static const char* const WhiteboxBoxSelectTooltip =
@@ -240,6 +247,9 @@ namespace WhiteBox
         AzToolsFramework::ViewportUi::ButtonId m_connectVerticesButtonId;
         AzToolsFramework::ViewportUi::ButtonId m_insertVertexButtonId;
         AzToolsFramework::ViewportUi::ButtonId m_uvProjectionButtonId;
+        AzToolsFramework::ViewportUi::ButtonId m_smoothingButtonId;
+        AzToolsFramework::ViewportUi::ButtonId m_subdivideButtonId;
+        AzToolsFramework::ViewportUi::ButtonId m_selectSimilarButtonId;
         //! Its own cluster: the modelling one's single active-button slot is taken by the latch and knife.
         AzToolsFramework::ViewportUi::ClusterId m_selectionClusterId =
             AzToolsFramework::ViewportUi::InvalidClusterId;
@@ -270,6 +280,7 @@ namespace WhiteBox
         QPointer<WhiteBoxWeldWindow> m_weldWindow;
         QPointer<WhiteBoxExtrudeInsetWindow> m_extrudeInsetWindow;
         QPointer<WhiteBoxUvProjectionWindow> m_uvProjectionWindow;
+        QPointer<WhiteBoxSmoothingWindow> m_smoothingWindow;
 
         //! The Draw Shape primitive switcher: one entry per DrawShapeType, shown along the bottom of
         //! the viewport while Draw Shape mode is active. A cluster, so the active primitive gets the same

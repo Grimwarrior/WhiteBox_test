@@ -524,6 +524,16 @@ namespace WhiteBox::ModelingOps
         return selection.m_editable && !selection.m_polygons.empty();
     }
 
+    bool CanSubdivide(const Selection& selection)
+    {
+        return selection.m_editable && !selection.m_polygons.empty();
+    }
+
+    bool CanSelectSimilar(const Selection& selection)
+    {
+        return CanSelectLinked(selection);
+    }
+
     // Grow and shrink share everything but the step, so both run through here.
     static Result StepSelection(const AZ::EntityComponentIdPair& pair, const bool grow)
     {
@@ -746,9 +756,9 @@ namespace WhiteBox::ModelingOps
         return Api::FaceUvProjection(*component->GetWhiteBoxMesh(), polygons.front().m_faceHandles.front());
     }
 
-    // Shared by Apply and Fit: the polygons keep their handles, so the selection survives the edit.
+    // Shared by the UV and smoothing edits: the polygons keep their handles, so the selection survives the edit.
     template<typename Edit>
-    static Result EditUvProjection(const AZ::EntityComponentIdPair& pair, const char* undoName, Edit&& edit)
+    static Result EditSelectedPolygons(const AZ::EntityComponentIdPair& pair, const char* undoName, const char* what, Edit&& edit)
     {
         EditorWhiteBoxComponent* component = EditableComponentFor(pair);
         if (component == nullptr)
@@ -763,19 +773,19 @@ namespace WhiteBox::ModelingOps
         {
             AzToolsFramework::ScopedUndoBatch undoBatch(undoName);
             edit(*component->GetWhiteBoxMesh(), polygons);
-            // A parametric layer would regenerate over the stored projection, so it is frozen like any face edit.
+            // A parametric layer would regenerate over the stored attributes, so it is frozen like any face edit.
             component->BakeParametricLayer(component->GetActiveLayerIndex());
             component->SerializeWhiteBox();
             EditorWhiteBoxComponentNotificationBus::Event(pair, &EditorWhiteBoxComponentNotifications::OnWhiteBoxMeshModified);
             undoBatch.MarkEntityDirty(pair.GetEntityId());
         }
-        return { true, AZStd::string::format("UVs updated on %zu polygon%s.", polygons.size(), polygons.size() == 1 ? "" : "s") };
+        return { true, AZStd::string::format("%s updated on %zu polygon%s.", what, polygons.size(), polygons.size() == 1 ? "" : "s") };
     }
 
     Result ApplyUvProjection(const AZ::EntityComponentIdPair& entityComponentIdPair, const Api::UvProjection& projection)
     {
-        return EditUvProjection(
-            entityComponentIdPair, "White Box UV Projection",
+        return EditSelectedPolygons(
+            entityComponentIdPair, "White Box UV Projection", "UVs",
             [&projection](WhiteBoxMesh& mesh, const Api::PolygonHandles& polygons)
             {
                 Api::SetPolygonUvProjection(mesh, polygons, projection);
@@ -784,11 +794,157 @@ namespace WhiteBox::ModelingOps
 
     Result FitUvProjection(const AZ::EntityComponentIdPair& entityComponentIdPair)
     {
-        return EditUvProjection(
-            entityComponentIdPair, "White Box Fit UVs",
+        return EditSelectedPolygons(
+            entityComponentIdPair, "White Box Fit UVs", "UVs",
             [](WhiteBoxMesh& mesh, const Api::PolygonHandles& polygons)
             {
                 Api::FitPolygonUvProjection(mesh, polygons);
             });
+    }
+
+    Result Subdivide(const AZ::EntityComponentIdPair& entityComponentIdPair)
+    {
+        EditorWhiteBoxComponent* component = EditableComponentFor(entityComponentIdPair);
+        if (component == nullptr)
+        {
+            return { false, "No editable White Box mesh." };
+        }
+        const Api::PolygonHandles polygons = LivePolygons(*component->GetWhiteBoxMesh(), SelectedPolygons(entityComponentIdPair));
+
+        AZStd::string error;
+        Api::PolygonHandles created;
+        {
+            AzToolsFramework::ScopedUndoBatch undoBatch("White Box Subdivide");
+            if (!Api::SubdividePolygons(*component->GetWhiteBoxMesh(), polygons, error, &created))
+            {
+                return { false, error };
+            }
+            CommitMeshEdit(*component, entityComponentIdPair);
+            // The new quads are selected so another click subdivides again.
+            EditorWhiteBoxTransformModeRequestBus::Event(
+                entityComponentIdPair, &EditorWhiteBoxTransformModeRequests::SetSelectedPolygons, created);
+            undoBatch.MarkEntityDirty(entityComponentIdPair.GetEntityId());
+        }
+        return { true, AZStd::string::format(
+            "%zu polygon%s subdivided into %zu.", polygons.size(), polygons.size() == 1 ? "" : "s", created.size()) };
+    }
+
+    Result SelectSimilar(const AZ::EntityComponentIdPair& entityComponentIdPair, const Api::SimilarBy similarBy)
+    {
+        EditorWhiteBoxComponent* component = EditableComponentFor(entityComponentIdPair);
+        if (component == nullptr)
+        {
+            return { false, "No editable White Box mesh." };
+        }
+        const WhiteBoxMesh& mesh = *component->GetWhiteBoxMesh();
+        const auto polygons = SelectedPolygons(entityComponentIdPair);
+        const auto edges = SelectedEdges(entityComponentIdPair);
+        const auto vertices = SelectedVertices(entityComponentIdPair);
+        size_t before = 0;
+        size_t after = 0;
+        const char* noun = "";
+        if (!polygons.empty())
+        {
+            const auto similar = Api::FindSimilarPolygons(mesh, polygons, similarBy);
+            before = polygons.size();
+            after = similar.size();
+            noun = "polygons";
+            EditorWhiteBoxTransformModeRequestBus::Event(
+                entityComponentIdPair, &EditorWhiteBoxTransformModeRequests::SetSelectedPolygons, similar);
+        }
+        else if (!edges.empty())
+        {
+            const auto similar = Api::FindSimilarEdges(mesh, edges);
+            before = edges.size();
+            after = similar.size();
+            noun = "edges";
+            EditorWhiteBoxTransformModeRequestBus::Event(
+                entityComponentIdPair, &EditorWhiteBoxTransformModeRequests::SetSelectedEdges, similar);
+        }
+        else if (!vertices.empty())
+        {
+            const auto similar = Api::FindSimilarVertices(mesh, vertices);
+            before = vertices.size();
+            after = similar.size();
+            noun = "vertices";
+            EditorWhiteBoxTransformModeRequestBus::Event(
+                entityComponentIdPair, &EditorWhiteBoxTransformModeRequests::SetSelectedVertices, similar);
+        }
+        else
+        {
+            return { false, "Select something to match first." };
+        }
+        if (after <= before)
+        {
+            return { false, "Nothing else matches the selection." };
+        }
+        return { true, AZStd::string::format("%zu %s selected.", after, noun) };
+    }
+
+    AZStd::optional<SmoothingState> SelectedSmoothingGroups(const AZ::EntityComponentIdPair& entityComponentIdPair)
+    {
+        EditorWhiteBoxComponent* component = EditableComponentFor(entityComponentIdPair);
+        if (component == nullptr)
+        {
+            return AZStd::nullopt;
+        }
+        const WhiteBoxMesh& mesh = *component->GetWhiteBoxMesh();
+        const auto polygons = LivePolygons(mesh, SelectedPolygons(entityComponentIdPair));
+        if (polygons.empty())
+        {
+            return AZStd::nullopt;
+        }
+        SmoothingState state{ ~0u, 0u };
+        for (const auto& polygon : polygons)
+        {
+            for (const auto face : polygon.m_faceHandles)
+            {
+                const AZ::u32 groups = Api::FaceSmoothingGroups(mesh, face);
+                state.m_all &= groups;
+                state.m_any |= groups;
+            }
+        }
+        return state;
+    }
+
+    Result EditSmoothingGroups(const AZ::EntityComponentIdPair& entityComponentIdPair, const AZ::u32 groups, const Api::SmoothingEdit edit)
+    {
+        return EditSelectedPolygons(
+            entityComponentIdPair, "White Box Smoothing Groups", "Smoothing",
+            [groups, edit](WhiteBoxMesh& mesh, const Api::PolygonHandles& polygons)
+            {
+                Api::SetPolygonSmoothingGroups(mesh, polygons, groups, edit);
+            });
+    }
+
+    Result AutoSmooth(const AZ::EntityComponentIdPair& entityComponentIdPair, const float angleDegrees)
+    {
+        EditorWhiteBoxComponent* component = EditableComponentFor(entityComponentIdPair);
+        if (component == nullptr)
+        {
+            return { false, "No editable White Box mesh." };
+        }
+        WhiteBoxMesh& mesh = *component->GetWhiteBoxMesh();
+        Api::PolygonHandles polygons = LivePolygons(mesh, SelectedPolygons(entityComponentIdPair));
+        const bool whole = polygons.empty();
+        if (whole)
+        {
+            polygons = Api::MeshPolygonHandles(mesh);
+        }
+        if (polygons.empty())
+        {
+            return { false, "The layer has no polygons to smooth." };
+        }
+        {
+            AzToolsFramework::ScopedUndoBatch undoBatch("White Box Auto Smooth");
+            Api::AutoSmoothPolygons(mesh, polygons, angleDegrees);
+            component->BakeParametricLayer(component->GetActiveLayerIndex());
+            component->SerializeWhiteBox();
+            EditorWhiteBoxComponentNotificationBus::Event(
+                entityComponentIdPair, &EditorWhiteBoxComponentNotifications::OnWhiteBoxMeshModified);
+            undoBatch.MarkEntityDirty(entityComponentIdPair.GetEntityId());
+        }
+        return { true, AZStd::string::format(
+            "Auto smoothed %s at %.0f degrees.", whole ? "the whole layer" : "the selection", angleDegrees) };
     }
 } // namespace WhiteBox::ModelingOps

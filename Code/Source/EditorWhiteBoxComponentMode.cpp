@@ -21,6 +21,7 @@
 #include "Tools/WhiteBoxWeldWindow.h"
 #include "Tools/WhiteBoxExtrudeInsetWindow.h"
 #include "Tools/WhiteBoxUvProjectionWindow.h"
+#include "Tools/WhiteBoxSmoothingWindow.h"
 #include <AzToolsFramework/API/ToolsApplicationAPI.h>
 #include "Util/WhiteBoxSnapUtil.h"
 #include "Viewport/WhiteBoxViewportConstants.h"
@@ -44,6 +45,8 @@
 #include <AzToolsFramework/Maths/TransformUtils.h>
 #include <AzToolsFramework/ViewportSelection/EditorSelectionUtil.h>
 #include <QApplication> // required for querying modifier keys
+#include <QCursor>
+#include <QMenu>
 #include <QTimer>
 #include <QToolButton>
 #include <QToolBar>
@@ -516,6 +519,11 @@ namespace WhiteBox
                 if (m_uvProjectionWindow && m_uvProjectionWindow->isVisible())
                 {
                     m_uvProjectionWindow->reject();
+                    return;
+                }
+                if (m_smoothingWindow && m_smoothingWindow->isVisible())
+                {
+                    m_smoothingWindow->reject();
                     return;
                 }
                 const bool consumed = AZStd::visit(
@@ -1481,10 +1489,12 @@ namespace WhiteBox
         m_selectLinkedButtonId = RegisterClusterButton(m_modelingClusterId, ":/WhiteBox/Icons/SelectLinked.svg");
         m_growSelectionButtonId = RegisterClusterButton(m_modelingClusterId, ":/WhiteBox/Icons/GrowSelection.svg");
         m_shrinkSelectionButtonId = RegisterClusterButton(m_modelingClusterId, ":/WhiteBox/Icons/ShrinkSelection.svg");
+        m_selectSimilarButtonId = RegisterClusterButton(m_modelingClusterId, ":/WhiteBox/Icons/SelectSimilar.svg");
         m_mergePolygonsButtonId = RegisterClusterButton(m_modelingClusterId, ":/WhiteBox/Icons/MergePolygons.svg");
         m_bridgeButtonId = RegisterClusterButton(m_modelingClusterId, ":/WhiteBox/Icons/Bridge.svg");
         m_weldButtonId = RegisterClusterButton(m_modelingClusterId, ":/WhiteBox/Icons/Weld.svg");
         m_connectVerticesButtonId = RegisterClusterButton(m_modelingClusterId, ":/WhiteBox/Icons/ConnectVertices.svg");
+        m_subdivideButtonId = RegisterClusterButton(m_modelingClusterId, ":/WhiteBox/Icons/Subdivide.svg");
         m_fillHoleButtonId = RegisterClusterButton(m_modelingClusterId, ":/WhiteBox/Icons/FillHole.svg");
         m_deletePolygonButtonId = RegisterClusterButton(m_modelingClusterId, ":/WhiteBox/Icons/DeletePolygon.svg");
         m_detachButtonId = RegisterClusterButton(m_modelingClusterId, ":/WhiteBox/Icons/DetachToLayer.svg");
@@ -1493,6 +1503,7 @@ namespace WhiteBox
         m_insertVertexButtonId = RegisterClusterButton(m_modelingClusterId, ":/WhiteBox/Icons/InsertVertex.svg");
         m_bevelButtonId = RegisterClusterButton(m_modelingClusterId, ":/WhiteBox/Icons/Bevel.svg");
         m_uvProjectionButtonId = RegisterClusterButton(m_modelingClusterId, ":/WhiteBox/Icons/UvProjection.svg");
+        m_smoothingButtonId = RegisterClusterButton(m_modelingClusterId, ":/WhiteBox/Icons/Smoothing.svg");
 
         const auto tooltip = [this](const ViewportUi::ButtonId buttonId, const char* text)
         {
@@ -1512,6 +1523,9 @@ namespace WhiteBox
         tooltip(m_connectVerticesButtonId, WhiteboxConnectVerticesTooltip);
         tooltip(m_insertVertexButtonId, WhiteboxInsertVertexTooltip);
         tooltip(m_uvProjectionButtonId, WhiteboxUvProjectionTooltip);
+        tooltip(m_smoothingButtonId, WhiteboxSmoothingTooltip);
+        tooltip(m_subdivideButtonId, WhiteboxSubdivideTooltip);
+        tooltip(m_selectSimilarButtonId, WhiteboxSelectSimilarTooltip);
         tooltip(m_mergePolygonsButtonId, WhiteboxMergePolygonsTooltip);
         tooltip(m_bridgeButtonId, WhiteboxModelingClusterBridgeTooltip);
         tooltip(m_weldButtonId, WhiteboxModelingClusterWeldTooltip);
@@ -1592,6 +1606,54 @@ namespace WhiteBox
                 else if (buttonId == m_shrinkSelectionButtonId)
                 {
                     result = ModelingOps::ShrinkSelection(pair);
+                }
+                else if (buttonId == m_selectSimilarButtonId)
+                {
+                    // Polygons can match on several properties, so they ask which; edges and vertices have one each.
+                    Api::SimilarBy similarBy = Api::SimilarBy::Material;
+                    if (!ModelingOps::CurrentSelection(pair).m_polygons.empty())
+                    {
+                        QMenu menu;
+                        const AZStd::pair<const char*, Api::SimilarBy> choices[] = {
+                            { "Material", Api::SimilarBy::Material },
+                            { "Facing (normal)", Api::SimilarBy::Normal },
+                            { "Area", Api::SimilarBy::Area },
+                            { "Side Count", Api::SimilarBy::Sides },
+                            { "Smoothing Groups", Api::SimilarBy::SmoothingGroups },
+                        };
+                        for (const auto& choice : choices)
+                        {
+                            menu.addAction(QString::fromUtf8(choice.first))->setData(static_cast<int>(choice.second));
+                        }
+                        QAction* picked = menu.exec(QCursor::pos());
+                        if (picked == nullptr)
+                        {
+                            return;
+                        }
+                        similarBy = static_cast<Api::SimilarBy>(picked->data().toInt());
+                    }
+                    result = ModelingOps::SelectSimilar(pair, similarBy);
+                }
+                else if (buttonId == m_subdivideButtonId)
+                {
+                    result = ModelingOps::Subdivide(pair);
+                }
+                else if (buttonId == m_smoothingButtonId)
+                {
+                    if (m_smoothingWindow && !m_smoothingWindow->HasCurrentLayer())
+                    {
+                        m_smoothingWindow->Dismiss();
+                        m_smoothingWindow.clear();
+                    }
+                    if (!m_smoothingWindow || !m_smoothingWindow->isVisible())
+                    {
+                        QWidget* mainWindow = nullptr;
+                        AzToolsFramework::EditorRequests::Bus::BroadcastResult(
+                            mainWindow, &AzToolsFramework::EditorRequests::GetMainWindow);
+                        m_smoothingWindow = new WhiteBoxSmoothingWindow(pair, mainWindow);
+                    }
+                    m_smoothingWindow->ShowNearCursor();
+                    result = {true, {}};
                 }
                 else if (buttonId == m_detachButtonId)
                 {
@@ -1795,6 +1857,11 @@ namespace WhiteBox
             m_uvProjectionWindow->Dismiss();
             m_uvProjectionWindow.clear();
         }
+        if (m_smoothingWindow)
+        {
+            m_smoothingWindow->Dismiss();
+            m_smoothingWindow.clear();
+        }
         if (m_modelingClusterId == ViewportUi::InvalidClusterId)
         {
             return;
@@ -1832,6 +1899,8 @@ namespace WhiteBox
         const bool growShrink = ModelingOps::CanGrowShrink(selection);
         const bool detach = ModelingOps::CanDetach(selection);
         const bool connectVertices = ModelingOps::CanConnectVertices(selection);
+        const bool subdivide = ModelingOps::CanSubdivide(selection);
+        const bool selectSimilar = ModelingOps::CanSelectSimilar(selection);
         const bool loopCut = ModelingOps::CanLoopCut(selection);
         const bool bevel = ModelingOps::CanBevel(selection) || selection.m_liveBevel;
         bool knife = false;
@@ -1848,7 +1917,8 @@ namespace WhiteBox
             (bridge ? 2u : 0u) | (weld ? 4u : 0u) | (loopCut ? 8u : 0u) | (bevel ? 16u : 0u) | (knife ? 128u : 0u) |
             (fillHole ? 256u : 0u) | (deletePolygon ? 512u : 0u) | (mergePolygons ? 1024u : 0u) |
             (selectCoplanar ? 2048u : 0u) | (selectLinked ? 4096u : 0u) | (growShrink ? 8192u : 0u) |
-            (detach ? 16384u : 0u) | (connectVertices ? 32768u : 0u) | (insertVertex ? 65536u : 0u);
+            (detach ? 16384u : 0u) | (connectVertices ? 32768u : 0u) | (insertVertex ? 65536u : 0u) |
+            (subdivide ? 131072u : 0u) | (selectSimilar ? 262144u : 0u);
         if (m_modelingClusterState == state)
         {
             return;
@@ -1903,6 +1973,9 @@ namespace WhiteBox
         enable(m_connectVerticesButtonId, connectVertices);
         enable(m_insertVertexButtonId, loopCut);
         enable(m_uvProjectionButtonId, true); // the window waits for a polygon selection, like Extrude's
+        enable(m_smoothingButtonId, true); // Auto Smooth works on the whole layer with nothing selected
+        enable(m_subdivideButtonId, subdivide);
+        enable(m_selectSimilarButtonId, selectSimilar);
         enable(m_loopCutButtonId, loopCut);
         enable(m_knifeButtonId, loopCut);
         enable(m_bevelButtonId, bevel);

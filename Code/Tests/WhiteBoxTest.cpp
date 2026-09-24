@@ -4919,6 +4919,123 @@ namespace UnitTest
         EXPECT_GT(projected, 0u);
     }
 
+    TEST_F(WhiteBoxTestFixture, SubdivideSplitsAQuadIntoFourAndKeepsTheShellClosed)
+    {
+        namespace Api = WhiteBox::Api;
+        auto mesh = Api::CreateWhiteBoxMesh();
+        const auto polygons = Api::InitializeAsUnitCube(*mesh);
+        const AZ::Vector3 normal = Api::PolygonNormal(*mesh, polygons[0]);
+        Api::SetPolygonSmoothingGroups(*mesh, { polygons[0] }, 4u);
+        const auto closed = [&mesh]()
+        {
+            for (const auto edge : Api::MeshEdgeHandles(*mesh))
+            {
+                if (Api::EdgeFaceHandles(*mesh, edge).size() != 2)
+                {
+                    return false;
+                }
+            }
+            return true;
+        };
+
+        AZStd::string error;
+        Api::PolygonHandles created;
+        ASSERT_TRUE(Api::SubdividePolygons(*mesh, { polygons[0] }, error, &created)) << error.c_str();
+        EXPECT_EQ(created.size(), 4u);
+        EXPECT_EQ(Api::MeshPolygonHandles(*mesh).size(), 9u);
+        // Four edge midpoints and one centre.
+        EXPECT_EQ(Api::MeshVertexHandles(*mesh).size(), 13u);
+        EXPECT_TRUE(closed());
+        for (const auto& polygon : created)
+        {
+            EXPECT_EQ(polygon.m_faceHandles.size(), 2u);
+            EXPECT_TRUE(Api::PolygonNormal(*mesh, polygon).IsClose(normal, 1e-4f));
+            for (const auto face : polygon.m_faceHandles)
+            {
+                EXPECT_EQ(Api::FaceSmoothingGroups(*mesh, face), 4u);
+            }
+        }
+
+        // The four new quads split again, sharing their inner borders' midpoints.
+        Api::PolygonHandles again;
+        ASSERT_TRUE(Api::SubdividePolygons(*mesh, created, error, &again)) << error.c_str();
+        EXPECT_EQ(again.size(), 16u);
+        EXPECT_EQ(Api::MeshPolygonHandles(*mesh).size(), 21u);
+        EXPECT_TRUE(closed());
+    }
+
+    TEST_F(WhiteBoxTestFixture, SmoothingGroupsShadeAcrossSharedVerticesAndPersist)
+    {
+        namespace Api = WhiteBox::Api;
+        auto mesh = Api::CreateWhiteBoxMesh();
+        const auto polygons = Api::InitializeAsUnitCube(*mesh);
+        const auto face = polygons[0].m_faceHandles.front();
+        for (const auto& corner : Api::FaceCornerNormals(*mesh, face))
+        {
+            EXPECT_TRUE(corner.IsClose(Api::FaceNormal(*mesh, face), 1e-5f));
+        }
+
+        // One group over the whole cube: every corner points out along its diagonal.
+        Api::SetPolygonSmoothingGroups(*mesh, polygons, 1u);
+        const float diagonal = 1.0f / sqrtf(3.0f);
+        for (const auto& corner : Api::FaceCornerNormals(*mesh, face))
+        {
+            EXPECT_NEAR(AZStd::abs(corner.GetX()), diagonal, 1e-4f);
+            EXPECT_NEAR(AZStd::abs(corner.GetY()), diagonal, 1e-4f);
+            EXPECT_NEAR(AZStd::abs(corner.GetZ()), diagonal, 1e-4f);
+        }
+
+        Api::SetPolygonSmoothingGroups(*mesh, { polygons[0] }, 2u, Api::SmoothingEdit::Add);
+        EXPECT_EQ(Api::FaceSmoothingGroups(*mesh, face), 3u);
+        Api::SetPolygonSmoothingGroups(*mesh, { polygons[0] }, 1u, Api::SmoothingEdit::Remove);
+        EXPECT_EQ(Api::FaceSmoothingGroups(*mesh, face), 2u);
+
+        Api::WhiteBoxMeshStream stream;
+        ASSERT_TRUE(Api::WriteMesh(*mesh, stream));
+        auto loaded = Api::CreateWhiteBoxMesh();
+        ASSERT_EQ(Api::ReadMesh(*loaded, stream), Api::ReadResult::Full);
+        EXPECT_EQ(Api::FaceSmoothingGroups(*loaded, face), 2u);
+        EXPECT_EQ(Api::FaceSmoothingGroups(*loaded, polygons[1].m_faceHandles.front()), 1u);
+        auto clone = Api::CloneMesh(*mesh);
+        EXPECT_EQ(Api::FaceSmoothingGroups(*clone, face), 2u);
+    }
+
+    TEST_F(WhiteBoxTestFixture, AutoSmoothKeepsCreasesHardAndSelectSimilarMatches)
+    {
+        namespace Api = WhiteBox::Api;
+        auto mesh = Api::CreateWhiteBoxMesh();
+        const auto polygons = Api::InitializeAsUnitCube(*mesh);
+
+        // Right angles are sharper than 30 degrees, so every face stays flat.
+        Api::AutoSmoothPolygons(*mesh, polygons, 30.0f);
+        for (const auto face : Api::MeshFaceHandles(*mesh))
+        {
+            EXPECT_EQ(Api::FaceSmoothingGroups(*mesh, face), 0u);
+        }
+        // Wider than a right angle, the whole cube is one region with one bit.
+        Api::AutoSmoothPolygons(*mesh, polygons, 100.0f);
+        const AZ::u32 group = Api::FaceSmoothingGroups(*mesh, polygons[0].m_faceHandles.front());
+        EXPECT_NE(group, 0u);
+        EXPECT_EQ(group & (group - 1), 0u);
+        for (const auto face : Api::MeshFaceHandles(*mesh))
+        {
+            EXPECT_EQ(Api::FaceSmoothingGroups(*mesh, face), group);
+        }
+
+        EXPECT_EQ(Api::FindSimilarPolygons(*mesh, { polygons[0] }, Api::SimilarBy::Normal).size(), 1u);
+        EXPECT_EQ(Api::FindSimilarPolygons(*mesh, { polygons[0] }, Api::SimilarBy::Area).size(), 6u);
+        EXPECT_EQ(Api::FindSimilarPolygons(*mesh, { polygons[0] }, Api::SimilarBy::Sides).size(), 6u);
+        EXPECT_EQ(Api::FindSimilarPolygons(*mesh, { polygons[0] }, Api::SimilarBy::SmoothingGroups).size(), 6u);
+        EXPECT_EQ(Api::FindSimilarPolygons(*mesh, { polygons[0] }, Api::SimilarBy::Material).size(), 6u);
+        const auto seed = Api::FindSimilarPolygons(*mesh, { polygons[0] }, Api::SimilarBy::Area);
+        EXPECT_EQ(seed.front(), polygons[0]);
+
+        // Every cube edge is as long as the first; every corner has three edges.
+        const auto edges = Api::MeshPolygonEdgeHandles(*mesh);
+        EXPECT_EQ(Api::FindSimilarEdges(*mesh, { edges.front() }).size(), 12u);
+        EXPECT_EQ(Api::FindSimilarVertices(*mesh, { Api::MeshVertexHandles(*mesh).front() }).size(), 8u);
+    }
+
     TEST_F(WhiteBoxTestFixture, RoomWithSlabsIsOneClosedShellThatCarvesCleanly)
     {
         namespace Api = WhiteBox::Api;

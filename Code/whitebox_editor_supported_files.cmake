@@ -44,6 +44,8 @@ set(FILES
     Source/Tools/WhiteBoxWeldWindow.h
     Source/Tools/WhiteBoxUvProjectionWindow.cpp
     Source/Tools/WhiteBoxUvProjectionWindow.h
+    Source/Tools/WhiteBoxSmoothingWindow.cpp
+    Source/Tools/WhiteBoxSmoothingWindow.h
     Source/Tools/WhiteBoxExtrudeInsetWindow.cpp
     Source/Tools/WhiteBoxExtrudeInsetWindow.h
     Source/Tools/WhiteBoxLayerGizmo.cpp

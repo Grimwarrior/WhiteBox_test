@@ -38,8 +38,9 @@ namespace WhiteBox
             constexpr float CoplanarNormalDotThreshold = 0.99996f;
             // The solvers keep one string per triangle, so a non-default UV projection rides after the material id.
             constexpr char UvProjectionSeparator = '';
+            constexpr char SmoothingSeparator = '\x1e'; // smoothing groups ride at the end of the key
 
-            std::string EncodeFaceKey(const AZ::Data::AssetId& material, const UvProjection& projection)
+            std::string EncodeFaceKey(const AZ::Data::AssetId& material, const UvProjection& projection, const AZ::u32 smoothing)
             {
                 std::string key = material.IsValid() ? material.ToString<AZStd::string>().c_str() : "";
                 if (!projection.IsDefault())
@@ -50,11 +51,19 @@ namespace WhiteBox
                                projection.m_offset.GetY(), projection.m_rotationDegrees)
                                .c_str();
                 }
+                if (smoothing != 0)
+                {
+                    key += AZStd::string::format("%c%u", SmoothingSeparator, static_cast<unsigned>(smoothing)).c_str();
+                }
                 return key;
             }
 
-            void DecodeFaceKey(const std::string& key, AZ::Data::AssetId& material, UvProjection& projection)
+            void DecodeFaceKey(const std::string& fullKey, AZ::Data::AssetId& material, UvProjection& projection, AZ::u32& smoothing)
             {
+                const size_t smoothingSplit = fullKey.find(SmoothingSeparator);
+                smoothing = smoothingSplit == std::string::npos
+                    ? 0u : static_cast<AZ::u32>(std::strtoul(fullKey.c_str() + smoothingSplit + 1, nullptr, 10));
+                const std::string key = fullKey.substr(0, smoothingSplit);
                 const size_t split = key.find(UvProjectionSeparator);
                 const std::string materialId = key.substr(0, split);
                 material = materialId.empty() ? AZ::Data::AssetId{} : AZ::Data::AssetId::CreateString(materialId.c_str());
@@ -98,7 +107,8 @@ namespace WhiteBox
                 {
                     triangleMesh.m_colors.push_back(FacePaintColor(whiteBox, faceHandles[faceIndex]));
                     triangleMesh.m_materials.emplace_back(EncodeFaceKey(
-                        FaceMaterial(whiteBox, faceHandles[faceIndex]), FaceUvProjection(whiteBox, faceHandles[faceIndex])));
+                        FaceMaterial(whiteBox, faceHandles[faceIndex]), FaceUvProjection(whiteBox, faceHandles[faceIndex]),
+                        FaceSmoothingGroups(whiteBox, faceHandles[faceIndex])));
                     ++faceIndex;
                     for (const AZ::Vector3& position : face)
                     {
@@ -843,12 +853,14 @@ namespace WhiteBox
                     const PolygonHandle polygon = AddPolygon(whiteBox, faceVertHandlesList);
                     AZ::Data::AssetId material;
                     UvProjection projection;
-                    DecodeFaceKey(triangleMesh.Material(groups[gi].front()), material, projection);
+                    AZ::u32 smoothing = 0;
+                    DecodeFaceKey(triangleMesh.Material(groups[gi].front()), material, projection, smoothing);
                     SetPolygonMaterial(whiteBox, polygon, material);
                     for (const FaceHandle face : polygon.m_faceHandles)
                     {
                         SetFacePaintColor(whiteBox, face, triangleMesh.Color(groups[gi].front()));
                         SetFaceUvProjection(whiteBox, face, projection);
+                        SetFaceSmoothingGroups(whiteBox, face, smoothing);
                     }
                 }
 

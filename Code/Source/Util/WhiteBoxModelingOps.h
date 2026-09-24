@@ -57,6 +57,8 @@ namespace WhiteBox
         bool CanDetach(const Selection& selection);
         bool CanConnectVertices(const Selection& selection);
         bool CanProjectUvs(const Selection& selection);
+        bool CanSubdivide(const Selection& selection);
+        bool CanSelectSimilar(const Selection& selection);
         //! A typed amount only applies to polygons. Edges extrude by dragging with the latch on.
         bool CanExtrudeInset(const Selection& selection);
 
@@ -93,6 +95,20 @@ namespace WhiteBox
         Result ApplyUvProjection(const AZ::EntityComponentIdPair& entityComponentIdPair, const Api::UvProjection& projection);
         //! Keep each selected polygon's mode and rotation, and scale and offset its texture to span it once.
         Result FitUvProjection(const AZ::EntityComponentIdPair& entityComponentIdPair);
+        //! Split each selected polygon into quads meeting at its centre, and select them.
+        Result Subdivide(const AZ::EntityComponentIdPair& entityComponentIdPair);
+        //! Selection only: add every element like the selected ones; polygons compare by similarBy, edges by length, vertices by edge count.
+        Result SelectSimilar(const AZ::EntityComponentIdPair& entityComponentIdPair, Api::SimilarBy similarBy);
+        //! Smoothing bits every selected polygon has (m_all) and that any has (m_any); none without a polygon.
+        struct SmoothingState
+        {
+            AZ::u32 m_all = 0;
+            AZ::u32 m_any = 0;
+        };
+        AZStd::optional<SmoothingState> SelectedSmoothingGroups(const AZ::EntityComponentIdPair& entityComponentIdPair);
+        Result EditSmoothingGroups(const AZ::EntityComponentIdPair& entityComponentIdPair, AZ::u32 groups, Api::SmoothingEdit edit);
+        //! Group the selected polygons (or the whole layer with none selected) so creases sharper than the angle stay hard.
+        Result AutoSmooth(const AZ::EntityComponentIdPair& entityComponentIdPair, float angleDegrees);
         //! Merge the selected vertices into one, at the selection centre or at the last one selected.
         Result Weld(const AZ::EntityComponentIdPair& entityComponentIdPair, bool atLastVertex);
         //! Enter the interactive loop cut. Switches to Transform sub-mode first if something else is active.

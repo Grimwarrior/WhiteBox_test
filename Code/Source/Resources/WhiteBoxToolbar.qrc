@@ -48,5 +48,8 @@
     <file alias="ResetColor.svg">../../../Assets/Editor/Icons/Toolbar/ResetColor.svg</file>
     <file alias="EdgeLoop.svg">../../../Assets/Editor/Icons/Toolbar/EdgeLoop.svg</file>
     <file alias="EdgeRing.svg">../../../Assets/Editor/Icons/Toolbar/EdgeRing.svg</file>
+    <file alias="Subdivide.svg">../../../Assets/Editor/Icons/Toolbar/Subdivide.svg</file>
+    <file alias="SelectSimilar.svg">../../../Assets/Editor/Icons/Toolbar/SelectSimilar.svg</file>
+    <file alias="Smoothing.svg">../../../Assets/Editor/Icons/Toolbar/Smoothing.svg</file>
   </qresource>
 </RCC>

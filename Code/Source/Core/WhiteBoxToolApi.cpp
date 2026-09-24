@@ -23,6 +23,7 @@
 #include <AzCore/std/containers/array.h>
 #include <AzCore/std/containers/map.h>
 #include <AzCore/std/containers/vector.h>
+#include <AzCore/std/containers/unordered_map.h>
 #include <AzCore/std/containers/unordered_set.h>
 #include <AzCore/std/functional.h>
 #include <AzCore/std/hash.h>
@@ -265,6 +266,8 @@ namespace WhiteBox
     };
     using FaceUvProjectionPropertyHandle = OpenMesh::FPropHandleT<FaceUvProjectionInternal>;
     static const char* const FaceUvProjectionProp = "WhiteBoxFaceUvProjection";
+    // per-face smoothing group bitmask; new faces value-initialise to zero (flat)
+    static const char* const FaceSmoothingProp = "WhiteBoxFaceSmoothingGroups";
 } // namespace WhiteBox
 
 namespace OpenMesh::IO
@@ -657,6 +660,13 @@ namespace WhiteBox
                 whiteBox.mesh.add_property(uvProjectionProperty, FaceUvProjectionProp);
             }
             whiteBox.mesh.property(uvProjectionProperty).set_persistent(true);
+
+            OpenMesh::FPropHandleT<unsigned int> smoothingProperty;
+            if (!whiteBox.mesh.get_property_handle(smoothingProperty, FaceSmoothingProp))
+            {
+                whiteBox.mesh.add_property(smoothingProperty, FaceSmoothingProp);
+            }
+            whiteBox.mesh.property(smoothingProperty).set_persistent(true);
 
             // request default properties required for all white box meshes
             whiteBox.mesh.request_face_normals();
@@ -3748,6 +3758,86 @@ namespace WhiteBox
             }
         }
 
+        AZ::u32 FaceSmoothingGroups(const WhiteBoxMesh& whiteBox, const FaceHandle face)
+        {
+            OpenMesh::FPropHandleT<unsigned int> property;
+            return whiteBox.mesh.get_property_handle(property, FaceSmoothingProp) ? whiteBox.mesh.property(property, om_fh(face)) : 0u;
+        }
+
+        void SetFaceSmoothingGroups(WhiteBoxMesh& whiteBox, const FaceHandle face, const AZ::u32 groups)
+        {
+            OpenMesh::FPropHandleT<unsigned int> property;
+            if (!whiteBox.mesh.get_property_handle(property, FaceSmoothingProp))
+            {
+                whiteBox.mesh.add_property(property, FaceSmoothingProp);
+            }
+            whiteBox.mesh.property(property).set_persistent(true);
+            whiteBox.mesh.property(property, om_fh(face)) = groups;
+        }
+
+        void SetPolygonSmoothingGroups(
+            WhiteBoxMesh& whiteBox, const PolygonHandles& polygons, const AZ::u32 groups, const SmoothingEdit edit)
+        {
+            for (const auto& polygon : polygons)
+            {
+                for (const FaceHandle face : polygon.m_faceHandles)
+                {
+                    const AZ::u32 current = FaceSmoothingGroups(whiteBox, face);
+                    SetFaceSmoothingGroups(
+                        whiteBox, face,
+                        edit == SmoothingEdit::Set ? groups : edit == SmoothingEdit::Add ? (current | groups) : (current & ~groups));
+                }
+            }
+        }
+
+        AZStd::array<AZ::Vector3, 3> FaceCornerNormals(const WhiteBoxMesh& whiteBox, const FaceHandle face)
+        {
+            const AZ::Vector3 flat = FaceNormal(whiteBox, face);
+            AZStd::array<AZ::Vector3, 3> normals{ { flat, flat, flat } };
+            OpenMesh::FPropHandleT<unsigned int> property;
+            if (!whiteBox.mesh.get_property_handle(property, FaceSmoothingProp))
+            {
+                return normals;
+            }
+            const auto omFace = om_fh(face);
+            const AZ::u32 groups = whiteBox.mesh.property(property, omFace);
+            if (groups == 0)
+            {
+                return normals;
+            }
+            const auto halfedges = FaceHalfedgeHandles(whiteBox, face);
+            for (size_t corner = 0; corner < halfedges.size() && corner < 3; ++corner)
+            {
+                const auto vertex = whiteBox.mesh.to_vertex_handle(om_heh(halfedges[corner]));
+                const AZ::Vector3 centre = VertexPosition(whiteBox, wb_vh(vertex));
+                AZ::Vector3 sum = AZ::Vector3::CreateZero();
+                // Every face around the corner that shares a group, weighted by its angle there so triangulation does not matter.
+                for (auto incoming = whiteBox.mesh.cvih_iter(vertex); incoming.is_valid(); ++incoming)
+                {
+                    const auto neighbour = whiteBox.mesh.face_handle(*incoming);
+                    if (!neighbour.is_valid() || (neighbour != omFace && (whiteBox.mesh.property(property, neighbour) & groups) == 0))
+                    {
+                        continue;
+                    }
+                    const AZ::Vector3 previous =
+                        VertexPosition(whiteBox, wb_vh(whiteBox.mesh.from_vertex_handle(*incoming))) - centre;
+                    const AZ::Vector3 next = VertexPosition(
+                        whiteBox, wb_vh(whiteBox.mesh.to_vertex_handle(whiteBox.mesh.next_halfedge_handle(*incoming)))) - centre;
+                    if (previous.GetLengthSq() <= 1e-20f || next.GetLengthSq() <= 1e-20f)
+                    {
+                        continue;
+                    }
+                    const float angle = acosf(AZ::GetClamp(previous.GetNormalized().Dot(next.GetNormalized()), -1.0f, 1.0f));
+                    sum += FaceNormal(whiteBox, wb_fh(neighbour)) * angle;
+                }
+                if (sum.GetLengthSq() > 1e-12f)
+                {
+                    normals[corner] = sum.GetNormalized();
+                }
+            }
+            return normals;
+        }
+
         bool UvProjection::IsDefault() const
         {
             return *this == UvProjection{};
@@ -3836,15 +3926,18 @@ namespace WhiteBox
             OpenMesh::FPropHandleT<std::string> m_material;
             OpenMesh::FPropHandleT<unsigned int> m_paint;
             FaceUvProjectionPropertyHandle m_uvProjection;
+            OpenMesh::FPropHandleT<unsigned int> m_smoothing;
             bool m_hasMaterial = false;
             bool m_hasPaint = false;
             bool m_hasUvProjection = false;
+            bool m_hasSmoothing = false;
 
             explicit FaceAttributeProperties(const WhiteBoxMesh& whiteBox)
             {
                 m_hasMaterial = whiteBox.mesh.get_property_handle(m_material, "WhiteBoxFaceMaterial");
                 m_hasPaint = whiteBox.mesh.get_property_handle(m_paint, "WhiteBoxFacePaintColor");
                 m_hasUvProjection = whiteBox.mesh.get_property_handle(m_uvProjection, FaceUvProjectionProp);
+                m_hasSmoothing = whiteBox.mesh.get_property_handle(m_smoothing, FaceSmoothingProp);
             }
 
             // Target side: every property exists and persists, as the Set functions would leave it.
@@ -3866,7 +3959,12 @@ namespace WhiteBox
                     whiteBox.mesh.add_property(m_uvProjection, FaceUvProjectionProp);
                     whiteBox.mesh.property(m_uvProjection).set_persistent(true);
                 }
-                m_hasMaterial = m_hasPaint = m_hasUvProjection = true;
+                if (!m_hasSmoothing)
+                {
+                    whiteBox.mesh.add_property(m_smoothing, FaceSmoothingProp);
+                    whiteBox.mesh.property(m_smoothing).set_persistent(true);
+                }
+                m_hasMaterial = m_hasPaint = m_hasUvProjection = m_hasSmoothing = true;
             }
         };
 
@@ -3881,6 +3979,7 @@ namespace WhiteBox
             target.mesh.property(to.m_paint, targetHandle) = from.m_hasPaint ? source.mesh.property(from.m_paint, sourceHandle) : 0u;
             target.mesh.property(to.m_uvProjection, targetHandle) =
                 from.m_hasUvProjection ? source.mesh.property(from.m_uvProjection, sourceHandle) : FaceUvProjectionInternal{};
+            target.mesh.property(to.m_smoothing, targetHandle) = from.m_hasSmoothing ? source.mesh.property(from.m_smoothing, sourceHandle) : 0u;
         }
 
         void CopyFaceAttributes(
@@ -5530,6 +5629,254 @@ namespace WhiteBox
             return MarkedHandles(seeds, kept);
         }
 
+        void AutoSmoothPolygons(WhiteBoxMesh& whiteBox, const PolygonHandles& selection, const float angleDegrees)
+        {
+            AZ_PROFILE_FUNCTION(AzToolsFramework);
+
+            const auto polygons = MeshPolygonHandles(whiteBox);
+            const auto owner = FacePolygonIndices(whiteBox, polygons);
+            AZStd::vector<bool> chosen(polygons.size(), false);
+            PolygonHandles live;
+            for (const auto& seed : selection)
+            {
+                if (const int index = PolygonIndex(polygons, owner, seed); index >= 0 && !chosen[index])
+                {
+                    chosen[index] = true;
+                    live.push_back(polygons[index]);
+                }
+            }
+            // Old groups are cleared first so they neither block a bit nor leak into the new regions.
+            SetPolygonSmoothingGroups(whiteBox, live, 0);
+
+            AZStd::vector<AZ::Vector3> normals(polygons.size(), AZ::Vector3::CreateZero());
+            for (size_t i = 0; i < polygons.size(); ++i)
+            {
+                if (chosen[i])
+                {
+                    normals[i] = PolygonNormal(whiteBox, polygons[i]);
+                }
+            }
+            const float limit = cosf(AZ::DegToRad(AZ::GetClamp(angleDegrees, 0.0f, 180.0f)));
+
+            // Flood across shared edges no sharper than the angle; neighbour to neighbour, so a curve stays one region.
+            AZStd::vector<int> region(polygons.size(), -1);
+            AZStd::vector<AZStd::vector<int>> regions;
+            for (size_t start = 0; start < polygons.size(); ++start)
+            {
+                if (!chosen[start] || region[start] >= 0)
+                {
+                    continue;
+                }
+                const int id = static_cast<int>(regions.size());
+                regions.push_back({ static_cast<int>(start) });
+                region[start] = id;
+                for (size_t k = 0; k < regions[id].size(); ++k)
+                {
+                    const int current = regions[id][k];
+                    for (const auto face : polygons[current].m_faceHandles)
+                    {
+                        for (const auto halfedge : FaceHalfedgeHandles(whiteBox, face))
+                        {
+                            const auto opposite = whiteBox.mesh.opposite_face_handle(om_heh(halfedge));
+                            if (!opposite.is_valid())
+                            {
+                                continue;
+                            }
+                            const int next = owner[opposite.idx()];
+                            if (next < 0 || next == current || !chosen[next] || region[next] >= 0 ||
+                                normals[current].Dot(normals[next]) < limit)
+                            {
+                                continue;
+                            }
+                            region[next] = id;
+                            regions[id].push_back(next);
+                        }
+                    }
+                }
+            }
+
+            // Each multi-polygon region takes the lowest bit no polygon touching it uses; lone polygons stay flat.
+            for (size_t id = 0; id < regions.size(); ++id)
+            {
+                if (regions[id].size() < 2)
+                {
+                    continue;
+                }
+                AZ::u32 used = 0;
+                PolygonHandles members;
+                for (const int member : regions[id])
+                {
+                    members.push_back(polygons[member]);
+                    ForEachCornerNeighbour(
+                        whiteBox, polygons[member], owner,
+                        [&](const int neighbour)
+                        {
+                            if (region[neighbour] != static_cast<int>(id))
+                            {
+                                used |= FaceSmoothingGroups(whiteBox, polygons[neighbour].m_faceHandles.front());
+                            }
+                        });
+                }
+                AZ::u32 bit = 0;
+                for (AZ::u32 candidate = 0; candidate < 32; ++candidate)
+                {
+                    if ((used & (1u << candidate)) == 0)
+                    {
+                        bit = 1u << candidate;
+                        break;
+                    }
+                }
+                SetPolygonSmoothingGroups(whiteBox, members, bit);
+            }
+        }
+
+        PolygonHandles FindSimilarPolygons(
+            const WhiteBoxMesh& whiteBox, const PolygonHandles& seeds, const SimilarBy similarBy, const float toleranceDegrees)
+        {
+            AZ_PROFILE_FUNCTION(AzToolsFramework);
+
+            const auto polygons = MeshPolygonHandles(whiteBox);
+            const auto owner = FacePolygonIndices(whiteBox, polygons);
+            // Only the compared property is filled in.
+            struct Key
+            {
+                AZ::Data::AssetId m_material;
+                AZ::Vector3 m_normal = AZ::Vector3::CreateZero();
+                float m_area = 0.0f;
+                size_t m_sides = 0;
+                AZ::u32 m_smoothing = 0;
+            };
+            const auto keyOf = [&whiteBox, similarBy](const PolygonHandle& polygon)
+            {
+                Key key;
+                const FaceHandle front = polygon.m_faceHandles.front();
+                switch (similarBy)
+                {
+                case SimilarBy::Material:
+                    key.m_material = FaceMaterial(whiteBox, front);
+                    break;
+                case SimilarBy::Normal:
+                    key.m_normal = PolygonNormal(whiteBox, polygon);
+                    break;
+                case SimilarBy::Area:
+                    for (const auto face : polygon.m_faceHandles)
+                    {
+                        const auto corners = FaceVertexPositions(whiteBox, face);
+                        key.m_area += 0.5f * (corners[1] - corners[0]).Cross(corners[2] - corners[0]).GetLength();
+                    }
+                    break;
+                case SimilarBy::Sides:
+                    for (const auto vertex : PolygonBorderVertexHandlesFlattened(whiteBox, polygon))
+                    {
+                        key.m_sides += VertexIsHidden(whiteBox, vertex) ? 0 : 1;
+                    }
+                    break;
+                case SimilarBy::SmoothingGroups:
+                    key.m_smoothing = FaceSmoothingGroups(whiteBox, front);
+                    break;
+                }
+                return key;
+            };
+            const float limit = cosf(AZ::DegToRad(AZ::GetMax(toleranceDegrees, 0.0f)));
+            const auto matches = [similarBy, limit](const Key& a, const Key& b)
+            {
+                switch (similarBy)
+                {
+                case SimilarBy::Material:
+                    return a.m_material == b.m_material;
+                case SimilarBy::Normal:
+                    return a.m_normal.Dot(b.m_normal) >= limit;
+                case SimilarBy::Area:
+                    return AZStd::abs(a.m_area - b.m_area) <= 0.05f * AZ::GetMax(a.m_area, b.m_area) + 1e-8f;
+                case SimilarBy::Sides:
+                    return a.m_sides == b.m_sides;
+                case SimilarBy::SmoothingGroups:
+                    return a.m_smoothing == b.m_smoothing || (a.m_smoothing & b.m_smoothing) != 0;
+                }
+                return false;
+            };
+
+            AZStd::vector<Key> seedKeys;
+            for (const auto& seed : seeds)
+            {
+                if (const int index = PolygonIndex(polygons, owner, seed); index >= 0)
+                {
+                    seedKeys.push_back(keyOf(polygons[index]));
+                }
+            }
+            AZStd::vector<bool> marked(polygons.size(), false);
+            if (!seedKeys.empty())
+            {
+                for (size_t i = 0; i < polygons.size(); ++i)
+                {
+                    const Key key = keyOf(polygons[i]);
+                    marked[i] = AZStd::any_of(seedKeys.begin(), seedKeys.end(), [&](const Key& seed) { return matches(seed, key); });
+                }
+            }
+            return MarkedPolygons(polygons, owner, seeds, marked);
+        }
+
+        EdgeHandles FindSimilarEdges(const WhiteBoxMesh& whiteBox, const EdgeHandles& seeds)
+        {
+            AZ_PROFILE_FUNCTION(AzToolsFramework);
+
+            const auto mask = PolygonEdgeMask(whiteBox);
+            const auto lengthOf = [&whiteBox](const EdgeHandle edge)
+            {
+                const auto ends = EdgeVertexPositions(whiteBox, edge);
+                return (ends[1] - ends[0]).GetLength();
+            };
+            AZStd::vector<float> lengths;
+            for (const auto edge : seeds)
+            {
+                if (EdgeInMask(mask, edge))
+                {
+                    lengths.push_back(lengthOf(edge));
+                }
+            }
+            AZStd::vector<bool> marked(mask.size(), false);
+            for (size_t i = 0; i < mask.size() && !lengths.empty(); ++i)
+            {
+                if (!mask[i])
+                {
+                    continue;
+                }
+                const float length = lengthOf(EdgeHandle{ static_cast<int>(i) });
+                marked[i] = AZStd::any_of(lengths.begin(), lengths.end(), [length](const float seed)
+                {
+                    return AZStd::abs(seed - length) <= 0.05f * AZ::GetMax(seed, length) + 1e-6f;
+                });
+            }
+            return MarkedHandles(seeds, marked);
+        }
+
+        VertexHandles FindSimilarVertices(const WhiteBoxMesh& whiteBox, const VertexHandles& seeds)
+        {
+            AZ_PROFILE_FUNCTION(AzToolsFramework);
+
+            const auto mask = PolygonEdgeMask(whiteBox);
+            AZStd::vector<size_t> valences;
+            for (const auto vertex : seeds)
+            {
+                if (SelectableVertex(whiteBox, vertex))
+                {
+                    valences.push_back(VisibleVertexNeighbours(whiteBox, mask, vertex).size());
+                }
+            }
+            AZStd::vector<bool> marked(whiteBox.mesh.n_vertices(), false);
+            for (size_t i = 0; i < marked.size() && !valences.empty(); ++i)
+            {
+                const VertexHandle vertex{ static_cast<int>(i) };
+                if (!SelectableVertex(whiteBox, vertex))
+                {
+                    continue;
+                }
+                const size_t valence = VisibleVertexNeighbours(whiteBox, mask, vertex).size();
+                marked[i] = valence > 0 && AZStd::find(valences.begin(), valences.end(), valence) != valences.end();
+            }
+            return MarkedHandles(seeds, marked);
+        }
+
         ElementSelection ConvertSelection(
             const WhiteBoxMesh& whiteBox, const ElementSelection& source, const SelectionElement target, const bool touching)
         {
@@ -5940,6 +6287,7 @@ namespace WhiteBox
                 AZ::Data::AssetId m_material;
                 AZ::u32 m_paint = 0;
                 UvProjection m_uvProjection;
+                AZ::u32 m_smoothing = 0;
             };
             AZStd::vector<SourceFace> sources;
             for (const auto face : polygon.m_faceHandles)
@@ -5948,6 +6296,7 @@ namespace WhiteBox
                 source.m_material = FaceMaterial(whiteBox, face);
                 source.m_paint = FacePaintColor(whiteBox, face);
                 source.m_uvProjection = FaceUvProjection(whiteBox, face);
+                source.m_smoothing = FaceSmoothingGroups(whiteBox, face);
                 const auto corners = FaceVertexPositions(whiteBox, face);
                 for (size_t i = 0; i < 3; ++i)
                 {
@@ -6015,6 +6364,7 @@ namespace WhiteBox
                     SetFaceMaterial(whiteBox, wb_fh(face), origins[side][i]->m_material);
                     SetFacePaintColor(whiteBox, wb_fh(face), origins[side][i]->m_paint);
                     SetFaceUvProjection(whiteBox, wb_fh(face), origins[side][i]->m_uvProjection);
+                    SetFaceSmoothingGroups(whiteBox, wb_fh(face), origins[side][i]->m_smoothing);
                 }
                 if (refused.size() == pending.size())
                 {
@@ -6233,6 +6583,206 @@ namespace WhiteBox
             CalculatePlanarUVs(*candidate, touched);
             whiteBox.mesh = candidate->mesh;
             return vertex;
+        }
+
+        bool SubdividePolygons(WhiteBoxMesh& whiteBox, const PolygonHandles& polygons, AZStd::string& error, PolygonHandles* created)
+        {
+            AZ_PROFILE_FUNCTION(AzToolsFramework);
+
+            error.clear();
+            const auto fail = [&error](const char* message)
+            {
+                error = message;
+                return false;
+            };
+            const auto all = MeshPolygonHandles(whiteBox);
+            // Border loops in winding order, one per distinct polygon.
+            PolygonHandles chosen;
+            AZStd::vector<VertexHandles> loops;
+            for (const auto& polygon : polygons)
+            {
+                if (polygon.m_faceHandles.empty() || AZStd::find(all.begin(), all.end(), polygon) == all.end())
+                {
+                    return fail("The selection is stale. Select the polygons again.");
+                }
+                if (AZStd::find(chosen.begin(), chosen.end(), polygon) != chosen.end())
+                {
+                    continue;
+                }
+                const auto borders = PolygonBorderVertexHandles(whiteBox, polygon);
+                if (borders.size() != 1 || borders.front().size() < 3)
+                {
+                    return fail("Subdivide cannot split a polygon with a hole in it.");
+                }
+                chosen.push_back(polygon);
+                loops.push_back(borders.front());
+            }
+            if (chosen.empty())
+            {
+                return fail("Select one or more polygons to subdivide.");
+            }
+
+            // Each corner becomes the quad (previous midpoint, corner, next midpoint, centre); both halves must face out.
+            AZStd::vector<AZ::Vector3> centres;
+            for (size_t p = 0; p < loops.size(); ++p)
+            {
+                const auto& loop = loops[p];
+                const size_t count = loop.size();
+                AZ::Vector3 centre = AZ::Vector3::CreateZero();
+                for (const auto vertex : loop)
+                {
+                    centre += VertexPosition(whiteBox, vertex);
+                }
+                centre /= static_cast<float>(count);
+                const AZ::Vector3 normal = PolygonNormal(whiteBox, chosen[p]);
+                for (size_t i = 0; i < count; ++i)
+                {
+                    const AZ::Vector3 corner = VertexPosition(whiteBox, loop[i]);
+                    const AZ::Vector3 previous = (VertexPosition(whiteBox, loop[(i + count - 1) % count]) + corner) * 0.5f;
+                    const AZ::Vector3 next = (corner + VertexPosition(whiteBox, loop[(i + 1) % count])) * 0.5f;
+                    if ((corner - previous).Cross(centre - previous).Dot(normal) <= 1e-10f ||
+                        (next - corner).Cross(centre - corner).Dot(normal) <= 1e-10f)
+                    {
+                        return fail("Subdivide needs convex polygons. Split concave ones with Connect first.");
+                    }
+                }
+                centres.push_back(centre);
+            }
+
+            auto candidate = CloneMesh(whiteBox);
+            // Every border edge splits once at its midpoint; an unselected neighbour gains that vertex on its border.
+            AZStd::unordered_map<AZ::u64, VertexHandle> midpoints;
+            const auto edgeKey = [](const VertexHandle a, const VertexHandle b)
+            {
+                const auto low = static_cast<AZ::u64>(AZStd::min(a.Index(), b.Index()));
+                const auto high = static_cast<AZ::u64>(AZStd::max(a.Index(), b.Index()));
+                return (low << 32) | high;
+            };
+            for (const auto& loop : loops)
+            {
+                for (size_t i = 0; i < loop.size(); ++i)
+                {
+                    const VertexHandle a = loop[i];
+                    const VertexHandle b = loop[(i + 1) % loop.size()];
+                    auto& midpoint = midpoints[edgeKey(a, b)];
+                    if (midpoint.IsValid())
+                    {
+                        continue;
+                    }
+                    const auto halfedge = candidate->mesh.find_halfedge(om_vh(a), om_vh(b));
+                    if (!halfedge.is_valid())
+                    {
+                        return fail("A polygon border is not a mesh edge. The mesh was left unchanged.");
+                    }
+                    midpoint = SplitEdge(
+                        *candidate, wb_eh(candidate->mesh.edge_handle(halfedge)),
+                        (VertexPosition(*candidate, a) + VertexPosition(*candidate, b)) * 0.5f);
+                }
+            }
+
+            struct Quad
+            {
+                AZStd::array<VertexHandle, 4> m_vertices; //!< previous midpoint, corner, next midpoint, centre
+                FaceHandle m_source; //!< Original face nearest the quad, for its attributes.
+            };
+            AZStd::vector<Quad> quads;
+            FaceHandles removed;
+            VertexHandles shown;
+            for (size_t p = 0; p < loops.size(); ++p)
+            {
+                const auto& loop = loops[p];
+                const size_t count = loop.size();
+                // split_copy keeps the original face handle, so it still finds the (now wider) polygon.
+                const auto updated = FacePolygonHandle(*candidate, chosen[p].m_faceHandles.front());
+                removed.insert(removed.end(), updated.m_faceHandles.begin(), updated.m_faceHandles.end());
+                const VertexHandle centre = AddVertex(*candidate, centres[p]);
+                shown.push_back(centre);
+                for (size_t i = 0; i < count; ++i)
+                {
+                    Quad quad;
+                    quad.m_vertices = { { midpoints[edgeKey(loop[(i + count - 1) % count], loop[i])], loop[i],
+                                          midpoints[edgeKey(loop[i], loop[(i + 1) % count])], centre } };
+                    shown.push_back(quad.m_vertices[0]);
+                    AZ::Vector3 middle = AZ::Vector3::CreateZero();
+                    for (const auto vertex : quad.m_vertices)
+                    {
+                        middle += VertexPosition(*candidate, vertex) * 0.25f;
+                    }
+                    float nearest = AZ::Constants::FloatMax;
+                    for (const auto face : chosen[p].m_faceHandles)
+                    {
+                        const float distance = FaceMidpoint(whiteBox, face).GetDistanceSq(middle);
+                        if (distance < nearest)
+                        {
+                            nearest = distance;
+                            quad.m_source = face;
+                        }
+                    }
+                    quads.push_back(quad);
+                }
+            }
+
+            RemoveFaces(*candidate, removed);
+            // OpenMesh can refuse a triangle until its neighbours are in, so refused ones are retried until none go in.
+            AZStd::vector<AZStd::pair<size_t, size_t>> pending;
+            for (size_t q = 0; q < quads.size(); ++q)
+            {
+                pending.emplace_back(q, 0);
+                pending.emplace_back(q, 1);
+            }
+            AZStd::vector<FaceHandlesInternal> groups(quads.size());
+            while (!pending.empty())
+            {
+                AZStd::vector<AZStd::pair<size_t, size_t>> refused;
+                for (const auto& item : pending)
+                {
+                    const auto& v = quads[item.first].m_vertices;
+                    const auto face = item.second == 0 ? candidate->mesh.add_face(om_vh(v[0]), om_vh(v[1]), om_vh(v[3]))
+                                                       : candidate->mesh.add_face(om_vh(v[1]), om_vh(v[2]), om_vh(v[3]));
+                    if (!face.is_valid())
+                    {
+                        refused.push_back(item);
+                        continue;
+                    }
+                    groups[item.first].push_back(face);
+                    CopyFaceAttributes(*candidate, wb_fh(face), whiteBox, quads[item.first].m_source);
+                }
+                if (refused.size() == pending.size())
+                {
+                    return fail("Subdivide would create invalid face connections. The mesh was left unchanged.");
+                }
+                pending = AZStd::move(refused);
+            }
+
+            PolygonPropertyHandle polygonProperty;
+            candidate->mesh.get_property_handle(polygonProperty, PolygonProps);
+            auto& mapping = candidate->mesh.property(polygonProperty);
+            PolygonHandles made;
+            for (const auto& group : groups)
+            {
+                PolygonHandle polygon;
+                for (const auto face : group)
+                {
+                    mapping[face] = group;
+                    polygon.m_faceHandles.push_back(wb_fh(face));
+                }
+                made.push_back(AZStd::move(polygon));
+            }
+            // A split on an edge that was not a user edge hides its vertex, but every quad corner must stay selectable.
+            VertexBoolPropertyHandle hiddenProperty;
+            candidate->mesh.get_property_handle(hiddenProperty, VertexHiddenProp);
+            for (const auto vertex : shown)
+            {
+                candidate->mesh.property(hiddenProperty, om_vh(vertex)) = false;
+            }
+            CalculateNormals(*candidate);
+            CalculatePlanarUVs(*candidate);
+            whiteBox.mesh = candidate->mesh;
+            if (created != nullptr)
+            {
+                *created = AZStd::move(made);
+            }
+            return true;
         }
 
         void AssignMesh(WhiteBoxMesh& target, const WhiteBoxMesh& source)
@@ -6857,6 +7407,7 @@ namespace WhiteBox
                 AZ::Data::AssetId m_material;
                 AZ::u32 m_paint;
                 UvProjection m_uvProjection;
+                AZ::u32 m_smoothing;
             };
             AZStd::map<int, BevelPolygon> polygons;
             AZStd::map<int, PolygonHandles> incident;
@@ -6879,7 +7430,7 @@ namespace WhiteBox
                 }
                 BevelPolygon data{polygon, borders[0], PolygonNormal(whiteBox, polygon),
                     FaceMaterial(whiteBox, polygon.m_faceHandles.front()), FacePaintColor(whiteBox, polygon.m_faceHandles.front()),
-                    FaceUvProjection(whiteBox, polygon.m_faceHandles.front())};
+                    FaceUvProjection(whiteBox, polygon.m_faceHandles.front()), FaceSmoothingGroups(whiteBox, polygon.m_faceHandles.front())};
                 for (const auto face : polygon.m_faceHandles)
                 {
                     if (FaceMaterial(whiteBox, face) != data.m_material || FacePaintColor(whiteBox, face) != data.m_paint)
@@ -6917,6 +7468,7 @@ namespace WhiteBox
                 AZ::Data::AssetId m_material;
                 AZ::u32 m_paint;
                 UvProjection m_uvProjection;
+                AZ::u32 m_smoothing;
             };
             AZStd::vector<NewPolygon> strips;
             // One shared vertex pool per original corner joins the ends of
@@ -7091,7 +7643,7 @@ namespace WhiteBox
                 {
                     strips.push_back({{arcs[1][segment], arcs[0][segment], arcs[0][segment + 1], arcs[1][segment + 1]},
                         (first->m_normal + second->m_normal).GetNormalizedSafe(), first->m_material, first->m_paint,
-                        first->m_uvProjection});
+                        first->m_uvProjection, first->m_smoothing | second->m_smoothing});
                 }
             }
             AZStd::vector<NewPolygon> patches;
@@ -7145,6 +7697,8 @@ namespace WhiteBox
                 const auto material = FaceMaterial(whiteBox, source);
                 const auto paint = FacePaintColor(whiteBox, source);
                 const auto uvProjection = FaceUvProjection(whiteBox, source);
+                AZ::u32 smoothing = 0;
+                for (const auto& polygon : incident[item.first]) { smoothing |= FaceSmoothingGroups(whiteBox, polygon.m_faceHandles.front()); }
                 const float exponent = 2.0f * (1.0f - profile);
                 const auto gridVertex = [&](const AZ::Vector3& barycentric)
                 {
@@ -7198,7 +7752,7 @@ namespace WhiteBox
                             {
                                 patches.push_back({{
                                     grid[row][column], grid[row][column + 1],
-                                    grid[row + 1][column + 1], grid[row + 1][column]}, normal, material, paint, uvProjection});
+                                    grid[row + 1][column + 1], grid[row + 1][column]}, normal, material, paint, uvProjection, smoothing});
                             }
                         }
                     }
@@ -7247,7 +7801,7 @@ namespace WhiteBox
                                 {
                                     patches.push_back({{
                                         grid[row][column], grid[row][column + 1],
-                                        grid[row + 1][column + 1], grid[row + 1][column]}, normal, material, paint, uvProjection});
+                                        grid[row + 1][column + 1], grid[row + 1][column]}, normal, material, paint, uvProjection, smoothing});
                                 }
                             }
                             const auto opposite = corners[next].Lerp(a, fraction);
@@ -7258,14 +7812,14 @@ namespace WhiteBox
                                 const float v = static_cast<float>(row) / size;
                                 const auto nextLeft = gridVertex(b.Lerp(inner[sector], v));
                                 const auto nextRight = gridVertex(opposite.Lerp(inner[next], v));
-                                patches.push_back({{left, right, nextRight, nextLeft}, normal, material, paint, uvProjection});
+                                patches.push_back({{left, right, nextRight, nextLeft}, normal, material, paint, uvProjection, smoothing});
                                 left = nextLeft;
                                 right = nextRight;
                             }
                         }
                     }
                     patches.push_back({{
-                        gridVertex(inner[0]), gridVertex(inner[1]), gridVertex(inner[2])}, normal, material, paint, uvProjection});
+                        gridVertex(inner[0]), gridVertex(inner[1]), gridVertex(inner[2])}, normal, material, paint, uvProjection, smoothing});
                 }
             }
             FaceHandles removed;
@@ -7281,7 +7835,7 @@ namespace WhiteBox
                     if (replacement == changed.end()) { border.push_back(vertex); }
                     else { border.insert(border.end(), replacement->second.begin(), replacement->second.end()); }
                 }
-                rebuilt.push_back({AZStd::move(border), data.m_normal, data.m_material, data.m_paint, data.m_uvProjection});
+                rebuilt.push_back({AZStd::move(border), data.m_normal, data.m_material, data.m_paint, data.m_uvProjection, data.m_smoothing});
                 removed.insert(removed.end(), data.m_polygon.m_faceHandles.begin(), data.m_polygon.m_faceHandles.end());
             }
             rebuilt.insert(rebuilt.end(), strips.begin(), strips.end());
@@ -7329,6 +7883,7 @@ namespace WhiteBox
                     SetFaceMaterial(*candidate, handle, polygon.m_material);
                     SetFacePaintColor(*candidate, handle, polygon.m_paint);
                     SetFaceUvProjection(*candidate, handle, polygon.m_uvProjection);
+                    SetFaceSmoothingGroups(*candidate, handle, polygon.m_smoothing);
                     added.push_back(handle);
                 }
                 for (const auto face : group) { groups[face] = group; }
@@ -7390,6 +7945,7 @@ namespace WhiteBox
                 AZ::Data::AssetId m_material;
                 AZ::u32 m_paint;
                 UvProjection m_uvProjection;
+                AZ::u32 m_smoothing;
                 int m_label;
                 int m_origin;
             };
@@ -7419,6 +7975,7 @@ namespace WhiteBox
                 source.m_material = FaceMaterial(*candidate, face);
                 source.m_paint = FacePaintColor(*candidate, face);
                 source.m_uvProjection = FaceUvProjection(*candidate, face);
+                source.m_smoothing = FaceSmoothingGroups(*candidate, face);
                 source.m_label = labels.find(face.Index())->second;
                 source.m_origin = origins.find(face.Index())->second;
                 return source;
@@ -7477,6 +8034,7 @@ namespace WhiteBox
                         SetFaceMaterial(*candidate, resultFace, source.m_material);
                         SetFacePaintColor(*candidate, resultFace, source.m_paint);
                         SetFaceUvProjection(*candidate, resultFace, source.m_uvProjection);
+                        SetFaceSmoothingGroups(*candidate, resultFace, source.m_smoothing);
                         for (const auto halfedge : FaceHalfedgeHandles(*candidate, resultFace))
                         {
                             const auto p = VertexPosition(*candidate, HalfedgeVertexHandleAtTip(*candidate, halfedge));
@@ -7645,6 +8203,7 @@ namespace WhiteBox
                 AZ::Data::AssetId m_material;
                 AZ::u32 m_paint;
                 UvProjection m_uvProjection;
+                AZ::u32 m_smoothing = 0;
             };
             AZStd::map<int, LoopQuad> quads;
             AZStd::map<int, float> crossings;
@@ -7693,6 +8252,7 @@ namespace WhiteBox
                     quad.m_material = FaceMaterial(whiteBox, polygon.m_faceHandles.front());
                     quad.m_paint = FacePaintColor(whiteBox, polygon.m_faceHandles.front());
                     quad.m_uvProjection = FaceUvProjection(whiteBox, polygon.m_faceHandles.front());
+                    quad.m_smoothing = FaceSmoothingGroups(whiteBox, polygon.m_faceHandles.front());
                     for (const auto source : polygon.m_faceHandles)
                     {
                         if (FaceMaterial(whiteBox, source) != quad.m_material || FacePaintColor(whiteBox, source) != quad.m_paint)
@@ -7811,6 +8371,7 @@ namespace WhiteBox
                         SetFaceMaterial(*candidate, face, quad.m_material);
                         SetFacePaintColor(*candidate, face, quad.m_paint);
                         SetFaceUvProjection(*candidate, face, quad.m_uvProjection);
+                        SetFaceSmoothingGroups(*candidate, face, quad.m_smoothing);
                         added.push_back(face);
                     }
                 }
