@@ -9,6 +9,7 @@
 #pragma once
 
 #include "WhiteBoxColliderConfiguration.h"
+#include "WhiteBoxConvexDecomposition.h"
 
 #include <AzCore/Component/TransformBus.h>
 #include <AzCore/Math/Vector3.h>
@@ -75,9 +76,29 @@ namespace WhiteBox
         //! (used for the base voxel-stamped mesh); pass null to always cook the plain per-face
         //! triangulation (e.g. the boolean mesh, or a mesh with no stamped cubes).
         //! @return true if cooking succeeded.
+        //! @param convex cook one convex hull of the mesh's vertices instead of a triangle mesh.
+        //! @param keepFraction below one, the triangle mesh is simplified to about that share of its triangles.
         static bool CookToConfiguration(
             const WhiteBoxMesh& whiteBox, Physics::CookedMeshShapeConfiguration& outConfiguration,
-            EditorWhiteBoxComponent* voxelComponent = nullptr);
+            EditorWhiteBoxComponent* voxelComponent = nullptr, bool convex = false, float keepFraction = 1.0f);
+        //! Share of triangles to keep: the Resolution for Triangle Mesh (Simplified), otherwise all of them.
+        float KeepFraction() const;
+        //! One hull for the whole mesh: chosen, or forced because PhysX triggers cannot be triangle meshes.
+        bool UseConvex() const;
+        //! One hull per convex part (Convex Parts); these go in the hull lists, not the single configurations.
+        bool UseConvexParts() const;
+        //! Decompose @p whiteBox and cook every part; false when nothing could be cooked.
+        bool CookConvexParts(const WhiteBoxMesh& whiteBox, AZStd::vector<Physics::CookedMeshShapeConfiguration>& outParts);
+        //! Every part's hull, appended into one triangle list for the wireframe.
+        void AppendPartsDebugMesh(
+            const AZStd::vector<Physics::CookedMeshShapeConfiguration>& parts, AZStd::vector<AZ::Vector3>& vertices,
+            AZStd::vector<AZ::u32>& indices) const;
+        //! The hull PhysX actually built, as a triangle list for the wireframe; false when it cannot be read back.
+        bool ConvexDebugMesh(
+            const Physics::CookedMeshShapeConfiguration& configuration, AZStd::vector<AZ::Vector3>& vertices,
+            AZStd::vector<AZ::u32>& indices) const;
+        //! Re-cook when the trigger flag or collision shape changes in the Inspector.
+        AZ::Crc32 OnColliderSettingsChanged();
         //! Cook both the base and (if a boolean source is set) the boolean-evaluated mesh
         //! into m_meshShapeConfiguration / m_booleanMeshShapeConfiguration. Runs at edit time
         //! where the physics cooking backend is reliably available, so BuildGameEntity can
@@ -93,6 +114,9 @@ namespace WhiteBox
         Physics::CookedMeshShapeConfiguration
             m_booleanMeshShapeConfiguration; //!< Cooked boolean-evaluated mesh (empty if no boolean source).
         bool m_hasBooleanMesh = false; //!< Whether a boolean-evaluated cooked mesh is available.
+        AZStd::vector<Physics::CookedMeshShapeConfiguration> m_partShapeConfigurations; //!< Cooked Convex Parts of the base mesh.
+        AZStd::vector<Physics::CookedMeshShapeConfiguration> m_booleanPartShapeConfigurations; //!< Cooked Convex Parts of the boolean mesh.
+        ConvexDecomposer m_decomposer; //!< Caches concave shells so edits only re-run V-HACD where they changed.
         AzPhysics::SimulatedBodyHandle m_rigidBodyHandle = AzPhysics::InvalidSimulatedBodyHandle; //!< Handle to a static rigid body to represent the White Box Mesh at edit time.
         WhiteBoxColliderConfiguration
             m_whiteBoxColliderConfiguration; //!< White Box specific collider configuration information.

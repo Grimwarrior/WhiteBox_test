@@ -113,6 +113,9 @@ if(PAL_TRAIT_BUILD_HOST_TOOLS)
                 # AZ::Interface, so with no snapper installed this still builds and runs - the
                 # interface simply resolves to null and snapping reports "no target".
                 Gem::SnapApi.API
+            PRIVATE
+                3rdParty::WhiteBox.v-hacd # Header-only convex decomposition for the Convex Parts collider.
+                3rdParty::OpenMeshTools # Decimater for the Triangle Mesh (Simplified) collider.
     )
 
     target_compile_options(${gem_name}.Editor.Static ${O3DE_COMPILE_OPTION_DISABLE_DEPRECATED_ENUM_ENUM_CONVERSION})

@@ -643,6 +643,11 @@ namespace WhiteBox
                     ->UIElement(AZ::Edit::UIHandlers::Button, "", "Export this mesh to an obj file.")
                     ->Attribute(AZ::Edit::Attributes::ChangeNotify, &EditorWhiteBoxComponent::ExportToFile)
                     ->Attribute(AZ::Edit::Attributes::ButtonText, "Export")
+                    ->UIElement(
+                        AZ::Edit::UIHandlers::Button, "",
+                        "Export the rendered mesh (all layers, materials, paint and smoothing) as glTF 2.0; a .glb name writes binary. Always Y-up.")
+                    ->Attribute(AZ::Edit::Attributes::ChangeNotify, &EditorWhiteBoxComponent::ExportToGltf)
+                    ->Attribute(AZ::Edit::Attributes::ButtonText, "Export glTF...")
                     ->DataElement(
                         AZ::Edit::UIHandlers::CheckBox, &EditorWhiteBoxComponent::m_flipYZForExport, "Flip Y and Z",
                         "Swap Y and Z on export, for tools that use a different up axis.")

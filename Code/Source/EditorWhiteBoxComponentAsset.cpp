@@ -14,6 +14,7 @@
 #include "EditorWhiteBoxComponent.h"
 
 #include "Util/WhiteBoxEditorUtil.h"
+#include "Util/WhiteBoxGltfExport.h"
 #include "Util/WhiteBoxMeshUtil.h"
 
 #include <AzCore/Serialization/EditContext.h>
@@ -254,6 +255,32 @@ namespace WhiteBox
         {
             AZ_Warning(
                 "EditorWhiteBoxComponent", false, "Failed to export white box mesh to: %s", absoluteSaveFilePathCstr);
+        }
+    }
+
+    void EditorWhiteBoxComponent::ExportToGltf()
+    {
+        const AZStd::string initialPath = WhiteBoxPathAtProjectRoot(GetEntity()->GetName(), "glb");
+        const QString path = AzQtComponents::FileDialog::GetSaveFileName(
+            nullptr, "Export glTF...", QString(initialPath.c_str()), "glTF (*.glb *.gltf)");
+        if (path.isEmpty())
+        {
+            return;
+        }
+        // The cached render data is exactly what is on screen; build it when nothing has rendered yet.
+        const WhiteBoxRenderData renderData = m_renderData.m_faces.empty() && EvaluatedMesh() != nullptr
+            ? CreateWhiteBoxRenderData(*EvaluatedMesh(), m_material)
+            : m_renderData;
+        const AZStd::string filePath = path.toUtf8().constData();
+        AZStd::string error;
+        if (SaveToGltf(renderData, GetEntity()->GetName(), filePath, error))
+        {
+            AZ_Printf("EditorWhiteBoxComponent", "Exported white box mesh to: %s", filePath.c_str());
+            RequestEditSourceControl(filePath.c_str());
+        }
+        else
+        {
+            AZ_Warning("EditorWhiteBoxComponent", false, "%s", error.c_str());
         }
     }
 

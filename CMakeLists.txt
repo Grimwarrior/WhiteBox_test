@@ -18,4 +18,7 @@ include(${CMAKE_CURRENT_SOURCE_DIR}/3rdParty/FindOpenMesh.cmake)
 # Manifold provides the CSG boolean operations (Api::MeshBoolean).
 include(${CMAKE_CURRENT_SOURCE_DIR}/3rdParty/FindManifold.cmake)
 
+# V-HACD splits concave shells into convex hulls for the White Box collider.
+include(${CMAKE_CURRENT_SOURCE_DIR}/3rdParty/Findv-hacd.cmake)
+
 add_subdirectory(Code)
