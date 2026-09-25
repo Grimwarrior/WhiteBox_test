@@ -50,6 +50,7 @@ namespace WhiteBox
         AZ::Vector2 m_uv;
         AZ::Vector3 m_normal = AZ::Vector3::CreateZero(); //!< Smoothed corner normal; zero uses the flat face normal.
         AZ::Vector3 m_blend = AZ::Vector3::CreateZero();  //!< Vertex-blend layer weights (x layer 2, y layer 3).
+        AZ::Vector2 m_lightmapUv = AZ::Vector2::CreateZero(); //!< Render-time only: the UV1 / lightmap corner.
     };
 
     //! Triangle primitive with face normals
@@ -69,6 +70,8 @@ namespace WhiteBox
         //! Render-time only, not stored: COLOR0 carries the corners' blend weights instead of the tint, because the face
         //! is drawn with a custom material (the built-in one is the only user of the tint).
         bool m_colorFromBlend = false;
+        //! Render-time only: the corners carry lightmap UVs (else UV1 repeats the texture UVs).
+        bool m_hasLightmapUv = false;
     };
 
     //! Builds a vector of visible faces by removing the degenerate faces from the source data

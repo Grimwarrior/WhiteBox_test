@@ -51,6 +51,15 @@ namespace WhiteBox
     //! single-sided and follow the winding.
     Api::WhiteBoxMeshPtr FlippedMeshWinding(const WhiteBoxMesh& src);
 
+    //! @p src plus its reflection across a plane normal to local axis @p axis (0 X, 1 Y, 2 Z): the plane through the
+    //! origin, or the mesh's low side on that axis when the mesh straddles the origin (a centred shape would otherwise
+    //! land on itself). Polygons lying on the plane are dropped from both halves, so the two close into one shell.
+    //! Materials, paint, UVs and blend weights carry over; the halves meet with duplicate vertices, not welded.
+    Api::WhiteBoxMeshPtr MirrorMesh(const WhiteBoxMesh& src, int axis);
+
+    //! @p count copies of @p src, each @p offset further along than the last (the first stays in place).
+    Api::WhiteBoxMeshPtr ArrayMesh(const WhiteBoxMesh& src, int count, const AZ::Vector3& offset);
+
     //! Build a single render face from a white box face handle, optionally reversing the
     //! winding (and flipping the normal) so the face renders inside-out.
     //! @param withBlend read the corners' vertex-blend weights; callers building a whole mesh check MeshHasVertexBlend once.

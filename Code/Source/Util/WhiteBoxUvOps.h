@@ -29,5 +29,10 @@ namespace WhiteBox
         //! Arrange the faces' current UV islands in the unit square without overlap, keeping their relative sizes.
         //! Islands are faces joined through corners that share a vertex and a UV; tall ones are turned a quarter turn.
         AZStd::vector<UvChange> Pack(const WhiteBoxMesh& whiteBox, const Api::FaceHandles& faces, float margin = 0.01f);
+
+        //! Fit each island of the faces into the horizontal trim band from @p v0 to @p v1 (V runs down the texture): turned
+        //! so its long side runs along U, scaled evenly so its height fills the band less @p inset top and bottom, and set
+        //! at U 0. U keeps the island's proportions and runs on past 1, since a trim tiles across.
+        AZStd::vector<UvChange> FitToBand(const WhiteBoxMesh& whiteBox, const Api::FaceHandles& faces, float v0, float v1, float inset = 0.0f);
     } // namespace UvOps
 } // namespace WhiteBox

@@ -9,6 +9,7 @@
 #include "WhiteBoxAtomRenderMesh.h"
 
 #include <Rendering/Atom/WhiteBoxMeshAtomData.h>
+#include <Rendering/WhiteBoxLightmapUv.h>
 #include <Rendering/WhiteBoxMaterialSlot.h>
 #include <Rendering/WhiteBoxRenderData.h>
 #include <Util/WhiteBoxMathUtil.h>
@@ -140,6 +141,7 @@ namespace WhiteBox
         CreateAttributeBuffer<AttributeType::Bitangent>(meshData.GetBitangents());
         CreateAttributeBuffer<AttributeType::UV>(meshData.GetUVs());
         CreateAttributeBuffer<AttributeType::Color>(meshData.GetColors());
+        CreateAttributeBuffer<AttributeType::LightmapUV>(meshData.GetLightmapUVs());
 
         return AreAttributesValid();
     }
@@ -152,6 +154,7 @@ namespace WhiteBox
         UpdateAttributeBuffer<AttributeType::Bitangent>(meshData.GetBitangents());
         UpdateAttributeBuffer<AttributeType::UV>(meshData.GetUVs());
         UpdateAttributeBuffer<AttributeType::Color>(meshData.GetColors());
+        UpdateAttributeBuffer<AttributeType::LightmapUV>(meshData.GetLightmapUVs());
 
         return AreAttributesValid();
     }
@@ -401,6 +404,10 @@ namespace WhiteBox
             m_modelAsset = {};
             PublishMaterialSlots();
             return;
+        }
+        if (renderData.m_material.m_lightmapUvs)
+        {
+            GenerateLightmapUvs(groupedFaces, renderData.m_material.m_lightmapMargin);
         }
         const WhiteBoxMeshAtomData meshData(groupedFaces);
 

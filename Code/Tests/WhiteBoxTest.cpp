@@ -19,6 +19,7 @@
 #include "Util/WhiteBoxMeshUtil.h"
 #include "Viewport/WhiteBoxShapeBuilders.h"
 #include "Core/WhiteBoxCsgCore.h"
+#include "Rendering/WhiteBoxLightmapUv.h"
 #include "Rendering/WhiteBoxRenderData.h"
 
 #include <AzCore/Math/Transform.h>
@@ -5621,6 +5622,156 @@ namespace UnitTest
             const float expected = vertex == painted ? 1.0f : 0.0f;
             EXPECT_NEAR(Api::VertexBlend(*mesh, vertex).GetX(), expected, 1.0f / 255.0f);
         }
+    }
+
+    TEST_F(WhiteBoxTestFixture, LightmapUvsGiveEachCubeSideItsOwnChartInsideTheUnitSquare)
+    {
+        namespace Api = WhiteBox::Api;
+        auto mesh = Api::CreateWhiteBoxMesh();
+        Api::InitializeAsUnitCube(*mesh);
+        WhiteBox::WhiteBoxRenderData renderData = WhiteBox::CreateWhiteBoxRenderData(*mesh, WhiteBox::WhiteBoxMaterial{});
+        WhiteBox::GenerateLightmapUvs(renderData.m_faces, 0.01f);
+
+        // One chart per side: the corners of each side's two triangles, bounded.
+        struct Bounds
+        {
+            AZ::Vector2 m_min = AZ::Vector2(1e9f);
+            AZ::Vector2 m_max = AZ::Vector2(-1e9f);
+        };
+        AZStd::vector<AZStd::pair<AZ::Vector3, Bounds>> sides;
+        for (const auto& face : renderData.m_faces)
+        {
+            ASSERT_TRUE(face.m_hasLightmapUv);
+            auto side = AZStd::find_if(sides.begin(), sides.end(), [&face](const auto& entry) { return entry.first.IsClose(face.m_normal); });
+            if (side == sides.end())
+            {
+                sides.push_back({ face.m_normal, Bounds{} });
+                side = sides.end() - 1;
+            }
+            for (const auto* vertex : { &face.m_v1, &face.m_v2, &face.m_v3 })
+            {
+                EXPECT_GE(vertex->m_lightmapUv.GetX(), 0.0f);
+                EXPECT_GE(vertex->m_lightmapUv.GetY(), 0.0f);
+                EXPECT_LE(vertex->m_lightmapUv.GetX(), 1.0f);
+                EXPECT_LE(vertex->m_lightmapUv.GetY(), 1.0f);
+                side->second.m_min = side->second.m_min.GetMin(vertex->m_lightmapUv);
+                side->second.m_max = side->second.m_max.GetMax(vertex->m_lightmapUv);
+            }
+        }
+        ASSERT_EQ(sides.size(), 6u);
+        for (size_t a = 0; a < sides.size(); ++a)
+        {
+            // Equal sides get equal charts.
+            EXPECT_NEAR(
+                (sides[a].second.m_max - sides[a].second.m_min).GetX() * (sides[a].second.m_max - sides[a].second.m_min).GetY(),
+                (sides[0].second.m_max - sides[0].second.m_min).GetX() * (sides[0].second.m_max - sides[0].second.m_min).GetY(), 1e-4f);
+            for (size_t b = a + 1; b < sides.size(); ++b)
+            {
+                const Bounds& p = sides[a].second;
+                const Bounds& q = sides[b].second;
+                const bool apart = p.m_max.GetX() <= q.m_min.GetX() || q.m_max.GetX() <= p.m_min.GetX() ||
+                    p.m_max.GetY() <= q.m_min.GetY() || q.m_max.GetY() <= p.m_min.GetY();
+                EXPECT_TRUE(apart) << "charts " << a << " and " << b << " overlap";
+            }
+        }
+    }
+
+    TEST_F(WhiteBoxTestFixture, MirrorDropsThePlaneFacesAndArrayRepeatsTheMesh)
+    {
+        namespace Api = WhiteBox::Api;
+        // A unit cube resting against the X = 0 plane: half of a 2 x 1 x 1 box.
+        auto half = Api::CreateWhiteBoxMesh();
+        Api::InitializeAsUnitCube(*half);
+        for (const auto vertex : Api::MeshVertexHandles(*half))
+        {
+            Api::SetVertexPosition(*half, vertex, Api::VertexPosition(*half, vertex) + AZ::Vector3(0.5f, 0.0f, 0.0f));
+        }
+        Api::CalculateNormals(*half);
+        const size_t halfFaces = Api::MeshFaceCount(*half);
+
+        const Api::WhiteBoxMeshPtr mirrored = WhiteBox::MirrorMesh(*half, 0);
+        // Both copies lose their side on the plane (two triangles each).
+        EXPECT_EQ(Api::MeshFaceCount(*mirrored), 2 * (halfFaces - 2));
+        float low = 1e9f;
+        float high = -1e9f;
+        for (const auto vertex : Api::MeshVertexHandles(*mirrored))
+        {
+            low = AZStd::min(low, Api::VertexPosition(*mirrored, vertex).GetX());
+            high = AZStd::max(high, Api::VertexPosition(*mirrored, vertex).GetX());
+        }
+        EXPECT_NEAR(low, -1.0f, 1e-5f);
+        EXPECT_NEAR(high, 1.0f, 1e-5f);
+        // The reflected copy still faces outwards: every face normal points away from the box centre.
+        for (const auto face : Api::MeshFaceHandles(*mirrored))
+        {
+            const auto corners = Api::FaceVertexPositions(*mirrored, face);
+            const AZ::Vector3 centroid = (corners[0] + corners[1] + corners[2]) / 3.0f;
+            EXPECT_GT(Api::FaceNormal(*mirrored, face).Dot(centroid), 0.0f);
+        }
+
+        // A centred cube straddles the plane, so it mirrors across its low side and lands beside itself.
+        auto centred = Api::CreateWhiteBoxMesh();
+        Api::InitializeAsUnitCube(*centred);
+        const Api::WhiteBoxMeshPtr beside = WhiteBox::MirrorMesh(*centred, 1);
+        EXPECT_EQ(Api::MeshFaceCount(*beside), 2 * (Api::MeshFaceCount(*centred) - 2));
+        low = 1e9f;
+        high = -1e9f;
+        for (const auto vertex : Api::MeshVertexHandles(*beside))
+        {
+            low = AZStd::min(low, Api::VertexPosition(*beside, vertex).GetY());
+            high = AZStd::max(high, Api::VertexPosition(*beside, vertex).GetY());
+        }
+        EXPECT_NEAR(low, -1.5f, 1e-5f);
+        EXPECT_NEAR(high, 0.5f, 1e-5f);
+
+        const Api::WhiteBoxMeshPtr row = WhiteBox::ArrayMesh(*half, 3, AZ::Vector3(2.0f, 0.0f, 0.0f));
+        EXPECT_EQ(Api::MeshFaceCount(*row), 3 * halfFaces);
+        high = -1e9f;
+        for (const auto vertex : Api::MeshVertexHandles(*row))
+        {
+            high = AZStd::max(high, Api::VertexPosition(*row, vertex).GetX());
+        }
+        EXPECT_NEAR(high, 5.0f, 1e-5f);
+    }
+
+    TEST_F(WhiteBoxTestFixture, FitToBandFillsTheTrimBandHeightFromUZero)
+    {
+        namespace Api = WhiteBox::Api;
+        auto mesh = Api::CreateWhiteBoxMesh();
+        Api::InitializeAsUnitCube(*mesh);
+        // A 2 x 1 top: stretch the cube along X so the island is wider than tall.
+        for (const auto vertex : Api::MeshVertexHandles(*mesh))
+        {
+            const AZ::Vector3 p = Api::VertexPosition(*mesh, vertex);
+            Api::SetVertexPosition(*mesh, vertex, AZ::Vector3(p.GetX() * 2.0f, p.GetY(), p.GetZ()));
+        }
+        Api::CalculateNormals(*mesh);
+        Api::CalculatePlanarUVs(*mesh);
+        Api::FaceHandles top;
+        for (const auto& polygon : Api::MeshPolygonHandles(*mesh))
+        {
+            if (Api::FaceNormal(*mesh, polygon.m_faceHandles.front()).GetZ() > 0.9f)
+            {
+                top = polygon.m_faceHandles;
+            }
+        }
+        ASSERT_FALSE(top.empty());
+
+        const auto changes = WhiteBox::UvOps::FitToBand(*mesh, top, 0.25f, 0.5f);
+        ASSERT_FALSE(changes.empty());
+        float lowU = 1e9f, lowV = 1e9f, highU = -1e9f, highV = -1e9f;
+        for (const auto& change : changes)
+        {
+            lowU = AZStd::min(lowU, change.second.GetX());
+            highU = AZStd::max(highU, change.second.GetX());
+            lowV = AZStd::min(lowV, change.second.GetY());
+            highV = AZStd::max(highV, change.second.GetY());
+        }
+        EXPECT_NEAR(lowV, 0.25f, 1e-5f);
+        EXPECT_NEAR(highV, 0.5f, 1e-5f);
+        EXPECT_NEAR(lowU, 0.0f, 1e-5f);
+        // Proportions kept: twice as wide as the band is tall.
+        EXPECT_NEAR(highU - lowU, 0.5f, 1e-4f);
     }
 
     TEST_F(WhiteBoxTestFixture, RoomWithSlabsIsOneClosedShellThatCarvesCleanly)

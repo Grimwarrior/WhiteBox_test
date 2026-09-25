@@ -148,7 +148,7 @@ namespace WhiteBox
             AZStd::variant<
                 AZStd::unique_ptr<PositionAttribute>, AZStd::unique_ptr<NormalAttribute>,
                 AZStd::unique_ptr<TangentAttribute>, AZStd::unique_ptr<BitangentAttribute>,
-                AZStd::unique_ptr<UVAttribute>, AZStd::unique_ptr<ColorAttribute>>,
+                AZStd::unique_ptr<UVAttribute>, AZStd::unique_ptr<ColorAttribute>, AZStd::unique_ptr<LightmapUVAttribute>>,
             NumAttributes>
             m_attributes;
         bool m_visible = true;

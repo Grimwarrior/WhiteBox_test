@@ -503,10 +503,12 @@ namespace WhiteBox
             if (i == activeIdx)
             {
                 ownedMesh = CombinedWithGrid(freeform);
-                if (!ownedMesh && freeform != nullptr && (!activeIdentity || m_layers[i].m_invertNormals))
+                if (!ownedMesh && freeform != nullptr &&
+                    (!activeIdentity || m_layers[i].m_invertNormals || HasLayerModifiers(m_layers[i])))
                 {
                     ownedMesh = Api::CloneMesh(*freeform);
                 }
+                ownedMesh = ApplyLayerModifiers(AZStd::move(ownedMesh), m_layers[i]);
                 if (ownedMesh && !activeIdentity)
                 {
                     ApplyTransformToMesh(
@@ -571,6 +573,7 @@ namespace WhiteBox
                 {
                     mesh = Api::CloneMesh(*freeform);
                 }
+                mesh = ApplyLayerModifiers(AZStd::move(mesh), m_layers[i]);
                 if (mesh && !activeIdentity)
                 {
                     ApplyTransformToMesh(
@@ -696,6 +699,7 @@ namespace WhiteBox
                 {
                     mesh = Api::CloneMesh(*freeform);
                 }
+                mesh = ApplyLayerModifiers(AZStd::move(mesh), m_layers[i]);
                 if (mesh && !activeIdentity)
                 {
                     ApplyTransformToMesh(

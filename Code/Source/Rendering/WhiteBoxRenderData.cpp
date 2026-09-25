@@ -105,7 +105,7 @@ namespace WhiteBox
 namespace
 {
     constexpr AZ::u32 RenderDataBlobMagic = 0x44524257; // 'WBRD'
-    constexpr AZ::u32 RenderDataBlobVersion = 1;
+    constexpr AZ::u32 RenderDataBlobVersion = 2; //!< 2 adds the lightmap settings to the material; 1 still reads.
     constexpr AZ::u32 NoMaterialIndex = 0xFFFFFFFFu;
 
     // Per-face flag bits. Everything they gate is defaulted on the vast majority of faces, so leaving
@@ -294,13 +294,15 @@ namespace
         BlobWrite(blob, aznumeric_cast<AZ::u8>(material.m_useTexture));
         BlobWrite(blob, aznumeric_cast<AZ::u8>(material.m_visible));
         BlobWrite(blob, aznumeric_cast<AZ::u8>(material.m_useVertexColor));
+        BlobWrite(blob, aznumeric_cast<AZ::u8>(material.m_lightmapUvs));
+        BlobWrite(blob, material.m_lightmapMargin);
 
         MaterialTable table;
         table.Add(material.m_materialAsset);
         BlobWriteAssetTable(blob, table);
     }
 
-    bool BlobReadMaterial(const AZStd::vector<AZ::u8>& blob, size_t& offset, WhiteBox::WhiteBoxMaterial& material)
+    bool BlobReadMaterial(const AZStd::vector<AZ::u8>& blob, size_t& offset, WhiteBox::WhiteBoxMaterial& material, const AZ::u32 version)
     {
         AZ::u8 useTexture = 0, visible = 0, useVertexColor = 0;
         if (!BlobReadVector3(blob, offset, material.m_tint) || !BlobRead(blob, offset, useTexture) ||
@@ -311,6 +313,15 @@ namespace
         material.m_useTexture = useTexture != 0;
         material.m_visible = visible != 0;
         material.m_useVertexColor = useVertexColor != 0;
+        if (version >= 2)
+        {
+            AZ::u8 lightmapUvs = 0;
+            if (!BlobRead(blob, offset, lightmapUvs) || !BlobRead(blob, offset, material.m_lightmapMargin))
+            {
+                return false;
+            }
+            material.m_lightmapUvs = lightmapUvs != 0;
+        }
 
         AZStd::vector<AZ::Data::Asset<AZ::RPI::MaterialAsset>> assets;
         if (!BlobReadAssetTable(blob, offset, assets))
@@ -452,7 +463,7 @@ namespace WhiteBox
         size_t offset = 0;
         AZ::u32 magic = 0, version = 0, setCount = 0;
         if (!BlobRead(blob, offset, magic) || !BlobRead(blob, offset, version) ||
-            !BlobRead(blob, offset, setCount) || magic != RenderDataBlobMagic || version != RenderDataBlobVersion)
+            !BlobRead(blob, offset, setCount) || magic != RenderDataBlobMagic || version < 1 || version > RenderDataBlobVersion)
         {
             AZ_Warning("White Box", false, "Baked render data blob is not readable - it will be rebuilt.");
             return false;
@@ -467,7 +478,7 @@ namespace WhiteBox
                 ? *renderDataSets[setIndex]
                 : scratch;
 
-            if (!BlobReadMaterial(blob, offset, set.m_material))
+            if (!BlobReadMaterial(blob, offset, set.m_material, version))
             {
                 clearAll();
                 return false;

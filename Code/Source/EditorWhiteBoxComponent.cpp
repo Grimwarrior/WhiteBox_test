@@ -522,6 +522,7 @@ namespace WhiteBox
         EditorWhiteBoxMeshAsset::Reflect(context);
         DrawShapeData::Reflect(context);
         WhiteBoxLayer::Reflect(context);
+        TrimSheet::Reflect(context);
         VoxelData::Reflect(context);
         BooleanSettings::Reflect(context);
 
@@ -545,6 +546,9 @@ namespace WhiteBox
                 ->Field("DefaultMaterialAsset", &EditorWhiteBoxComponent::m_defaultMaterialAsset)
                 ->Field("MaterialPalette", &EditorWhiteBoxComponent::m_materialPalette)
                 ->Field("PaletteChoice", &EditorWhiteBoxComponent::m_paletteChoice)
+                ->Field("TrimSheets", &EditorWhiteBoxComponent::m_trimSheets)
+                ->Field("LightmapUvs", &EditorWhiteBoxComponent::m_lightmapUvs)
+                ->Field("LightmapMargin", &EditorWhiteBoxComponent::m_lightmapMargin)
                 ->Field("Voxel", &EditorWhiteBoxComponent::m_voxel)
                 ->Field("Boolean", &EditorWhiteBoxComponent::m_boolean)
                 // Persist whether this entity is an active global-boolean target so the composed
@@ -648,6 +652,21 @@ namespace WhiteBox
                         AZ::Edit::UIHandlers::CheckBox, &EditorWhiteBoxComponent::m_edgesOnly, "Edges Only",
                         "Hide the solid render mesh and draw only the mesh edges.")
                     ->Attribute(AZ::Edit::Attributes::ChangeNotify, &EditorWhiteBoxComponent::OnEdgesOnlyChange)
+                    ->DataElement(
+                        AZ::Edit::UIHandlers::CheckBox, &EditorWhiteBoxComponent::m_lightmapUvs, "Lightmap UVs",
+                        "Give the mesh a second, non-overlapping UV set (UV1, exported as glTF TEXCOORD_1) for baked lighting. "
+                        "Flat regions become charts packed into the unit square in proportion to their size. Without it, "
+                        "UV1 repeats the texture UVs.")
+                    ->Attribute(AZ::Edit::Attributes::ChangeNotify, &EditorWhiteBoxComponent::OnLightmapChange)
+                    ->DataElement(
+                        AZ::Edit::UIHandlers::Default, &EditorWhiteBoxComponent::m_lightmapMargin, "Lightmap Margin",
+                        "Gap between lightmap charts in UV units; about 2 / lightmap resolution keeps bleeding apart.")
+                    ->Attribute(AZ::Edit::Attributes::Min, 0.0f)
+                    ->Attribute(AZ::Edit::Attributes::Max, 0.1f)
+                    ->Attribute(AZ::Edit::Attributes::Step, 0.001f)
+                    ->Attribute(AZ::Edit::Attributes::Decimals, 4)
+                    ->Attribute(AZ::Edit::Attributes::Visibility, &EditorWhiteBoxComponent::LightmapMarginVisibility)
+                    ->Attribute(AZ::Edit::Attributes::ChangeNotify, &EditorWhiteBoxComponent::OnLightmapChange)
 
                     ->ClassElement(AZ::Edit::ClassElements::Group, "Boolean")
                     ->Attribute(AZ::Edit::Attributes::AutoExpand, false)
@@ -720,6 +739,69 @@ namespace WhiteBox
             AzToolsFramework::EntityIdList{ GetEntityId() }, AZ::ComponentTypeList{ AZ::Render::EditorMaterialComponentTypeId });
         undoBatch.MarkEntityDirty(GetEntityId());
         return AZ::Edit::PropertyRefreshLevels::EntireTree;
+    }
+
+    void EditorWhiteBoxComponent::TrimSheet::Reflect(AZ::ReflectContext* context)
+    {
+        if (auto* serializeContext = azrtti_cast<AZ::SerializeContext*>(context))
+        {
+            serializeContext->Class<TrimSheet>()
+                ->Version(1)
+                ->Field("Material", &TrimSheet::m_material)
+                ->Field("Edges", &TrimSheet::m_edges);
+        }
+    }
+
+    AZStd::vector<float> EditorWhiteBoxComponent::GetTrimEdges(const AZ::Data::AssetId& material) const
+    {
+        for (const TrimSheet& sheet : m_trimSheets)
+        {
+            if (sheet.m_material == material)
+            {
+                return sheet.m_edges;
+            }
+        }
+        return {};
+    }
+
+    void EditorWhiteBoxComponent::SetTrimEdges(const AZ::Data::AssetId& material, AZStd::vector<float> edges)
+    {
+        for (float& edge : edges)
+        {
+            edge = AZ::GetClamp(edge, 0.0f, 1.0f);
+        }
+        AZStd::sort(edges.begin(), edges.end());
+        edges.erase(AZStd::unique(edges.begin(), edges.end(), [](float a, float b) { return AZStd::abs(a - b) < 1e-5f; }), edges.end());
+        if (edges.size() < 2)
+        {
+            edges.clear(); // one edge makes no band
+        }
+        if (GetTrimEdges(material) == edges)
+        {
+            return;
+        }
+        AzToolsFramework::ScopedUndoBatch undoBatch("White Box Trim Sheet");
+        auto sheet = AZStd::find_if(
+            m_trimSheets.begin(), m_trimSheets.end(), [&material](const TrimSheet& entry) { return entry.m_material == material; });
+        if (edges.empty())
+        {
+            if (sheet != m_trimSheets.end())
+            {
+                m_trimSheets.erase(sheet);
+            }
+        }
+        else if (sheet != m_trimSheets.end())
+        {
+            sheet->m_edges = AZStd::move(edges);
+        }
+        else
+        {
+            TrimSheet added;
+            added.m_material = material;
+            added.m_edges = AZStd::move(edges);
+            m_trimSheets.push_back(AZStd::move(added));
+        }
+        undoBatch.MarkEntityDirty(GetEntityId());
     }
 
     AZStd::string EditorWhiteBoxComponent::MaterialDisplayName(const AZ::Data::AssetId& material)
@@ -870,6 +952,20 @@ namespace WhiteBox
         return AZ::Edit::PropertyRefreshLevels::None;
     }
 
+    AZ::Crc32 EditorWhiteBoxComponent::OnLightmapChange()
+    {
+        // The settings ride on the material so they reach the render mesh, the baked game data and the exporter.
+        m_material.m_lightmapUvs = m_lightmapUvs;
+        m_material.m_lightmapMargin = m_lightmapMargin;
+        RebuildWhiteBox();
+        return AZ::Edit::PropertyRefreshLevels::AttributesAndValues;
+    }
+
+    AZ::Crc32 EditorWhiteBoxComponent::LightmapMarginVisibility() const
+    {
+        return m_lightmapUvs ? AZ::Edit::PropertyVisibility::Show : AZ::Edit::PropertyVisibility::Hide;
+    }
+
     AZ::Crc32 EditorWhiteBoxComponent::LegacyDefaultMaterialVisibility() const
     {
         // Only shown while an older entity still carries one, so it can be cleared.
@@ -945,6 +1041,8 @@ namespace WhiteBox
         m_material.m_materialAsset = AZ::Data::Asset<AZ::RPI::MaterialAsset>(
             m_materialOverrideAssetId, azrtti_typeid<AZ::RPI::MaterialAsset>());
         m_material.m_materialAsset.SetAutoLoadBehavior(AZ::Data::AssetLoadBehavior::PreLoad);
+        m_material.m_lightmapUvs = m_lightmapUvs;
+        m_material.m_lightmapMargin = m_lightmapMargin;
         // Data saved before the card carried this control has no mirror stored, so derive it here
         // rather than trusting what was serialized.
         m_defaultMaterialAsset = m_material.m_materialAsset;
