@@ -39,10 +39,11 @@ namespace WhiteBox
         if (auto serializeContext = azrtti_cast<AZ::SerializeContext*>(context))
         {
             serializeContext->Class<WhiteBoxVertex>()
-                ->Version(2)
+                ->Version(3)
                 ->Field("Position", &WhiteBoxVertex::m_position)
                 ->Field("UV", &WhiteBoxVertex::m_uv)
-                ->Field("Normal", &WhiteBoxVertex::m_normal);
+                ->Field("Normal", &WhiteBoxVertex::m_normal)
+                ->Field("Blend", &WhiteBoxVertex::m_blend);
         }
     }
 
@@ -115,6 +116,7 @@ namespace
         FaceFlag_PaintColor = 1 << 1,
         FaceFlag_MaterialAsset = 1 << 2,
         FaceFlag_CornerNormals = 1 << 3,
+        FaceFlag_Blend = 1 << 4,
     };
 
     template<typename T>
@@ -383,6 +385,10 @@ namespace WhiteBox
                 {
                     flags |= FaceFlag_CornerNormals;
                 }
+                if (!face.m_v1.m_blend.IsZero() || !face.m_v2.m_blend.IsZero() || !face.m_v3.m_blend.IsZero())
+                {
+                    flags |= FaceFlag_Blend;
+                }
                 BlobWrite(blob, flags);
 
                 BlobWriteVector3(blob, face.m_v1.m_position);
@@ -410,6 +416,12 @@ namespace WhiteBox
                     BlobWriteVector3(blob, face.m_v1.m_normal);
                     BlobWriteVector3(blob, face.m_v2.m_normal);
                     BlobWriteVector3(blob, face.m_v3.m_normal);
+                }
+                if (flags & FaceFlag_Blend)
+                {
+                    BlobWriteVector3(blob, face.m_v1.m_blend);
+                    BlobWriteVector3(blob, face.m_v2.m_blend);
+                    BlobWriteVector3(blob, face.m_v3.m_blend);
                 }
             }
         }
@@ -515,6 +527,13 @@ namespace WhiteBox
                 if ((flags & FaceFlag_CornerNormals) != 0 &&
                     (!BlobReadVector3(blob, offset, face.m_v1.m_normal) || !BlobReadVector3(blob, offset, face.m_v2.m_normal) ||
                      !BlobReadVector3(blob, offset, face.m_v3.m_normal)))
+                {
+                    clearAll();
+                    return false;
+                }
+                if ((flags & FaceFlag_Blend) != 0 &&
+                    (!BlobReadVector3(blob, offset, face.m_v1.m_blend) || !BlobReadVector3(blob, offset, face.m_v2.m_blend) ||
+                     !BlobReadVector3(blob, offset, face.m_v3.m_blend)))
                 {
                     clearAll();
                     return false;

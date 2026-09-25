@@ -7,6 +7,9 @@
  */
 
 #include "Tools/WhiteBoxUvEditorPane.h"
+#include "Rendering/WhiteBoxMaterialSlot.h"
+
+#include <AtomLyIntegration/CommonFeatures/Material/MaterialComponentBus.h>
 #include "EditorWhiteBoxComponent.h"
 #include "SubComponentModes/EditorWhiteBoxTransformModeBus.h"
 #include "Util/WhiteBoxEditorUtil.h"
@@ -26,7 +29,9 @@
 #include <QEvent>
 #include <QGraphicsEffect>
 #include <QHBoxLayout>
+#include <QComboBox>
 #include <QLabel>
+#include <QSignalBlocker>
 #include <QTimer>
 #include <QVBoxLayout>
 
@@ -194,6 +199,12 @@ namespace WhiteBox
         auto* spacer = new QWidget(toolbar);
         spacer->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Preferred);
         toolbar->addWidget(spacer);
+        m_textureLayer = new QComboBox(toolbar);
+        m_textureLayer->setToolTip(tr("Which layer's base colour texture to draw behind the UVs."));
+        m_textureLayer->setSizeAdjustPolicy(QComboBox::AdjustToContents);
+        connect(m_textureLayer, QOverload<int>::of(&QComboBox::currentIndexChanged), this, [this]() { Refresh(); });
+        m_textureLayerAction = toolbar->addWidget(m_textureLayer);
+        m_textureLayerAction->setVisible(false);
         m_showTexture = addAction(editorIcons + QStringLiteral("Material.svg"), tr("Show Texture"),
             tr("Draw the faces' base colour texture behind the UVs, repeating outside the unit square as it does on the mesh."));
         m_showTexture->setCheckable(true);
@@ -257,26 +268,77 @@ namespace WhiteBox
         if (!m_showTexture->isChecked() || faces.empty() || component == nullptr)
         {
             m_canvas->SetBackground(QImage());
+            m_textureLayerAction->setVisible(false);
             return;
         }
-        // The first viewed face's material: its own override, else the entity's, else the built-in one.
+        // The first viewed face's material: its own, else the entity's, else the built-in one.
         AZ::Data::AssetId material = Api::FaceMaterial(mesh, faces.front());
         if (!material.IsValid())
         {
             material = component->GetDefaultMaterialAssetId();
-            if (!material.IsValid() && !component->GetMaterialUseTexture())
-            {
-                m_canvas->SetBackground(QImage()); // the built-in material with its texture switched off
-                return;
-            }
         }
-        const UvTextureCache::Result texture = m_textures.Find(material);
-        if (!texture.m_pending)
+        // A Material component on the entity may swap that slot's material or override its textures, as the renderer does:
+        // the most specific entry that yields an instance wins (this LOD's slot, the slot, then the whole model).
+        const AZ::u32 slot = MaterialSlotStableId(material, Api::FacePaintColor(mesh, faces.front()));
+        AZ::Render::MaterialAssignmentMap assignments;
+        AZ::Render::MaterialComponentRequestBus::EventResult(
+            assignments, m_pair.GetEntityId(), &AZ::Render::MaterialComponentRequests::GetMaterialMapCopy);
+        const UvTextureCache::PropertyOverrides* overrides = nullptr;
+        for (const AZ::Render::MaterialAssignmentId& id :
+             { AZ::Render::MaterialAssignmentId::CreateFromLodAndStableId(0, slot), AZ::Render::MaterialAssignmentId::CreateFromStableIdOnly(slot),
+               AZ::Render::MaterialAssignmentId::CreateDefault() })
         {
-            m_canvas->SetBackground(texture.m_image);
-            m_showTexture->setToolTip(
-                QStringLiteral("<b>%1</b><br>%2").arg(tr("Show Texture"), texture.m_image.isNull() ? tr("This material has no base colour texture to show.") : texture.m_name));
+            const auto it = assignments.find(id);
+            if (it == assignments.end())
+            {
+                continue;
+            }
+            const bool swapsAsset = it->second.m_materialAsset.GetId().IsValid();
+            // A whole-model entry without an asset has nothing to build an instance from.
+            if (!swapsAsset && (id.IsDefault() || it->second.m_propertyOverrides.empty()))
+            {
+                continue;
+            }
+            if (swapsAsset)
+            {
+                material = it->second.m_materialAsset.GetId();
+            }
+            overrides = &it->second.m_propertyOverrides;
+            break;
         }
+        if (!material.IsValid() && !component->GetMaterialUseTexture())
+        {
+            m_canvas->SetBackground(QImage()); // the built-in material with its texture switched off
+            m_textureLayerAction->setVisible(false);
+            return;
+        }
+        const UvTextureCache::Result found = m_textures.Find(material, overrides);
+        if (found.m_pending)
+        {
+            return;
+        }
+        // Refill the layer list only when it changes, keeping the chosen layer by name across materials.
+        QStringList names;
+        for (const UvTextureCache::Texture& texture : found.m_textures)
+        {
+            names.append(texture.m_layer);
+        }
+        if (names != m_textureLayerNames)
+        {
+            const QString chosen = m_textureLayer->currentText();
+            const QSignalBlocker block(m_textureLayer);
+            m_textureLayer->clear();
+            m_textureLayer->addItems(names);
+            m_textureLayer->setCurrentIndex(AZStd::max(0, names.indexOf(chosen)));
+            m_textureLayerNames = names;
+        }
+        m_textureLayerAction->setVisible(names.size() > 1);
+        const int index = m_textureLayer->currentIndex();
+        const UvTextureCache::Texture* texture =
+            index >= 0 && index < static_cast<int>(found.m_textures.size()) ? &found.m_textures[index] : nullptr;
+        m_canvas->SetBackground(texture != nullptr ? texture->m_image : QImage());
+        m_showTexture->setToolTip(QStringLiteral("<b>%1</b><br>%2").arg(
+            tr("Show Texture"), texture == nullptr ? tr("This material has no base colour texture to show.") : texture->m_name));
     }
 
     void WhiteBoxUvEditorPane::DisplayViewport(

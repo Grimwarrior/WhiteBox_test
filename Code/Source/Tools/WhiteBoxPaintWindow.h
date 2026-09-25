@@ -10,6 +10,7 @@
 #include "Tools/WhiteBoxModelingWindow.h"
 
 class QCheckBox;
+class QDoubleSpinBox;
 class QLabel;
 class QPushButton;
 class QWidget;
@@ -48,6 +49,12 @@ namespace WhiteBox
         QLabel* m_colorLabel = nullptr;
         QPushButton* m_color = nullptr;
         QCheckBox* m_wholePolygon = nullptr;
+        QLabel* m_radiusLabel = nullptr;
+        QDoubleSpinBox* m_radius = nullptr;
+        QLabel* m_strengthLabel = nullptr;
+        QDoubleSpinBox* m_strength = nullptr;
+        QLabel* m_hardnessLabel = nullptr;
+        QDoubleSpinBox* m_hardness = nullptr;
         bool m_updating = false;
     };
 } // namespace WhiteBox

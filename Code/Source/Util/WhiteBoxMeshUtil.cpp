@@ -31,6 +31,7 @@ namespace WhiteBox
                 return it->second;
             }
             const Api::VertexHandle dh = Api::AddVertex(dest, Api::VertexPosition(src, srcVertex));
+            Api::CopyVertexBlend(dest, dh, src, srcVertex); // layer merges keep painted blends
             vmap.emplace(srcVertex.Index(), dh);
             return dh;
         };
@@ -118,6 +119,7 @@ namespace WhiteBox
                 return it->second;
             }
             const Api::VertexHandle dh = Api::AddVertex(*dest, Api::VertexPosition(src, srcVertex));
+            Api::CopyVertexBlend(*dest, dh, src, srcVertex);
             vmap.emplace(srcVertex.Index(), dh);
             return dh;
         };
@@ -153,13 +155,14 @@ namespace WhiteBox
     }
 
     WhiteBoxFace BuildWhiteBoxFace(
-        const WhiteBoxMesh& whiteBox, const Api::FaceHandle& faceHandle, const bool flipWinding)
+        const WhiteBoxMesh& whiteBox, const Api::FaceHandle& faceHandle, const bool flipWinding, const bool withBlend)
     {
-        const auto copyVertex = [&whiteBox](const Api::HalfedgeHandle& in, WhiteBoxVertex& out)
+        const auto copyVertex = [&whiteBox, withBlend](const Api::HalfedgeHandle& in, WhiteBoxVertex& out)
         {
             const auto vh = Api::HalfedgeVertexHandleAtTip(whiteBox, in);
             out.m_position = Api::VertexPosition(whiteBox, vh);
             out.m_uv = Api::HalfedgeUV(whiteBox, in);
+            out.m_blend = withBlend ? Api::VertexBlend(whiteBox, vh) : AZ::Vector3::CreateZero();
         };
 
         WhiteBoxFace face;
@@ -210,9 +213,10 @@ namespace WhiteBox
         faceData.reserve(faceCount);
 
         const auto faceHandles = Api::MeshFaceHandles(whiteBox);
+        const bool withBlend = Api::MeshHasVertexBlend(whiteBox);
         for (const auto& faceHandle : faceHandles)
         {
-            faceData.push_back(BuildWhiteBoxFace(whiteBox, faceHandle, flipWinding));
+            faceData.push_back(BuildWhiteBoxFace(whiteBox, faceHandle, flipWinding, withBlend));
         }
 
         renderData.m_material = material;

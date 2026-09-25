@@ -824,6 +824,8 @@ namespace WhiteBox
         void BuildLayerRenderMeshes(); //!< Build one tinted render mesh per visible layer (per-layer tint mode).
         AZ::u32 OnGlobalTintChange();           //!< Use Global Tint toggled: rebuild render + show/hide the global tint.
         AZ::Crc32 OnAddCollision();             //!< Add a White Box collider component to this entity.
+        AZ::Crc32 OnAddMaterial();              //!< Add a Material component to this entity.
+        AZ::Crc32 LegacyDefaultMaterialVisibility() const;
         AZ::Crc32 GlobalTintVisibility() const; //!< Show the global material tint only when Use Global Tint is on.
         //! Apply a layer's Position/Rotation(Euler deg)/Scale to every vertex of a display mesh.
         static void ApplyTransformToMesh(

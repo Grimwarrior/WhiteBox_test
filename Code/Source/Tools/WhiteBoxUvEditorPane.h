@@ -11,12 +11,15 @@
 #include "Tools/WhiteBoxUvCanvas.h"
 #include "Tools/WhiteBoxUvTexture.h"
 
+#include <QStringList>
+
 #include <AzCore/Component/ComponentBus.h>
 #include <AzFramework/Entity/EntityDebugDisplayBus.h>
 #include <AzToolsFramework/API/ViewportEditorModeTrackerNotificationBus.h>
 #include <QWidget>
 
 class QAction;
+class QComboBox;
 class QLabel;
 
 namespace WhiteBox
@@ -64,6 +67,9 @@ namespace WhiteBox
         QLabel* m_status = nullptr;
         QLabel* m_message = nullptr; //!< What the last operation did or why it could not.
         QAction* m_showTexture = nullptr;
+        QComboBox* m_textureLayer = nullptr;       //!< Which layer's map to show, for a multilayer material.
+        QAction* m_textureLayerAction = nullptr;   //!< The combo's toolbar slot, hidden when there is one map or none.
+        QStringList m_textureLayerNames;           //!< What the combo lists, so it is only refilled when that changes.
         UvTextureCache m_textures;
     };
 } // namespace WhiteBox

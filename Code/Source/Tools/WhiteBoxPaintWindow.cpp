@@ -13,6 +13,7 @@
 #include <AzToolsFramework/UI/PropertyEditor/PropertyAssetCtrl.hxx>
 
 #include <QCheckBox>
+#include <QDoubleSpinBox>
 #include <QColorDialog>
 #include <QGridLayout>
 #include <QHBoxLayout>
@@ -32,6 +33,9 @@ namespace WhiteBox
             case FacePaintOperation::Color: return QObject::tr("Paint Color");
             case FacePaintOperation::ResetMaterial: return QObject::tr("Reset Material");
             case FacePaintOperation::ResetColor: return QObject::tr("Reset Color");
+            case FacePaintOperation::BlendLayer2: return QObject::tr("Blend Layer 2");
+            case FacePaintOperation::BlendLayer3: return QObject::tr("Blend Layer 3");
+            case FacePaintOperation::BlendBase: return QObject::tr("Blend Base Layer");
             default: return QObject::tr("Paint");
             }
         }
@@ -48,6 +52,13 @@ namespace WhiteBox
                 return QObject::tr("Drag over faces to drop their material override.");
             case FacePaintOperation::ResetColor:
                 return QObject::tr("Drag over faces to drop their painted colour.");
+            case FacePaintOperation::BlendLayer2:
+            case FacePaintOperation::BlendLayer3:
+            case FacePaintOperation::BlendBase:
+                return QObject::tr(
+                    "Brush vertices towards this layer. Shows on faces with a vertex-blend material (StandardMultilayerPBR, "
+                    "Blend Source: Vertex Colors), such as materials/WhiteBoxVertexBlend; paint it on with Paint Material. "
+                    "Blends run between vertices, so subdivide for finer detail.");
             default: return QString();
             }
         }
@@ -105,6 +116,33 @@ namespace WhiteBox
         controls->addWidget(m_colorLabel, 1, 0);
         controls->addWidget(m_color, 1, 1);
 
+        // Blend brush rows; shown only for the three blend verbs.
+        const auto makeSpin = [this](const double minimum, const double maximum, const double step, const QString& suffix)
+        {
+            auto* spin = new QDoubleSpinBox(this);
+            spin->setRange(minimum, maximum);
+            spin->setSingleStep(step);
+            spin->setDecimals(2);
+            spin->setSuffix(suffix);
+            spin->setKeyboardTracking(false);
+            return spin;
+        };
+        m_radiusLabel = new QLabel(tr("Radius"), this);
+        m_radius = makeSpin(0.01, 100.0, 0.1, tr(" m"));
+        m_radius->setToolTip(tr("How far the brush reaches, in metres."));
+        m_strengthLabel = new QLabel(tr("Strength"), this);
+        m_strength = makeSpin(0.01, 1.0, 0.05, QString());
+        m_strength->setToolTip(tr("How far each dab moves the vertices towards the layer; 1 paints it fully at once."));
+        m_hardnessLabel = new QLabel(tr("Hardness"), this);
+        m_hardness = makeSpin(0.0, 0.99, 0.05, QString());
+        m_hardness->setToolTip(tr("0 fades from the centre; higher keeps full strength further out before the edge falls off."));
+        controls->addWidget(m_radiusLabel, 2, 0);
+        controls->addWidget(m_radius, 2, 1);
+        controls->addWidget(m_strengthLabel, 3, 0);
+        controls->addWidget(m_strength, 3, 1);
+        controls->addWidget(m_hardnessLabel, 4, 0);
+        controls->addWidget(m_hardness, 4, 1);
+
         layout->addLayout(controls);
 
         // Applies to all four verbs, so it sits outside the per-operation rows.
@@ -140,6 +178,25 @@ namespace WhiteBox
                 component->SetFacePaintSettings(settings);
             });
         connect(m_color, &QPushButton::clicked, this, &WhiteBoxPaintWindow::ChooseColor);
+        const auto brushSetting = [this](float FacePaintSettings::*member)
+        {
+            return [this, member](const double value)
+            {
+                if (m_updating)
+                {
+                    return;
+                }
+                if (auto* component = CurrentComponent())
+                {
+                    auto settings = component->GetFacePaintSettings();
+                    settings.*member = static_cast<float>(value);
+                    component->SetFacePaintSettings(settings);
+                }
+            };
+        };
+        connect(m_radius, QOverload<double>::of(&QDoubleSpinBox::valueChanged), this, brushSetting(&FacePaintSettings::m_brushRadius));
+        connect(m_strength, QOverload<double>::of(&QDoubleSpinBox::valueChanged), this, brushSetting(&FacePaintSettings::m_brushStrength));
+        connect(m_hardness, QOverload<double>::of(&QDoubleSpinBox::valueChanged), this, brushSetting(&FacePaintSettings::m_brushHardness));
         connect(
             m_wholePolygon, &QCheckBox::toggled, this,
             [this](const bool wholePolygon)
@@ -203,6 +260,12 @@ namespace WhiteBox
         m_material->setVisible(material);
         m_colorLabel->setVisible(color);
         m_color->setVisible(color);
+        const bool blend = IsBlendOperation(operation);
+        for (QWidget* widget : std::initializer_list<QWidget*>{ m_radiusLabel, m_radius, m_strengthLabel, m_strength, m_hardnessLabel, m_hardness })
+        {
+            widget->setVisible(blend);
+        }
+        m_wholePolygon->setVisible(!blend); // the brush works per vertex, not per face
 
         // The two reset verbs carry nothing, so the window is title plus hint only.
         adjustSize();
@@ -222,6 +285,9 @@ namespace WhiteBox
         m_updating = true;
         m_material->SetSelectedAssetID(settings.m_material);
         m_wholePolygon->setChecked(settings.m_wholePolygon);
+        m_radius->setValue(settings.m_brushRadius);
+        m_strength->setValue(settings.m_brushStrength);
+        m_hardness->setValue(settings.m_brushHardness);
         m_updating = false;
 
         ApplySwatch(settings.m_color);

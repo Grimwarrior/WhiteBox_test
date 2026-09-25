@@ -34,6 +34,7 @@
 #include <AzToolsFramework/API/ViewPaneOptions.h>
 #include <AzToolsFramework/Entity/EditorEntityHelpers.h>
 #include <Components/EditorWhiteBoxColliderComponent.h>
+#include <AtomLyIntegration/CommonFeatures/Material/MaterialComponentConstants.h>
 
 namespace WhiteBox
 {
@@ -590,10 +591,16 @@ namespace WhiteBox
 
                     ->ClassElement(AZ::Edit::ClassElements::Group, "Material / Display")
                     ->Attribute(AZ::Edit::Attributes::AutoExpand, false)
+                    ->UIElement(
+                        AZ::Edit::UIHandlers::Button, "",
+                        "Add a Material component to this entity: swap any slot's material or edit this entity's own material instance.")
+                    ->Attribute(AZ::Edit::Attributes::ChangeNotify, &EditorWhiteBoxComponent::OnAddMaterial)
+                    ->Attribute(AZ::Edit::Attributes::ButtonText, "Add Material")
                     ->DataElement(
                         AZ::Edit::UIHandlers::Default, &EditorWhiteBoxComponent::m_defaultMaterialAsset,
                         "Default Material",
-                        "Default material for this entity. Clear to use the built-in White Box material.")
+                        "Older default material for this entity; clear it and use the Material component instead.")
+                    ->Attribute(AZ::Edit::Attributes::Visibility, &EditorWhiteBoxComponent::LegacyDefaultMaterialVisibility)
                     ->Attribute(AZ::Edit::Attributes::ChangeNotify, &EditorWhiteBoxComponent::OnDefaultMaterialChange)
                     ->DataElement(
                         AZ::Edit::UIHandlers::CheckBox, &EditorWhiteBoxComponent::m_useGlobalTint, "Use Global Tint",
@@ -665,6 +672,29 @@ namespace WhiteBox
         }
     }
 
+    AZ::Crc32 EditorWhiteBoxComponent::OnAddMaterial()
+    {
+        AZ::Entity* entity = GetEntity();
+        if (entity == nullptr || entity->FindComponent(AZ::Render::EditorMaterialComponentTypeId) != nullptr)
+        {
+            return AZ::Edit::PropertyRefreshLevels::None; // already has one
+        }
+        AzToolsFramework::ScopedUndoBatch undoBatch("Add White Box Material");
+        AzToolsFramework::EntityCompositionRequests::AddComponentsOutcome outcome =
+            AZ::Failure(AZStd::string("uninitialized"));
+        AzToolsFramework::EntityCompositionRequestBus::BroadcastResult(
+            outcome, &AzToolsFramework::EntityCompositionRequests::AddComponentsToEntities,
+            AzToolsFramework::EntityIdList{ GetEntityId() }, AZ::ComponentTypeList{ AZ::Render::EditorMaterialComponentTypeId });
+        undoBatch.MarkEntityDirty(GetEntityId());
+        return AZ::Edit::PropertyRefreshLevels::EntireTree;
+    }
+
+    AZ::Crc32 EditorWhiteBoxComponent::LegacyDefaultMaterialVisibility() const
+    {
+        // Only shown while an older entity still carries one, so it can be cleared.
+        return m_defaultMaterialAsset.GetId().IsValid() ? AZ::Edit::PropertyVisibility::Show : AZ::Edit::PropertyVisibility::Hide;
+    }
+
     AZ::Crc32 EditorWhiteBoxComponent::OnAddCollision()
     {
         AZ::Entity* entity = GetEntity();
@@ -695,6 +725,7 @@ namespace WhiteBox
     void EditorWhiteBoxComponent::GetProvidedServices(AZ::ComponentDescriptor::DependencyArrayType& provided)
     {
         provided.push_back(AZ_CRC_CE("WhiteBoxService"));
+        provided.push_back(AZ_CRC_CE("MaterialConsumerService")); // lets a Material component override slots
     }
 
     void EditorWhiteBoxComponent::GetIncompatibleServices(AZ::ComponentDescriptor::DependencyArrayType& incompatible)
@@ -703,6 +734,7 @@ namespace WhiteBox
         // Non-Uniform Scale component (render, collider and bounds all honour it via the bus).
         incompatible.push_back(AZ_CRC_CE("MeshService"));
         incompatible.push_back(AZ_CRC_CE("WhiteBoxService"));
+        incompatible.push_back(AZ_CRC_CE("MaterialConsumerService"));
     }
 
     EditorWhiteBoxComponent::EditorWhiteBoxComponent() = default;

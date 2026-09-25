@@ -53,7 +53,9 @@ namespace WhiteBox
 
     //! Build a single render face from a white box face handle, optionally reversing the
     //! winding (and flipping the normal) so the face renders inside-out.
-    WhiteBoxFace BuildWhiteBoxFace(const WhiteBoxMesh& whiteBox, const Api::FaceHandle& faceHandle, bool flipWinding);
+    //! @param withBlend read the corners' vertex-blend weights; callers building a whole mesh check MeshHasVertexBlend once.
+    WhiteBoxFace BuildWhiteBoxFace(
+        const WhiteBoxMesh& whiteBox, const Api::FaceHandle& faceHandle, bool flipWinding, bool withBlend = true);
 
     //! Build intermediate render data (faces + material) passed to WhiteBoxRenderMeshInterface
     //! to generate the concrete render mesh.

@@ -53,10 +53,19 @@ namespace WhiteBox
             uvs[idxFace * 3 + 2] = face.m_v3.m_uv;
             normals[idxFace * 3 + 2] = face.m_v3.m_normal;
 
-            // per-face tint (per-layer colour) -> per-vertex COLOR0
-            m_colors[idxFace * 3 + 0] = face.m_color;
-            m_colors[idxFace * 3 + 1] = face.m_color;
-            m_colors[idxFace * 3 + 2] = face.m_color;
+            // COLOR0: the per-face tint (per-layer colour), or the corners' vertex-blend weights for a custom material
+            if (face.m_colorFromBlend)
+            {
+                m_colors[idxFace * 3 + 0] = AZ::Vector4::CreateFromVector3AndFloat(face.m_v1.m_blend, 1.0f);
+                m_colors[idxFace * 3 + 1] = AZ::Vector4::CreateFromVector3AndFloat(face.m_v2.m_blend, 1.0f);
+                m_colors[idxFace * 3 + 2] = AZ::Vector4::CreateFromVector3AndFloat(face.m_v3.m_blend, 1.0f);
+            }
+            else
+            {
+                m_colors[idxFace * 3 + 0] = face.m_color;
+                m_colors[idxFace * 3 + 1] = face.m_color;
+                m_colors[idxFace * 3 + 2] = face.m_color;
+            }
         }
 
         // calculate the basis vectors for the TBN matrices

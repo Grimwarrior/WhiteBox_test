@@ -5501,6 +5501,128 @@ namespace UnitTest
         check(WhiteBox::UvOps::Pack(*mesh, faces), false);
     }
 
+    TEST_F(WhiteBoxTestFixture, VertexBlendIsStoredInterpolatedAndSurvivesRebuilds)
+    {
+        namespace Api = WhiteBox::Api;
+        auto mesh = Api::CreateWhiteBoxMesh();
+        Api::InitializeAsUnitCube(*mesh);
+        EXPECT_FALSE(Api::MeshHasVertexBlend(*mesh));
+
+        // Paint every vertex of the top face towards layer 2, the bottom stays unpainted.
+        Api::VertexHandles top;
+        for (const auto vertex : Api::MeshVertexHandles(*mesh))
+        {
+            if (Api::VertexPosition(*mesh, vertex).GetZ() > 0.0f)
+            {
+                Api::SetVertexBlend(*mesh, vertex, AZ::Vector3(0.6f, 0.0f, 0.0f));
+                top.push_back(vertex);
+            }
+        }
+        ASSERT_EQ(top.size(), 4u);
+        EXPECT_TRUE(Api::MeshHasVertexBlend(*mesh));
+        EXPECT_TRUE(Api::VertexBlendPainted(*mesh, top.front()));
+        EXPECT_TRUE(Api::VertexBlend(*mesh, top.front()).IsClose(AZ::Vector3(0.6f, 0.0f, 0.0f), 1.0f / 255.0f));
+
+        // An unpainted bottom vertex takes the average of its painted neighbours.
+        for (const auto vertex : Api::MeshVertexHandles(*mesh))
+        {
+            if (Api::VertexPosition(*mesh, vertex).GetZ() < 0.0f)
+            {
+                EXPECT_FALSE(Api::VertexBlendPainted(*mesh, vertex));
+                EXPECT_NEAR(Api::VertexBlend(*mesh, vertex).GetX(), 0.6f, 1.0f / 255.0f);
+            }
+        }
+
+        // Save and load keep it.
+        Api::WhiteBoxMeshStream stream;
+        ASSERT_TRUE(Api::WriteMesh(*mesh, stream));
+        auto loaded = Api::CreateWhiteBoxMesh();
+        ASSERT_EQ(Api::ReadMesh(*loaded, stream), Api::ReadResult::Full);
+        EXPECT_TRUE(Api::VertexBlend(*loaded, top.front()).IsClose(AZ::Vector3(0.6f, 0.0f, 0.0f), 1.0f / 255.0f));
+
+        // Fix Non-Manifold rebuilds every vertex; the paint comes back by position.
+        ASSERT_TRUE(Api::RepairMesh(*mesh));
+        size_t painted = 0;
+        for (const auto vertex : Api::MeshVertexHandles(*mesh))
+        {
+            if (Api::VertexPosition(*mesh, vertex).GetZ() > 0.0f)
+            {
+                EXPECT_TRUE(Api::VertexBlendPainted(*mesh, vertex));
+                painted += 1;
+            }
+        }
+        EXPECT_EQ(painted, 4u);
+
+        // The weights reach the render data and survive the baked blob.
+        const WhiteBox::WhiteBoxRenderData renderData = WhiteBox::CreateWhiteBoxRenderData(*mesh, WhiteBox::WhiteBoxMaterial{});
+        bool anyBlend = false;
+        for (const auto& face : renderData.m_faces)
+        {
+            anyBlend = anyBlend || !face.m_v1.m_blend.IsZero() || !face.m_v2.m_blend.IsZero() || !face.m_v3.m_blend.IsZero();
+        }
+        EXPECT_TRUE(anyBlend);
+        const auto blob = WhiteBox::PackWhiteBoxRenderData({ &renderData });
+        WhiteBox::WhiteBoxRenderData unpacked;
+        ASSERT_TRUE(WhiteBox::UnpackWhiteBoxRenderData(blob, { &unpacked }));
+        ASSERT_EQ(unpacked.m_faces.size(), renderData.m_faces.size());
+        for (size_t i = 0; i < renderData.m_faces.size(); ++i)
+        {
+            EXPECT_TRUE(unpacked.m_faces[i].m_v1.m_blend.IsClose(renderData.m_faces[i].m_v1.m_blend));
+            EXPECT_TRUE(unpacked.m_faces[i].m_v3.m_blend.IsClose(renderData.m_faces[i].m_v3.m_blend));
+        }
+    }
+
+    TEST_F(WhiteBoxTestFixture, VertexBlendSurvivesLayerMergeAndFlip)
+    {
+        namespace Api = WhiteBox::Api;
+        // A second visible layer merges the painted one into a new mesh; the paint must come along.
+        auto painted = Api::CreateWhiteBoxMesh();
+        Api::InitializeAsUnitCube(*painted);
+        for (const auto vertex : Api::MeshVertexHandles(*painted))
+        {
+            Api::SetVertexBlend(*painted, vertex, AZ::Vector3(0.0f, 1.0f, 0.0f));
+        }
+        auto other = Api::CreateWhiteBoxMesh();
+        Api::InitializeAsUnitCube(*other);
+
+        auto merged = Api::CreateWhiteBoxMesh();
+        WhiteBox::AppendMesh(*merged, *other);
+        WhiteBox::AppendMesh(*merged, *painted);
+        size_t paintedCount = 0;
+        for (const auto vertex : Api::MeshVertexHandles(*merged))
+        {
+            if (Api::VertexBlendPainted(*merged, vertex))
+            {
+                EXPECT_TRUE(Api::VertexBlend(*merged, vertex).IsClose(AZ::Vector3(0.0f, 1.0f, 0.0f), 1.0f / 255.0f));
+                paintedCount += 1;
+            }
+        }
+        EXPECT_EQ(paintedCount, Api::MeshVertexHandles(*painted).size());
+
+        // Invert Normals rebuilds the layer through FlippedMeshWinding.
+        const Api::WhiteBoxMeshPtr flipped = WhiteBox::FlippedMeshWinding(*painted);
+        for (const auto vertex : Api::MeshVertexHandles(*flipped))
+        {
+            EXPECT_TRUE(Api::VertexBlendPainted(*flipped, vertex));
+        }
+    }
+
+    TEST_F(WhiteBoxTestFixture, BakedVertexBlendKeepsFirstDabOnOneVertex)
+    {
+        namespace Api = WhiteBox::Api;
+        auto mesh = Api::CreateWhiteBoxMesh();
+        Api::InitializeAsUnitCube(*mesh);
+        // What a blend stroke does: bake first, then paint a single vertex.
+        Api::BakeVertexBlend(*mesh);
+        const Api::VertexHandle painted = Api::MeshVertexHandles(*mesh).front();
+        Api::SetVertexBlend(*mesh, painted, AZ::Vector3(1.0f, 0.0f, 0.0f));
+        for (const auto vertex : Api::MeshVertexHandles(*mesh))
+        {
+            const float expected = vertex == painted ? 1.0f : 0.0f;
+            EXPECT_NEAR(Api::VertexBlend(*mesh, vertex).GetX(), expected, 1.0f / 255.0f);
+        }
+    }
+
     TEST_F(WhiteBoxTestFixture, RoomWithSlabsIsOneClosedShellThatCarvesCleanly)
     {
         namespace Api = WhiteBox::Api;
