@@ -440,6 +440,61 @@ namespace WhiteBox
         return faces;
     }
 
+    AZStd::vector<int> WhiteBoxUvCanvas::SelectedMeshVertices() const
+    {
+        AZStd::unordered_set<int> seen;
+        AZStd::vector<int> vertices;
+        for (AZ::u32 i = 0; i < m_model.m_vertices.size(); ++i)
+        {
+            if (IsSelected(i) && seen.insert(m_model.m_vertices[i].m_meshVertex).second)
+            {
+                vertices.push_back(m_model.m_vertices[i].m_meshVertex);
+            }
+        }
+        return vertices;
+    }
+
+    AZStd::vector<AZStd::pair<int, int>> WhiteBoxUvCanvas::SelectedMeshEdges() const
+    {
+        AZStd::vector<AZStd::pair<int, int>> edges;
+        for (const auto& edge : m_model.m_edges)
+        {
+            if (edge.m_border && IsSelected(edge.m_from) && IsSelected(edge.m_to))
+            {
+                edges.emplace_back(m_model.m_vertices[edge.m_from].m_meshVertex, m_model.m_vertices[edge.m_to].m_meshVertex);
+            }
+        }
+        return edges;
+    }
+
+    void WhiteBoxUvCanvas::SetBackground(const QImage& image)
+    {
+        if (image.cacheKey() != m_background.cacheKey())
+        {
+            m_background = image;
+            update();
+        }
+    }
+
+    void WhiteBoxUvCanvas::SetHoveredFaces(const Api::FaceHandles& faces)
+    {
+        AZStd::unordered_set<int> hovered;
+        for (const auto face : faces)
+        {
+            hovered.insert(face.Index());
+        }
+        bool changed = hovered.size() != m_hoveredFaces.size();
+        for (auto it = hovered.begin(); !changed && it != hovered.end(); ++it)
+        {
+            changed = m_hoveredFaces.find(*it) == m_hoveredFaces.end();
+        }
+        if (changed)
+        {
+            m_hoveredFaces = AZStd::move(hovered);
+            update();
+        }
+    }
+
     Api::FaceHandles WhiteBoxUvCanvas::TargetFaces() const
     {
         Api::FaceHandles faces = SelectedFaces();
@@ -935,22 +990,47 @@ namespace WhiteBox
         painter.setRenderHint(QPainter::Antialiasing);
         painter.fillRect(rect(), QColor(34, 34, 36));
 
-        // The unit square as a checker, the tile a texture repeats on.
         const QPointF squareTopLeft = ToScreen(AZ::Vector2(0.0f, 0.0f));
-        const double cell = m_pixelsPerUnit / 8.0;
-        for (int row = 0; row < 8; ++row)
+        const AZ::Vector2 visibleLow = ToUv(QPointF(0.0, 0.0));
+        const AZ::Vector2 visibleHigh = ToUv(QPointF(width(), height()));
+        if (!m_background.isNull())
         {
-            for (int column = 0; column < 8; ++column)
+            // The texture repeats outside the unit square, as it does on the mesh, dimmed so the square stands out.
+            painter.setRenderHint(QPainter::SmoothPixmapTransform);
+            const int firstU = static_cast<int>(std::floor(visibleLow.GetX()));
+            const int lastU = static_cast<int>(std::floor(visibleHigh.GetX()));
+            const int firstV = static_cast<int>(std::floor(visibleLow.GetY()));
+            const int lastV = static_cast<int>(std::floor(visibleHigh.GetY()));
+            const bool fewTiles = (lastU - firstU + 1) * (lastV - firstV + 1) <= 400;
+            for (int v = fewTiles ? firstV : 0; v <= (fewTiles ? lastV : 0); ++v)
             {
-                const QColor shade = (row + column) % 2 == 0 ? QColor(58, 58, 62) : QColor(50, 50, 54);
-                painter.fillRect(QRectF(squareTopLeft + QPointF(column * cell, row * cell), QSizeF(cell, cell)), shade);
+                for (int u = fewTiles ? firstU : 0; u <= (fewTiles ? lastU : 0); ++u)
+                {
+                    painter.setOpacity(u == 0 && v == 0 ? 1.0 : 0.35);
+                    const QPointF corner = ToScreen(AZ::Vector2(static_cast<float>(u), static_cast<float>(v)));
+                    painter.drawImage(QRectF(corner, QSizeF(m_pixelsPerUnit, m_pixelsPerUnit)), m_background);
+                }
+            }
+            painter.setOpacity(1.0);
+        }
+        else
+        {
+            // No texture: the unit square as a checker, the tile a texture repeats on.
+            const double cell = m_pixelsPerUnit / 8.0;
+            for (int row = 0; row < 8; ++row)
+            {
+                for (int column = 0; column < 8; ++column)
+                {
+                    const QColor shade = (row + column) % 2 == 0 ? QColor(58, 58, 62) : QColor(50, 50, 54);
+                    painter.fillRect(QRectF(squareTopLeft + QPointF(column * cell, row * cell), QSizeF(cell, cell)), shade);
+                }
             }
         }
 
         // Whole-unit lines across the view, so repeats outside the square are readable.
         painter.setPen(QPen(QColor(70, 70, 76), 1.0));
-        const AZ::Vector2 viewLow = ToUv(QPointF(0.0, 0.0));
-        const AZ::Vector2 viewHigh = ToUv(QPointF(width(), height()));
+        const AZ::Vector2& viewLow = visibleLow;
+        const AZ::Vector2& viewHigh = visibleHigh;
         if (m_pixelsPerUnit >= 12.0)
         {
             for (int u = static_cast<int>(std::floor(viewLow.GetX())); u <= static_cast<int>(std::ceil(viewHigh.GetX())); ++u)
@@ -969,9 +1049,12 @@ namespace WhiteBox
 
         // Faces, then the diagonals inside polygons faintly, then polygon edges.
         painter.setPen(Qt::NoPen);
-        painter.setBrush(QColor(103, 199, 232, 40));
-        for (const auto& triangle : m_model.m_triangles)
+        for (size_t t = 0; t < m_model.m_triangles.size(); ++t)
         {
+            const auto& triangle = m_model.m_triangles[t];
+            const bool hovered = m_hoveredFaces.find(m_model.m_faces[t].Index()) != m_hoveredFaces.end();
+            // A texture shows through a lighter tint; the face under the viewport cursor is picked out.
+            painter.setBrush(hovered ? QColor(255, 200, 80, 110) : QColor(103, 199, 232, m_background.isNull() ? 40 : 25));
             const QPointF points[3] = { ToScreen(m_model.m_vertices[triangle[0]].m_uv), ToScreen(m_model.m_vertices[triangle[1]].m_uv),
                                         ToScreen(m_model.m_vertices[triangle[2]].m_uv) };
             painter.drawPolygon(points, 3);

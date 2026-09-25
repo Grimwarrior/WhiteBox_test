@@ -17,6 +17,7 @@
 #include <WhiteBox/WhiteBoxToolApi.h>
 #include "Util/WhiteBoxUvOps.h"
 
+#include <QImage>
 #include <QPoint>
 #include <QPointF>
 #include <QRect>
@@ -92,6 +93,16 @@ namespace WhiteBox
 
         //! Faces whose every corner is selected; empty when no face is.
         Api::FaceHandles SelectedFaces() const;
+        //! Mesh vertices under selected points, once each.
+        AZStd::vector<int> SelectedMeshVertices() const;
+        //! Polygon edges with both ends selected, as mesh vertex pairs.
+        AZStd::vector<AZStd::pair<int, int>> SelectedMeshEdges() const;
+        bool HasSelection() const { return !m_selectedCorners.empty(); }
+
+        //! Drawn tiled behind the UVs, full strength on the unit square; a null image shows the checker.
+        void SetBackground(const QImage& image);
+        //! Faces to highlight because the viewport cursor is over them.
+        void SetHoveredFaces(const Api::FaceHandles& faces);
         //! The selected faces, or every face in view when none is.
         Api::FaceHandles TargetFaces() const;
         const AZStd::unordered_set<int>& DetachedCorners() const { return m_detached; }
@@ -155,6 +166,8 @@ namespace WhiteBox
         UvModel m_model;
         AZStd::unordered_set<int> m_selectedCorners; //!< Halfedge indices; a point is selected when any of its corners is.
         AZStd::unordered_set<int> m_detached; //!< Halfedge indices split off by SplitSelectedFaces.
+        QImage m_background;
+        AZStd::unordered_set<int> m_hoveredFaces; //!< Face indices under the viewport cursor.
 
         QPointF m_originOnScreen = QPointF(40.0, 40.0); //!< Where UV (0, 0) is drawn.
         double m_pixelsPerUnit = 256.0;

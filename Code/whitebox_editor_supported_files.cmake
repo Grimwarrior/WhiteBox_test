@@ -56,6 +56,8 @@ set(FILES
     Source/Tools/WhiteBoxUvCanvas.h
     Source/Tools/WhiteBoxUvEditorPane.cpp
     Source/Tools/WhiteBoxUvEditorPane.h
+    Source/Tools/WhiteBoxUvTexture.cpp
+    Source/Tools/WhiteBoxUvTexture.h
     Source/Tools/WhiteBoxExtrudeInsetWindow.cpp
     Source/Tools/WhiteBoxExtrudeInsetWindow.h
     Source/Tools/WhiteBoxLayerGizmo.cpp

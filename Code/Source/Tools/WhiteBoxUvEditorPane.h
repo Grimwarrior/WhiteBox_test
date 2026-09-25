@@ -9,11 +9,14 @@
 #pragma once
 
 #include "Tools/WhiteBoxUvCanvas.h"
+#include "Tools/WhiteBoxUvTexture.h"
 
 #include <AzCore/Component/ComponentBus.h>
+#include <AzFramework/Entity/EntityDebugDisplayBus.h>
 #include <AzToolsFramework/API/ViewportEditorModeTrackerNotificationBus.h>
 #include <QWidget>
 
+class QAction;
 class QLabel;
 
 namespace WhiteBox
@@ -23,6 +26,7 @@ namespace WhiteBox
     class WhiteBoxUvEditorPane
         : public QWidget
         , private AzToolsFramework::ViewportEditorModeNotificationsBus::Handler
+        , private AzFramework::ViewportDebugDisplayEventBus::Handler
     {
     public:
         static constexpr const char* PaneName = "White Box UV Editor";
@@ -39,6 +43,13 @@ namespace WhiteBox
         void OnEditorModeActivated(
             const AzToolsFramework::ViewportEditorModesInterface& editorModeState, AzToolsFramework::ViewportEditorMode mode) override;
 
+        // ViewportDebugDisplayEventBus ...
+        //! The UV selection drawn on the mesh, so it is clear which faces, edges and corners are being edited.
+        void DisplayViewport(const AzFramework::ViewportInfo& viewportInfo, AzFramework::DebugDisplayRequests& debugDisplay) override;
+
+        //! Put the viewed faces' base colour texture behind the UVs, or the checker when there is none.
+        void RefreshTexture(const WhiteBoxMesh& mesh);
+
         //! Undo the component-mode disable (and its grey dimming), deferred until the editor has finished applying it.
         void EnsureEnabledInComponentMode();
         //! Follow the selected White Box entity and its polygon selection; skipped mid-drag.
@@ -52,5 +63,7 @@ namespace WhiteBox
         WhiteBoxUvCanvas* m_canvas = nullptr;
         QLabel* m_status = nullptr;
         QLabel* m_message = nullptr; //!< What the last operation did or why it could not.
+        QAction* m_showTexture = nullptr;
+        UvTextureCache m_textures;
     };
 } // namespace WhiteBox

@@ -16,6 +16,7 @@
 #include <AzToolsFramework/API/ToolsApplicationAPI.h>
 #include <AzToolsFramework/ComponentMode/EditorComponentModeBus.h>
 #include <AzToolsFramework/Entity/EditorEntityContextBus.h>
+#include <AzFramework/Entity/EntityDebugDisplayBus.h>
 #include <WhiteBox/EditorWhiteBoxComponentBus.h>
 
 #include <QAction>
@@ -193,6 +194,11 @@ namespace WhiteBox
         auto* spacer = new QWidget(toolbar);
         spacer->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Preferred);
         toolbar->addWidget(spacer);
+        m_showTexture = addAction(editorIcons + QStringLiteral("Material.svg"), tr("Show Texture"),
+            tr("Draw the faces' base colour texture behind the UVs, repeating outside the unit square as it does on the mesh."));
+        m_showTexture->setCheckable(true);
+        m_showTexture->setChecked(true);
+        connect(m_showTexture, &QAction::toggled, this, [this]() { Refresh(); });
         connect(addAction(editorIcons + QStringLiteral("AutoFit.svg"), tr("Frame"), tr("Frame the selection, or everything when nothing is selected. [F]")),
             &QAction::triggered, this, [this]() { m_canvas->FrameSelection(); });
 
@@ -217,16 +223,118 @@ namespace WhiteBox
         refresh->start(150);
         Refresh();
 
+        // The face under the viewport cursor, picked out in the UVs; quicker than the model refresh so it tracks the mouse.
+        auto* hover = new QTimer(this);
+        connect(hover, &QTimer::timeout, this, [this]()
+        {
+            Api::FaceHandles faces;
+            if (m_pair.GetEntityId().IsValid())
+            {
+                EditorWhiteBoxTransformModeRequestBus::EventResult(faces, m_pair, &EditorWhiteBoxTransformModeRequests::GetHoveredFaces);
+            }
+            m_canvas->SetHoveredFaces(faces);
+        });
+        hover->start(50);
+
         AzFramework::EntityContextId editorEntityContextId = AzFramework::EntityContextId::CreateNull();
         AzToolsFramework::EditorEntityContextRequestBus::BroadcastResult(
             editorEntityContextId, &AzToolsFramework::EditorEntityContextRequests::GetEditorEntityContextId);
         AzToolsFramework::ViewportEditorModeNotificationsBus::Handler::BusConnect(editorEntityContextId);
+        AzFramework::ViewportDebugDisplayEventBus::Handler::BusConnect(editorEntityContextId);
         EnsureEnabledInComponentMode(); // docked at startup, the pane may already be disabled
     }
 
     WhiteBoxUvEditorPane::~WhiteBoxUvEditorPane()
     {
+        AzFramework::ViewportDebugDisplayEventBus::Handler::BusDisconnect();
         AzToolsFramework::ViewportEditorModeNotificationsBus::Handler::BusDisconnect();
+    }
+
+    void WhiteBoxUvEditorPane::RefreshTexture(const WhiteBoxMesh& mesh)
+    {
+        const Api::FaceHandles& faces = m_canvas->Model().m_faces;
+        auto* component = FindWhiteBoxComponent(m_pair);
+        if (!m_showTexture->isChecked() || faces.empty() || component == nullptr)
+        {
+            m_canvas->SetBackground(QImage());
+            return;
+        }
+        // The first viewed face's material: its own override, else the entity's, else the built-in one.
+        AZ::Data::AssetId material = Api::FaceMaterial(mesh, faces.front());
+        if (!material.IsValid())
+        {
+            material = component->GetDefaultMaterialAssetId();
+            if (!material.IsValid() && !component->GetMaterialUseTexture())
+            {
+                m_canvas->SetBackground(QImage()); // the built-in material with its texture switched off
+                return;
+            }
+        }
+        const UvTextureCache::Result texture = m_textures.Find(material);
+        if (!texture.m_pending)
+        {
+            m_canvas->SetBackground(texture.m_image);
+            m_showTexture->setToolTip(
+                QStringLiteral("<b>%1</b><br>%2").arg(tr("Show Texture"), texture.m_image.isNull() ? tr("This material has no base colour texture to show.") : texture.m_name));
+        }
+    }
+
+    void WhiteBoxUvEditorPane::DisplayViewport(
+        [[maybe_unused]] const AzFramework::ViewportInfo& viewportInfo, AzFramework::DebugDisplayRequests& debugDisplay)
+    {
+        if (!isVisible() || !m_canvas->HasSelection() || !m_pair.GetEntityId().IsValid())
+        {
+            return;
+        }
+        auto* component = FindWhiteBoxComponent(m_pair);
+        const WhiteBoxMesh* mesh = component != nullptr ? component->GetWhiteBoxMesh() : nullptr;
+        if (mesh == nullptr)
+        {
+            return;
+        }
+        const auto vertexCount = static_cast<int>(Api::MeshVertexCount(*mesh));
+        const auto faceCount = static_cast<int>(Api::MeshFaceCount(*mesh));
+        const auto position = [mesh](const int vertex) { return Api::VertexPosition(*mesh, Api::VertexHandle{ vertex }); };
+
+        // Drawn in the same editing space as the component mode (entity and active layer transform).
+        debugDisplay.PushMatrix(EditorSpaceFromLocal(m_pair));
+        const AZ::Color highlight(1.0f, 0.63f, 0.16f, 1.0f);
+
+        // Selected faces as a translucent film lifted just off the surface, so it does not fight the mesh.
+        debugDisplay.DepthTestOn();
+        debugDisplay.SetColor(AZ::Color(1.0f, 0.63f, 0.16f, 0.35f));
+        for (const auto face : m_canvas->SelectedFaces())
+        {
+            if (!face.IsValid() || face.Index() >= faceCount)
+            {
+                continue;
+            }
+            const auto corners = Api::FaceVertexPositions(*mesh, face);
+            const AZ::Vector3 lift = Api::FaceNormal(*mesh, face) * 0.002f;
+            debugDisplay.DrawTri(corners[0] + lift, corners[1] + lift, corners[2] + lift);
+        }
+
+        // Edges and corners on top of everything, so a selection behind the mesh is still visible.
+        debugDisplay.DepthTestOff();
+        debugDisplay.SetColor(highlight);
+        debugDisplay.SetLineWidth(3.0f);
+        for (const auto& edge : m_canvas->SelectedMeshEdges())
+        {
+            if (edge.first >= 0 && edge.first < vertexCount && edge.second >= 0 && edge.second < vertexCount)
+            {
+                debugDisplay.DrawLine(position(edge.first), position(edge.second));
+            }
+        }
+        debugDisplay.SetLineWidth(1.0f);
+        for (const int vertex : m_canvas->SelectedMeshVertices())
+        {
+            if (vertex >= 0 && vertex < vertexCount)
+            {
+                debugDisplay.DrawBall(position(vertex), 0.03f);
+            }
+        }
+        debugDisplay.DepthTestOn();
+        debugDisplay.PopMatrix();
     }
 
     void WhiteBoxUvEditorPane::changeEvent(QEvent* event)
@@ -301,6 +409,14 @@ namespace WhiteBox
                 polygons, m_pair, &EditorWhiteBoxTransformModeRequests::GetSelectedPolygons);
         }
         m_canvas->SetModel(mesh != nullptr ? BuildUvModel(*mesh, polygons, m_canvas->DetachedCorners()) : UvModel{});
+        if (mesh != nullptr)
+        {
+            RefreshTexture(*mesh);
+        }
+        else
+        {
+            m_canvas->SetBackground(QImage());
+        }
     }
 
     void WhiteBoxUvEditorPane::ApplyLayout(const AZStd::vector<UvChange>& changes, const QString& done)
