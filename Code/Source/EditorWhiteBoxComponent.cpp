@@ -34,6 +34,10 @@
 #include <AzToolsFramework/API/ViewPaneOptions.h>
 #include <AzToolsFramework/Entity/EditorEntityHelpers.h>
 #include <Components/EditorWhiteBoxColliderComponent.h>
+#include <SubComponentModes/EditorWhiteBoxDefaultModeBus.h>
+#include <SubComponentModes/EditorWhiteBoxTransformModeBus.h>
+#include <AzCore/Asset/AssetManagerBus.h>
+#include <AzCore/IO/Path/Path.h>
 #include <AtomLyIntegration/CommonFeatures/Material/MaterialComponentConstants.h>
 
 namespace WhiteBox
@@ -539,6 +543,8 @@ namespace WhiteBox
                 ->Field("UseGlobalTint", &EditorWhiteBoxComponent::m_useGlobalTint)
                 ->Field("MaterialOverride", &EditorWhiteBoxComponent::m_materialOverrideAssetId)
                 ->Field("DefaultMaterialAsset", &EditorWhiteBoxComponent::m_defaultMaterialAsset)
+                ->Field("MaterialPalette", &EditorWhiteBoxComponent::m_materialPalette)
+                ->Field("PaletteChoice", &EditorWhiteBoxComponent::m_paletteChoice)
                 ->Field("Voxel", &EditorWhiteBoxComponent::m_voxel)
                 ->Field("Boolean", &EditorWhiteBoxComponent::m_boolean)
                 // Persist whether this entity is an active global-boolean target so the composed
@@ -589,7 +595,7 @@ namespace WhiteBox
                     ->EnumAttribute(DefaultShapeType::Asset, "Asset")
                     ->Attribute(AZ::Edit::Attributes::ChangeNotify, &EditorWhiteBoxComponent::OnDefaultShapeChange)
 
-                    ->ClassElement(AZ::Edit::ClassElements::Group, "Material / Display")
+                    ->ClassElement(AZ::Edit::ClassElements::Group, "Material")
                     ->Attribute(AZ::Edit::Attributes::AutoExpand, false)
                     ->UIElement(
                         AZ::Edit::UIHandlers::Button, "",
@@ -602,6 +608,32 @@ namespace WhiteBox
                         "Older default material for this entity; clear it and use the Material component instead.")
                     ->Attribute(AZ::Edit::Attributes::Visibility, &EditorWhiteBoxComponent::LegacyDefaultMaterialVisibility)
                     ->Attribute(AZ::Edit::Attributes::ChangeNotify, &EditorWhiteBoxComponent::OnDefaultMaterialChange)
+                    ->ClassElement(AZ::Edit::ClassElements::Group, "Polygon Materials")
+                    ->Attribute(AZ::Edit::Attributes::AutoExpand, true)
+                    ->DataElement(
+                        AZ::Edit::UIHandlers::Default, &EditorWhiteBoxComponent::m_materialPalette, "Materials",
+                        "The materials to pick from when assigning to polygons.")
+                    ->Attribute(AZ::Edit::Attributes::ChangeNotify, &EditorWhiteBoxComponent::OnMaterialPaletteChange)
+                    ->DataElement(
+                        AZ::Edit::UIHandlers::ComboBox, &EditorWhiteBoxComponent::m_paletteChoice, "Material",
+                        "The material Assign puts on the selected polygons.")
+                    ->Attribute(AZ::Edit::Attributes::StringList, &EditorWhiteBoxComponent::GetPaletteChoices)
+                    // Buttons open their own group: the inspector only places a button at a group's start, not after a field.
+                    ->ClassElement(AZ::Edit::ClassElements::Group, "Assign to Selected Polygons")
+                    ->Attribute(AZ::Edit::Attributes::AutoExpand, true)
+                    ->UIElement(
+                        AZ::Edit::UIHandlers::Button, "",
+                        "Put the chosen material on the polygons selected in edit mode. Parametric layers become editable meshes.")
+                    ->Attribute(AZ::Edit::Attributes::ChangeNotify, &EditorWhiteBoxComponent::OnAssignPaletteMaterial)
+                    ->Attribute(AZ::Edit::Attributes::ButtonText, "Assign")
+                    ->UIElement(
+                        AZ::Edit::UIHandlers::Button, "",
+                        "Return the polygons selected in edit mode to the entity's default material.")
+                    ->Attribute(AZ::Edit::Attributes::ChangeNotify, &EditorWhiteBoxComponent::OnResetPolygonMaterial)
+                    ->Attribute(AZ::Edit::Attributes::ButtonText, "Reset to Default")
+
+                    ->ClassElement(AZ::Edit::ClassElements::Group, "Display")
+                    ->Attribute(AZ::Edit::Attributes::AutoExpand, false)
                     ->DataElement(
                         AZ::Edit::UIHandlers::CheckBox, &EditorWhiteBoxComponent::m_useGlobalTint, "Use Global Tint",
                         "Render every layer with the material tint below. Turn off to let each layer use its own.")
@@ -687,6 +719,92 @@ namespace WhiteBox
             AzToolsFramework::EntityIdList{ GetEntityId() }, AZ::ComponentTypeList{ AZ::Render::EditorMaterialComponentTypeId });
         undoBatch.MarkEntityDirty(GetEntityId());
         return AZ::Edit::PropertyRefreshLevels::EntireTree;
+    }
+
+    AZStd::vector<AZStd::string> EditorWhiteBoxComponent::GetPaletteChoices() const
+    {
+        // Numbered, so two materials with the same file name stay apart.
+        AZStd::vector<AZStd::string> choices;
+        for (size_t i = 0; i < m_materialPalette.size(); ++i)
+        {
+            const AZ::Data::AssetId id = m_materialPalette[i].GetId();
+            if (!id.IsValid())
+            {
+                continue;
+            }
+            AZStd::string path;
+            AZ::Data::AssetCatalogRequestBus::BroadcastResult(path, &AZ::Data::AssetCatalogRequests::GetAssetPathById, id);
+            const AZStd::string name = path.empty() ? id.ToString<AZStd::string>() : AZStd::string(AZ::IO::PathView(path).Stem().Native());
+            choices.push_back(AZStd::string::format("%zu. %s", i + 1, name.c_str()));
+        }
+        return choices;
+    }
+
+    AZ::Data::AssetId EditorWhiteBoxComponent::PaletteChoiceAsset() const
+    {
+        // The choice's number is its place in the list.
+        const AZStd::vector<AZStd::string> choices = GetPaletteChoices();
+        if (AZStd::find(choices.begin(), choices.end(), m_paletteChoice) == choices.end())
+        {
+            return {};
+        }
+        const size_t index = static_cast<size_t>(AZStd::stoi(m_paletteChoice.substr(0, m_paletteChoice.find('.')))) - 1;
+        return index < m_materialPalette.size() ? m_materialPalette[index].GetId() : AZ::Data::AssetId{};
+    }
+
+    AZ::u32 EditorWhiteBoxComponent::OnMaterialPaletteChange()
+    {
+        // Keep the choice pointing at a listed material, and pick up a newly added one straight away.
+        const AZStd::vector<AZStd::string> choices = GetPaletteChoices();
+        if (AZStd::find(choices.begin(), choices.end(), m_paletteChoice) == choices.end())
+        {
+            m_paletteChoice = choices.empty() ? AZStd::string() : choices.back();
+        }
+        return AZ::Edit::PropertyRefreshLevels::AttributesAndValues;
+    }
+
+    Api::PolygonHandles EditorWhiteBoxComponent::SelectedPolygonsInEditMode() const
+    {
+        // Transform mode keeps its own polygon selection; the default mode has another.
+        const AZ::EntityComponentIdPair pair{ GetEntityId(), GetId() };
+        Api::PolygonHandles polygons;
+        EditorWhiteBoxTransformModeRequestBus::EventResult(polygons, pair, &EditorWhiteBoxTransformModeRequests::GetSelectedPolygons);
+        if (polygons.empty())
+        {
+            EditorWhiteBoxDefaultModeRequestBus::EventResult(polygons, pair, &EditorWhiteBoxDefaultModeRequests::SelectedPolygonHandles);
+        }
+        return polygons;
+    }
+
+    void EditorWhiteBoxComponent::AssignMaterialToSelection(const AZ::Data::AssetId& material, const char* undoLabel)
+    {
+        const Api::PolygonHandles polygons = SelectedPolygonsInEditMode();
+        if (polygons.empty())
+        {
+            AZ_Warning("WhiteBox", false, "Select polygons in White Box edit mode first.");
+            return;
+        }
+        AzToolsFramework::ScopedUndoBatch undoBatch(undoLabel);
+        AssignPolygonMaterial(polygons, material);
+        undoBatch.MarkEntityDirty(GetEntityId());
+    }
+
+    AZ::Crc32 EditorWhiteBoxComponent::OnAssignPaletteMaterial()
+    {
+        const AZ::Data::AssetId material = PaletteChoiceAsset();
+        if (!material.IsValid())
+        {
+            AZ_Warning("WhiteBox", false, "Add a material to the list and choose it first.");
+            return AZ::Edit::PropertyRefreshLevels::None;
+        }
+        AssignMaterialToSelection(material, "White Box Assign Polygon Material");
+        return AZ::Edit::PropertyRefreshLevels::None;
+    }
+
+    AZ::Crc32 EditorWhiteBoxComponent::OnResetPolygonMaterial()
+    {
+        AssignMaterialToSelection({}, "White Box Reset Polygon Material");
+        return AZ::Edit::PropertyRefreshLevels::None;
     }
 
     AZ::Crc32 EditorWhiteBoxComponent::LegacyDefaultMaterialVisibility() const

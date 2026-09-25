@@ -826,6 +826,17 @@ namespace WhiteBox
         AZ::Crc32 OnAddCollision();             //!< Add a White Box collider component to this entity.
         AZ::Crc32 OnAddMaterial();              //!< Add a Material component to this entity.
         AZ::Crc32 LegacyDefaultMaterialVisibility() const;
+        //! The card's material list as numbered names, for the Material combo.
+        AZStd::vector<AZStd::string> GetPaletteChoices() const;
+        //! The material the combo names, or invalid when it names nothing listed.
+        AZ::Data::AssetId PaletteChoiceAsset() const;
+        AZ::u32 OnMaterialPaletteChange();
+        AZ::Crc32 OnAssignPaletteMaterial();
+        AZ::Crc32 OnResetPolygonMaterial();
+        //! The polygons selected in edit mode (Transform mode's selection, else the default mode's).
+        Api::PolygonHandles SelectedPolygonsInEditMode() const;
+        //! Assign (invalid resets) on the edit-mode selection as one undo step.
+        void AssignMaterialToSelection(const AZ::Data::AssetId& material, const char* undoLabel);
         AZ::Crc32 GlobalTintVisibility() const; //!< Show the global material tint only when Use Global Tint is on.
         //! Apply a layer's Position/Rotation(Euler deg)/Scale to every vertex of a display mesh.
         static void ApplyTransformToMesh(
@@ -953,6 +964,8 @@ namespace WhiteBox
         //! render path and the Pane API read; this mirror is re-derived from it on Activate, so a
         //! change made through either surface shows up on the other and the two cannot drift.
         AZ::Data::Asset<AZ::RPI::MaterialAsset> m_defaultMaterialAsset;
+        AZStd::vector<AZ::Data::Asset<AZ::RPI::MaterialAsset>> m_materialPalette; //!< The card's list to assign polygons from.
+        AZStd::string m_paletteChoice; //!< The numbered name chosen in the card's Material combo.
         FacePaintSettings m_facePaintSettings; //!< Transient brush settings, not scene data.
         //! Latched Extrude / Inset, transient like the brush settings above.
         bool m_stickyExtrude = false;
