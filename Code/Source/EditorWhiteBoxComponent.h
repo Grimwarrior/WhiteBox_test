@@ -342,6 +342,18 @@ namespace WhiteBox
             return m_defaultMaterialAsset.GetId().IsValid() ? m_defaultMaterialAsset.GetId() : m_materialOverrideAssetId;
         }
 
+        // Material list (the card's Polygon Materials, also what the Paint Material brush picks from).
+        //! A material's file name without extension, or its id when the catalog does not know it.
+        static AZStd::string MaterialDisplayName(const AZ::Data::AssetId& material);
+        //! The listed materials as numbered names ("2. Brick") with their ids, empty entries skipped.
+        AZStd::vector<AZStd::pair<AZStd::string, AZ::Data::AssetId>> GetPaletteEntries() const;
+        //! The material the card's Material combo names, or invalid when it names nothing listed.
+        AZ::Data::AssetId PaletteChoiceAsset() const;
+        //! Point the card's Material combo at a listed material (no-op when it is not listed).
+        void SetPaletteChoice(const AZ::Data::AssetId& material);
+        //! Append a material to the list (one undo step) and choose it; an already listed one is just chosen.
+        void AddToMaterialPalette(const AZ::Data::AssetId& material);
+
         // Layers.
         //! Vertex positions of layer @p index in ENTITY-local space, i.e. with that layer's own
         //! position/rotation/scale already applied - the same space LayerMeta::m_position lives in.
@@ -828,9 +840,8 @@ namespace WhiteBox
         AZ::Crc32 LegacyDefaultMaterialVisibility() const;
         //! The card's material list as numbered names, for the Material combo.
         AZStd::vector<AZStd::string> GetPaletteChoices() const;
-        //! The material the combo names, or invalid when it names nothing listed.
-        AZ::Data::AssetId PaletteChoiceAsset() const;
         AZ::u32 OnMaterialPaletteChange();
+        AZ::u32 OnPaletteChoiceChange();
         AZ::Crc32 OnAssignPaletteMaterial();
         AZ::Crc32 OnResetPolygonMaterial();
         //! The polygons selected in edit mode (Transform mode's selection, else the default mode's).

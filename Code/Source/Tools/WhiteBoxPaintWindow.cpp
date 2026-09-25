@@ -14,6 +14,9 @@
 
 #include <QCheckBox>
 #include <QDoubleSpinBox>
+#include <QComboBox>
+#include <QTimer>
+#include <QStringList>
 #include <QColorDialog>
 #include <QGridLayout>
 #include <QHBoxLayout>
@@ -103,10 +106,18 @@ namespace WhiteBox
         controls->setVerticalSpacing(7);
 
         m_materialLabel = new QLabel(tr("Material"), this);
-        m_material = new AzToolsFramework::PropertyAssetCtrl(this);
-        m_material->SetCurrentAssetType(azrtti_typeid<AZ::RPI::MaterialAsset>());
+        m_material = new QComboBox(this);
+        m_material->setToolTip(tr("The material the brush paints, from the White Box card's material list."));
+        m_material->setPlaceholderText(tr("Add a material below"));
         controls->addWidget(m_materialLabel, 0, 0);
         controls->addWidget(m_material, 0, 1);
+        // Last grid row, so it sits under the combo whenever the colour and brush rows are hidden.
+        m_addMaterialLabel = new QLabel(tr("Add to List"), this);
+        m_addMaterial = new AzToolsFramework::PropertyAssetCtrl(this);
+        m_addMaterial->SetCurrentAssetType(azrtti_typeid<AZ::RPI::MaterialAsset>());
+        m_addMaterial->setToolTip(tr("Pick a material to add it to the card's list and paint with it."));
+        controls->addWidget(m_addMaterialLabel, 5, 0);
+        controls->addWidget(m_addMaterial, 5, 1);
 
         m_colorLabel = new QLabel(tr("Colour"), this);
         m_color = new QPushButton(this);
@@ -160,23 +171,28 @@ namespace WhiteBox
         layout->addWidget(m_hint);
 
         connect(
-            m_material, &AzToolsFramework::PropertyAssetCtrl::OnAssetIDChanged, this,
+            m_material, QOverload<int>::of(&QComboBox::currentIndexChanged), this,
+            [this](const int row)
+            {
+                if (!m_updating)
+                {
+                    ChooseMaterial(row);
+                }
+            });
+        connect(
+            m_addMaterial, &AzToolsFramework::PropertyAssetCtrl::OnAssetIDChanged, this,
             [this](const AZ::Data::AssetId& material)
             {
-                if (m_updating)
+                if (!m_updating && material.IsValid())
                 {
-                    return;
+                    // Deferred: clearing the picker from inside its own change signal is asking for trouble.
+                    QTimer::singleShot(0, this, [this, material]() { AddMaterial(material); });
                 }
-                auto* component = CurrentComponent();
-                if (component == nullptr)
-                {
-                    Dismiss();
-                    return;
-                }
-                auto settings = component->GetFacePaintSettings();
-                settings.m_material = material;
-                component->SetFacePaintSettings(settings);
             });
+        // The card's list can change while the window is open.
+        auto* listPoll = new QTimer(this);
+        connect(listPoll, &QTimer::timeout, this, &WhiteBoxPaintWindow::RefreshMaterialList);
+        listPoll->start(500);
         connect(m_color, &QPushButton::clicked, this, &WhiteBoxPaintWindow::ChooseColor);
         const auto brushSetting = [this](float FacePaintSettings::*member)
         {
@@ -221,6 +237,102 @@ namespace WhiteBox
         return FindWhiteBoxComponent(m_pair);
     }
 
+    void WhiteBoxPaintWindow::RefreshMaterialList()
+    {
+        auto* component = CurrentComponent();
+        if (component == nullptr)
+        {
+            return; // RefreshValues dismisses; the poll just waits
+        }
+        FacePaintSettings settings = component->GetFacePaintSettings();
+        // A brush with nothing chosen follows the card's choice, so Assign and Paint start on the same material.
+        if (!settings.m_material.IsValid())
+        {
+            const AZ::Data::AssetId chosen = component->PaletteChoiceAsset();
+            if (chosen.IsValid())
+            {
+                settings.m_material = chosen;
+                component->SetFacePaintSettings(settings);
+            }
+        }
+        QStringList labels;
+        AZStd::vector<AZ::Data::AssetId> ids;
+        for (const auto& [label, id] : component->GetPaletteEntries())
+        {
+            labels.append(QString::fromUtf8(label.c_str()));
+            ids.push_back(id);
+        }
+        int current = -1;
+        for (int i = 0; i < static_cast<int>(ids.size()); ++i)
+        {
+            if (ids[i] == settings.m_material)
+            {
+                current = i;
+                break;
+            }
+        }
+        if (current < 0 && settings.m_material.IsValid())
+        {
+            // A material picked before the list existed stays paintable until another is chosen.
+            labels.append(tr("%1 (not in list)").arg(QString::fromUtf8(EditorWhiteBoxComponent::MaterialDisplayName(settings.m_material).c_str())));
+            ids.push_back(settings.m_material);
+            current = static_cast<int>(ids.size()) - 1;
+        }
+        QStringList shown;
+        for (int i = 0; i < m_material->count(); ++i)
+        {
+            shown.append(m_material->itemText(i));
+        }
+        m_updating = true;
+        if (labels != shown || ids != m_materialIds)
+        {
+            m_material->clear();
+            m_material->addItems(labels);
+            m_materialIds = AZStd::move(ids);
+        }
+        if (m_material->currentIndex() != current)
+        {
+            m_material->setCurrentIndex(current);
+        }
+        m_updating = false;
+    }
+
+    void WhiteBoxPaintWindow::ChooseMaterial(const int row)
+    {
+        auto* component = CurrentComponent();
+        if (component == nullptr)
+        {
+            Dismiss();
+            return;
+        }
+        if (row < 0 || row >= static_cast<int>(m_materialIds.size()))
+        {
+            return;
+        }
+        auto settings = component->GetFacePaintSettings();
+        settings.m_material = m_materialIds[row];
+        component->SetFacePaintSettings(settings);
+        component->SetPaletteChoice(settings.m_material); // the card's Assign follows the brush
+    }
+
+    void WhiteBoxPaintWindow::AddMaterial(const AZ::Data::AssetId& material)
+    {
+        auto* component = CurrentComponent();
+        if (component == nullptr)
+        {
+            Dismiss();
+            return;
+        }
+        component->AddToMaterialPalette(material);
+        auto settings = component->GetFacePaintSettings();
+        settings.m_material = material;
+        component->SetFacePaintSettings(settings);
+        m_updating = true;
+        m_addMaterial->SetSelectedAssetID(AZ::Data::AssetId()); // ready for the next one
+        m_updating = false;
+        RefreshMaterialList();
+    }
+
     void WhiteBoxPaintWindow::ApplySwatch(const AZ::u32 color)
     {
         const QColor swatch = ToQColor(color);
@@ -258,6 +370,8 @@ namespace WhiteBox
 
         m_materialLabel->setVisible(material);
         m_material->setVisible(material);
+        m_addMaterialLabel->setVisible(material);
+        m_addMaterial->setVisible(material);
         m_colorLabel->setVisible(color);
         m_color->setVisible(color);
         const bool blend = IsBlendOperation(operation);
@@ -283,7 +397,6 @@ namespace WhiteBox
         const FacePaintSettings settings = component->GetFacePaintSettings();
 
         m_updating = true;
-        m_material->SetSelectedAssetID(settings.m_material);
         m_wholePolygon->setChecked(settings.m_wholePolygon);
         m_radius->setValue(settings.m_brushRadius);
         m_strength->setValue(settings.m_brushStrength);
@@ -294,5 +407,6 @@ namespace WhiteBox
         m_title->setText(OperationName(settings.m_operation));
         m_hint->setText(OperationHint(settings.m_operation));
         ApplyVisibility(settings.m_operation);
+        RefreshMaterialList();
     }
 } // namespace WhiteBox

@@ -618,6 +618,7 @@ namespace WhiteBox
                         AZ::Edit::UIHandlers::ComboBox, &EditorWhiteBoxComponent::m_paletteChoice, "Material",
                         "The material Assign puts on the selected polygons.")
                     ->Attribute(AZ::Edit::Attributes::StringList, &EditorWhiteBoxComponent::GetPaletteChoices)
+                    ->Attribute(AZ::Edit::Attributes::ChangeNotify, &EditorWhiteBoxComponent::OnPaletteChoiceChange)
                     // Buttons open their own group: the inspector only places a button at a group's start, not after a field.
                     ->ClassElement(AZ::Edit::ClassElements::Group, "Assign to Selected Polygons")
                     ->Attribute(AZ::Edit::Attributes::AutoExpand, true)
@@ -721,35 +722,86 @@ namespace WhiteBox
         return AZ::Edit::PropertyRefreshLevels::EntireTree;
     }
 
-    AZStd::vector<AZStd::string> EditorWhiteBoxComponent::GetPaletteChoices() const
+    AZStd::string EditorWhiteBoxComponent::MaterialDisplayName(const AZ::Data::AssetId& material)
+    {
+        AZStd::string path;
+        AZ::Data::AssetCatalogRequestBus::BroadcastResult(path, &AZ::Data::AssetCatalogRequests::GetAssetPathById, material);
+        return path.empty() ? material.ToString<AZStd::string>() : AZStd::string(AZ::IO::PathView(path).Stem().Native());
+    }
+
+    AZStd::vector<AZStd::pair<AZStd::string, AZ::Data::AssetId>> EditorWhiteBoxComponent::GetPaletteEntries() const
     {
         // Numbered, so two materials with the same file name stay apart.
-        AZStd::vector<AZStd::string> choices;
+        AZStd::vector<AZStd::pair<AZStd::string, AZ::Data::AssetId>> entries;
         for (size_t i = 0; i < m_materialPalette.size(); ++i)
         {
             const AZ::Data::AssetId id = m_materialPalette[i].GetId();
-            if (!id.IsValid())
+            if (id.IsValid())
             {
-                continue;
+                entries.emplace_back(AZStd::string::format("%zu. %s", i + 1, MaterialDisplayName(id).c_str()), id);
             }
-            AZStd::string path;
-            AZ::Data::AssetCatalogRequestBus::BroadcastResult(path, &AZ::Data::AssetCatalogRequests::GetAssetPathById, id);
-            const AZStd::string name = path.empty() ? id.ToString<AZStd::string>() : AZStd::string(AZ::IO::PathView(path).Stem().Native());
-            choices.push_back(AZStd::string::format("%zu. %s", i + 1, name.c_str()));
+        }
+        return entries;
+    }
+
+    AZStd::vector<AZStd::string> EditorWhiteBoxComponent::GetPaletteChoices() const
+    {
+        AZStd::vector<AZStd::string> choices;
+        for (const auto& entry : GetPaletteEntries())
+        {
+            choices.push_back(entry.first);
         }
         return choices;
     }
 
     AZ::Data::AssetId EditorWhiteBoxComponent::PaletteChoiceAsset() const
     {
-        // The choice's number is its place in the list.
-        const AZStd::vector<AZStd::string> choices = GetPaletteChoices();
-        if (AZStd::find(choices.begin(), choices.end(), m_paletteChoice) == choices.end())
+        for (const auto& entry : GetPaletteEntries())
         {
-            return {};
+            if (entry.first == m_paletteChoice)
+            {
+                return entry.second;
+            }
         }
-        const size_t index = static_cast<size_t>(AZStd::stoi(m_paletteChoice.substr(0, m_paletteChoice.find('.')))) - 1;
-        return index < m_materialPalette.size() ? m_materialPalette[index].GetId() : AZ::Data::AssetId{};
+        return {};
+    }
+
+    void EditorWhiteBoxComponent::SetPaletteChoice(const AZ::Data::AssetId& material)
+    {
+        for (const auto& entry : GetPaletteEntries())
+        {
+            if (entry.second == material && entry.first != m_paletteChoice)
+            {
+                m_paletteChoice = entry.first;
+                InvalidatePropertyDisplay(AzToolsFramework::Refresh_Values);
+                return;
+            }
+        }
+    }
+
+    void EditorWhiteBoxComponent::AddToMaterialPalette(const AZ::Data::AssetId& material)
+    {
+        if (!material.IsValid())
+        {
+            return;
+        }
+        const bool listed = AZStd::any_of(
+            m_materialPalette.begin(), m_materialPalette.end(),
+            [&material](const AZ::Data::Asset<AZ::RPI::MaterialAsset>& entry) { return entry.GetId() == material; });
+        if (!listed)
+        {
+            AzToolsFramework::ScopedUndoBatch undoBatch("White Box Add Material To List");
+            // NoLoad: the list only names materials; the render mesh loads whichever faces use.
+            m_materialPalette.emplace_back(material, azrtti_typeid<AZ::RPI::MaterialAsset>());
+            m_materialPalette.back().SetAutoLoadBehavior(AZ::Data::AssetLoadBehavior::NoLoad);
+            SetPaletteChoice(material);
+            undoBatch.MarkEntityDirty(GetEntityId());
+        }
+        else
+        {
+            SetPaletteChoice(material);
+        }
+        InvalidatePropertyDisplay(AzToolsFramework::Refresh_EntireTree);
     }
 
     AZ::u32 EditorWhiteBoxComponent::OnMaterialPaletteChange()
@@ -760,7 +812,18 @@ namespace WhiteBox
         {
             m_paletteChoice = choices.empty() ? AZStd::string() : choices.back();
         }
+        OnPaletteChoiceChange();
         return AZ::Edit::PropertyRefreshLevels::AttributesAndValues;
+    }
+
+    AZ::u32 EditorWhiteBoxComponent::OnPaletteChoiceChange()
+    {
+        // The Paint Material brush follows the card's choice, as the card follows the brush.
+        if (const AZ::Data::AssetId chosen = PaletteChoiceAsset(); chosen.IsValid())
+        {
+            m_facePaintSettings.m_material = chosen;
+        }
+        return AZ::Edit::PropertyRefreshLevels::None;
     }
 
     Api::PolygonHandles EditorWhiteBoxComponent::SelectedPolygonsInEditMode() const
