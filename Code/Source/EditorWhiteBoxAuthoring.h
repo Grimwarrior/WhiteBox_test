@@ -116,6 +116,9 @@ namespace WhiteBox
     private:
         //! Bake a parametric layer, store the working mesh and publish the change, as the pane's modeling ops do.
         void CommitMeshEdit();
+        //! Tell the White Box pane to re-read the component; it only watches the viewport and its own widgets, so a
+        //! change made through the bus would otherwise leave it showing the old values.
+        void RefreshPane();
         //! Mesh the next edit acts on; null when the entity has no editable mesh.
         WhiteBoxMesh* EditableMesh() const;
         //! Run an edit of the active layer's mesh as one undo step; a successful edit is committed and published.

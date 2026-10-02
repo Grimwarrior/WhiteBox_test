@@ -272,6 +272,13 @@ namespace WhiteBox
         return m_component.GetWhiteBoxMesh();
     }
 
+    void EditorWhiteBoxAuthoring::RefreshPane()
+    {
+        EditorWhiteBoxComponentNotificationBus::Event(
+            AZ::EntityComponentIdPair{m_component.GetEntityId(), m_component.GetId()},
+            &EditorWhiteBoxComponentNotifications::OnLayerStructureChanged);
+    }
+
     void EditorWhiteBoxAuthoring::CommitMeshEdit()
     {
         const AZ::EntityComponentIdPair pair{m_component.GetEntityId(), m_component.GetId()};
@@ -284,6 +291,7 @@ namespace WhiteBox
             pair, &EditorWhiteBoxComponentModeRequests::MarkWhiteBoxIntersectionDataDirty);
         EditorWhiteBoxComponentNotificationBus::Event(
             pair, &EditorWhiteBoxComponentNotifications::OnWhiteBoxMeshModified);
+        RefreshPane();
     }
 
     AuthoringResult EditorWhiteBoxAuthoring::EditMesh(
@@ -469,12 +477,14 @@ namespace WhiteBox
             return false;
         }
         m_component.SetActiveLayer(index);
+        RefreshPane();
         return true;
     }
 
     int EditorWhiteBoxAuthoring::AddLayer()
     {
         m_component.AddLayer();
+        RefreshPane();
         return m_component.GetActiveLayerIndex();
     }
 
@@ -485,7 +495,9 @@ namespace WhiteBox
             AZ_Warning("WhiteBox", false, "AddShapeLayer: shape %d is not a DrawShapeType.", shape);
             return -1;
         }
-        return m_component.AddParametricShapeLayer(static_cast<DrawShapeType>(shape));
+        const int index = m_component.AddParametricShapeLayer(static_cast<DrawShapeType>(shape));
+        RefreshPane();
+        return index;
     }
 
     bool EditorWhiteBoxAuthoring::DeleteActiveLayer()
@@ -495,6 +507,7 @@ namespace WhiteBox
             return false;
         }
         m_component.DeleteActiveLayer();
+        RefreshPane();
         return true;
     }
 
@@ -505,6 +518,7 @@ namespace WhiteBox
             return -1;
         }
         m_component.DuplicateActiveLayer();
+        RefreshPane();
         return m_component.GetActiveLayerIndex();
     }
 
@@ -518,6 +532,7 @@ namespace WhiteBox
         AzToolsFramework::ScopedUndoBatch undoBatch("White Box Reorder Layer");
         m_component.MoveLayer(from, to);
         undoBatch.MarkEntityDirty(m_component.GetEntityId());
+        RefreshPane();
         return true;
     }
 
@@ -580,6 +595,7 @@ namespace WhiteBox
         AzToolsFramework::ScopedUndoBatch undoBatch("White Box Shape Parameters");
         m_component.SetLayerShapeParams(layer, in);
         undoBatch.MarkEntityDirty(m_component.GetEntityId());
+        RefreshPane();
         return Succeeded("Shape rebuilt.");
     }
 
@@ -592,6 +608,7 @@ namespace WhiteBox
         AzToolsFramework::ScopedUndoBatch undoBatch("White Box Bake Shape");
         m_component.BakeParametricLayer(layer);
         undoBatch.MarkEntityDirty(m_component.GetEntityId());
+        RefreshPane();
         return Succeeded("Layer baked to an ordinary mesh.");
     }
 
@@ -647,6 +664,7 @@ namespace WhiteBox
         AzToolsFramework::ScopedUndoBatch undoBatch("White Box Layer Settings");
         m_component.SetLayerMeta(layer, meta);
         undoBatch.MarkEntityDirty(m_component.GetEntityId());
+        RefreshPane();
         return Succeeded("Layer settings applied.");
     }
 
@@ -659,6 +677,7 @@ namespace WhiteBox
         AzToolsFramework::ScopedUndoBatch undoBatch("White Box Apply Layer Transform");
         m_component.ApplyActiveLayerTransform();
         undoBatch.MarkEntityDirty(m_component.GetEntityId());
+        RefreshPane();
         return Succeeded("Layer transform baked into the mesh.");
     }
 
@@ -671,6 +690,7 @@ namespace WhiteBox
         AzToolsFramework::ScopedUndoBatch undoBatch("White Box Apply Layer Modifiers");
         m_component.ApplyActiveLayerModifiers();
         undoBatch.MarkEntityDirty(m_component.GetEntityId());
+        RefreshPane();
         return Succeeded("Mirror and array baked into the mesh.");
     }
 
@@ -1268,6 +1288,7 @@ namespace WhiteBox
             return Failed(error);
         }
         undoBatch.MarkEntityDirty(m_component.GetEntityId());
+        RefreshPane();
         return Succeeded("Polygons moved to a new layer; the id is that layer's index.", {m_component.GetActiveLayerIndex()});
     }
 
@@ -1489,6 +1510,7 @@ namespace WhiteBox
         }
         m_component.SetFlipYZForExport(settings.m_flipYZForExport);
         undoBatch.MarkEntityDirty(m_component.GetEntityId());
+        RefreshPane();
         return Succeeded("Display settings applied.");
     }
 
@@ -1550,6 +1572,7 @@ namespace WhiteBox
             m_component.SetLiveBoolean(settings.m_live);
         }
         undoBatch.MarkEntityDirty(m_component.GetEntityId());
+        RefreshPane();
         return Succeeded("Boolean settings applied.");
     }
 
@@ -1566,20 +1589,41 @@ namespace WhiteBox
             return Failed("Set a boolean source entity (another White Box) with SetBooleanSettings first.");
         }
 
-        // ApplyBoolean only warns when the CSG cannot run, so compare the stored mesh to tell whether it did.
-        Api::WhiteBoxMeshStream before;
-        Api::WriteMesh(*mesh, before);
+        // ApplyBoolean only warns when the CSG cannot run, and a run that finds nothing to cut still rewrites the stored
+        // bytes, so compare the geometry itself to tell whether the boolean did anything.
+        const auto geometry = [](const WhiteBoxMesh& target)
+        {
+            AZStd::vector<AZ::Vector3> positions = Api::MeshVertexPositions(target);
+            AZStd::sort(
+                positions.begin(), positions.end(),
+                [](const AZ::Vector3& lhs, const AZ::Vector3& rhs)
+                {
+                    if (lhs.GetX() != rhs.GetX())
+                    {
+                        return lhs.GetX() < rhs.GetX();
+                    }
+                    return lhs.GetY() != rhs.GetY() ? lhs.GetY() < rhs.GetY() : lhs.GetZ() < rhs.GetZ();
+                });
+            return AZStd::make_pair(Api::MeshFaceCount(target), AZStd::move(positions));
+        };
+        const auto before = geometry(*mesh);
         m_component.ApplyBoolean();
         const WhiteBoxMesh* after = EditableMesh();
-        Api::WhiteBoxMeshStream afterStream;
-        if (after != nullptr)
+        bool changed = after != nullptr;
+        if (changed)
         {
-            Api::WriteMesh(*after, afterStream);
+            const auto afterGeometry = geometry(*after);
+            changed = afterGeometry.first != before.first || afterGeometry.second.size() != before.second.size();
+            for (size_t i = 0; !changed && i < before.second.size(); ++i)
+            {
+                changed = !before.second[i].IsClose(afterGeometry.second[i], 1e-5f);
+            }
         }
-        if (before == afterStream)
+        if (!changed)
         {
             return Failed("The boolean changed nothing; check the Editor log (the meshes may not overlap or may not be closed).");
         }
+        RefreshPane();
         return Succeeded("Boolean applied.");
     }
 
@@ -1635,6 +1679,7 @@ namespace WhiteBox
             DrawStairInfo{
                 settings.m_stairSteps, settings.m_stairByHeight, settings.m_stairStepHeight, settings.m_stairRotation});
         undoBatch.MarkEntityDirty(m_component.GetEntityId());
+        RefreshPane();
         return Succeeded("Draw settings applied.");
     }
 
@@ -1649,6 +1694,7 @@ namespace WhiteBox
         AzToolsFramework::ScopedUndoBatch undoBatch(filled ? "White Box Fill Voxels" : "White Box Clear Voxels");
         m_component.SetVoxelCells(cellMins, filled);
         undoBatch.MarkEntityDirty(m_component.GetEntityId());
+        RefreshPane();
         return Succeeded(AZStd::string::format("%zu cells %s.", cellMins.size(), filled ? "filled" : "cleared"));
     }
 
@@ -1657,6 +1703,7 @@ namespace WhiteBox
         AzToolsFramework::ScopedUndoBatch undoBatch("White Box Clear Cube Stamp");
         m_component.ClearCubeStamp();
         undoBatch.MarkEntityDirty(m_component.GetEntityId());
+        RefreshPane();
         return Succeeded("Cube stamp cleared.");
     }
 
