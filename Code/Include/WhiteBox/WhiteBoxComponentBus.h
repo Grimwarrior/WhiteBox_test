@@ -23,6 +23,9 @@ namespace WhiteBox
 
         virtual bool WhiteBoxIsVisible() const = 0;
 
+        //! Show or hide the runtime render mesh (the collider is unaffected), e.g. to fade out a wall the camera has moved behind.
+        virtual void SetWhiteBoxVisible([[maybe_unused]] bool visible) {}
+
         //! Select whether the runtime White Box uses its baked live-boolean geometry.
         //! @note The CSG boolean is evaluated in the Editor when the game entity is built,
         //! so this switches between the pre-baked base and boolean-evaluated variants rather
