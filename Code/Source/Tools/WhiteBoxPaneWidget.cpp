@@ -21,10 +21,12 @@
 #include <AzCore/Component/Entity.h>
 #include <AzCore/Component/NonUniformScaleBus.h>
 #include <AzCore/Component/TickBus.h>
+#include <AzCore/Interface/Interface.h>
 #include <AzCore/Math/Quaternion.h>
 #include <AzCore/std/algorithm.h>
 #include <AzToolsFramework/API/EntityCompositionRequestBus.h>
 #include <AzToolsFramework/ComponentMode/ComponentModeDelegate.h>
+#include <AzToolsFramework/FocusMode/FocusModeInterface.h>
 #include <AzToolsFramework/ToolsComponents/EditorNonUniformScaleComponent.h>
 
 #include <QApplication>
@@ -59,13 +61,22 @@ namespace WhiteBox
 {
     namespace
     {
-        //! Every entity in the level that has an Editor White Box component.
+        //! False for entities outside the prefab being edited. The Editor doesn't let those be selected or
+        //! edited, and editing one anyway patches the wrong template and reloads the level's entities.
+        bool IsEditableInFocus(const AZ::EntityId entityId)
+        {
+            const auto* focusModeInterface = AZ::Interface<AzToolsFramework::FocusModeInterface>::Get();
+            return focusModeInterface == nullptr || focusModeInterface->IsInFocusSubTree(entityId);
+        }
+
+        //! Every entity in the level that has an Editor White Box component and can be edited in the current focus.
         AZStd::vector<AZ::EntityId> CollectWhiteBoxEntities()
         {
             AZStd::vector<AZ::EntityId> entityIds;
             auto callback = [&entityIds](AZ::Entity* entity)
             {
-                if (entity != nullptr && entity->FindComponent<EditorWhiteBoxComponent>() != nullptr)
+                if (entity != nullptr && entity->FindComponent<EditorWhiteBoxComponent>() != nullptr &&
+                    IsEditableInFocus(entity->GetId()))
                 {
                     entityIds.push_back(entity->GetId());
                 }
@@ -508,6 +519,7 @@ namespace WhiteBox
         AzToolsFramework::EditorEntityContextRequestBus::BroadcastResult(
             editorEntityContextId, &AzToolsFramework::EditorEntityContextRequests::GetEditorEntityContextId);
         AzToolsFramework::ViewportEditorModeNotificationsBus::Handler::BusConnect(editorEntityContextId);
+        AzToolsFramework::FocusModeNotificationBus::Handler::BusConnect(editorEntityContextId);
 
         RefreshEntityList();
         RefreshFromComponent();
@@ -520,6 +532,7 @@ namespace WhiteBox
         m_layerGizmo.reset();
         EditorWhiteBoxComponentNotificationBus::Handler::BusDisconnect();
         AZ::TransformNotificationBus::Handler::BusDisconnect();
+        AzToolsFramework::FocusModeNotificationBus::Handler::BusDisconnect();
         AzToolsFramework::ViewportEditorModeNotificationsBus::Handler::BusDisconnect();
         AzToolsFramework::EntityCompositionNotificationBus::Handler::BusDisconnect();
         AzToolsFramework::ToolsApplicationNotificationBus::Handler::BusDisconnect();
@@ -1460,6 +1473,11 @@ namespace WhiteBox
 
     EditorWhiteBoxComponent* WhiteBoxPaneWidget::CurrentComponent() const
     {
+        // The focus can change before the dropdown is refreshed; never edit an entity outside it.
+        if (!IsEditableInFocus(m_currentEntityId))
+        {
+            return nullptr;
+        }
         if (AZ::Entity* entity = FindEntity(m_currentEntityId))
         {
             return entity->FindComponent<EditorWhiteBoxComponent>();
@@ -1977,6 +1995,14 @@ namespace WhiteBox
                 }
             }
         }
+    }
+
+    void WhiteBoxPaneWidget::OnEditorFocusChanged(
+        [[maybe_unused]] AZ::EntityId previousFocusEntityId, [[maybe_unused]] AZ::EntityId newFocusEntityId)
+    {
+        // Drops White Boxes outside the new focus from the dropdown (switching off one that was current).
+        RefreshEntityList();
+        RefreshFromComponent();
     }
 
     void WhiteBoxPaneWidget::AfterUndoRedo()
