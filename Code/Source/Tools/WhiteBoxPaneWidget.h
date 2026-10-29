@@ -132,6 +132,11 @@ namespace WhiteBox
         void RefreshEntityList();
         //! Reload every control from the current component's state.
         void RefreshFromComponent();
+        //! RefreshEntityList + RefreshFromComponent once, on the next event-loop pass. A prefab reload
+        //! deletes and recreates every entity of an instance under the same ids: refreshing per
+        //! notification rebuilt the pane hundreds of times, and dropping the current entity on its
+        //! delete switched the pane to a different White Box.
+        void QueueRefresh();
         //! Reload the layer list / active-layer combo / per-layer meta editors.
         void RefreshLayerControls(EditorWhiteBoxComponent* component);
         //! Move layer row @p from to row @p to (drag-and-drop in the list, or Move Up/Down),
@@ -150,6 +155,7 @@ namespace WhiteBox
         AZ::EntityId m_transformBusEntityId; //!< The entity the TransformNotificationBus handler follows.
         AZ::EntityComponentIdPair m_meshBusPair; //!< The pair the white box notification handler follows.
         bool m_updating = false; //!< Guard: true while the pane writes to its own controls.
+        bool m_refreshQueued = false; //!< A QueueRefresh is pending.
 
         //! Viewport gizmo for the selected layer's Position/Rotation/Scale.
         AZStd::unique_ptr<WhiteBoxLayerGizmo> m_layerGizmo;

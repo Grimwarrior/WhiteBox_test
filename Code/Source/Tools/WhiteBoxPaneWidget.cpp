@@ -1963,20 +1963,31 @@ namespace WhiteBox
 
     // ---- notifications ----------------------------------------------------------------------
 
-    void WhiteBoxPaneWidget::OnEditorEntityCreated([[maybe_unused]] const AZ::EntityId& entityId)
+    void WhiteBoxPaneWidget::QueueRefresh()
     {
-        RefreshEntityList();
-        RefreshFromComponent();
+        if (m_refreshQueued)
+        {
+            return;
+        }
+        m_refreshQueued = true;
+        QTimer::singleShot(
+            0, this,
+            [this]()
+            {
+                m_refreshQueued = false;
+                RefreshEntityList(); // falls back to another White Box if the current one is really gone
+                RefreshFromComponent();
+            });
     }
 
-    void WhiteBoxPaneWidget::OnEditorEntityDeleted(const AZ::EntityId& entityId)
+    void WhiteBoxPaneWidget::OnEditorEntityCreated([[maybe_unused]] const AZ::EntityId& entityId)
     {
-        if (entityId == m_currentEntityId)
-        {
-            m_currentEntityId = AZ::EntityId();
-        }
-        RefreshEntityList();
-        RefreshFromComponent();
+        QueueRefresh();
+    }
+
+    void WhiteBoxPaneWidget::OnEditorEntityDeleted([[maybe_unused]] const AZ::EntityId& entityId)
+    {
+        QueueRefresh();
     }
 
     void WhiteBoxPaneWidget::AfterEntitySelectionChanged(
@@ -2015,15 +2026,13 @@ namespace WhiteBox
     void WhiteBoxPaneWidget::OnEntityComponentAdded(
         [[maybe_unused]] const AZ::EntityId& entityId, [[maybe_unused]] const AZ::ComponentId& componentId)
     {
-        RefreshEntityList();
-        RefreshFromComponent();
+        QueueRefresh();
     }
 
     void WhiteBoxPaneWidget::OnEntityComponentRemoved(
         [[maybe_unused]] const AZ::EntityId& entityId, [[maybe_unused]] const AZ::ComponentId& componentId)
     {
-        RefreshEntityList();
-        RefreshFromComponent();
+        QueueRefresh();
     }
 
     void WhiteBoxPaneWidget::EnsureEnabledInComponentMode()
