@@ -147,8 +147,7 @@ namespace WhiteBox
     {
         if (!m_batchActive)
         {
-            AzToolsFramework::ToolsApplicationRequestBus::Broadcast(
-                &AzToolsFramework::ToolsApplicationRequests::BeginUndoBatch, label);
+            m_batchLabel = label;
             m_batchActive = true;
         }
     }
@@ -157,10 +156,15 @@ namespace WhiteBox
     {
         if (m_batchActive)
         {
-            AzToolsFramework::ScopedUndoBatch::MarkEntityDirty(m_entityId);
-            AzToolsFramework::ToolsApplicationRequestBus::Broadcast(
-                &AzToolsFramework::ToolsApplicationRequests::EndUndoBatch);
             m_batchActive = false;
+            // The engine only accepts a dirty entity inside an open undo batch, and the prefab undo node is
+            // the difference between the prefab template and the entity as it is now. Opening the batch here
+            // instead of holding one open across the drag means nothing that runs between the mouse events
+            // can close it first, which dropped the dirty mark and left the prefab unsaved.
+            {
+                AzToolsFramework::ScopedUndoBatch undoBatch(m_batchLabel.c_str());
+                undoBatch.MarkEntityDirty(m_entityId);
+            }
             if (m_changedCallback)
             {
                 m_changedCallback();
