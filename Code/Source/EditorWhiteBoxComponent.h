@@ -944,6 +944,13 @@ namespace WhiteBox
         AZ::Crc32 DrawUnitCubeSizeVisibility() const;
         //! ChangeNotify for the "Edges Only" toggle: hide/show the solid render mesh.
         void OnEdgesOnlyChange();
+        //! Display > Wireframe changed: build, rebuild or drop the GPU wireframe mesh and show or hide the shaded one.
+        void OnWireframeModeChange();
+        //! Build the wireframe mesh from m_renderData when m_wireframeMode asks for one, otherwise drop it.
+        void RebuildWireframeMesh();
+        //! The shaded meshes are hidden while the mode is WireframeOnly. Meshes are created visible, so this runs
+        //! after every rebuild.
+        void ApplyWireframeVisibility();
 
         using ComponentModeDelegate = AzToolsFramework::ComponentModeFramework::ComponentModeDelegate;
         ComponentModeDelegate m_componentModeDelegate; //!< Responsible for detecting ComponentMode activation
@@ -958,6 +965,9 @@ namespace WhiteBox
         //! Auxiliary render meshes, one per visible layer, each with its own tint. Only populated
         //! when 'Use Global Tint' is off; in that mode m_renderMesh draws nothing.
         AZStd::vector<AZStd::unique_ptr<RenderMeshInterface>> m_layerRenderMeshes;
+        //! Extra mesh that draws the edges with the White Box wireframe material (editor only, never in game mode).
+        AZStd::unique_ptr<RenderMeshInterface> m_wireframeRenderMesh;
+        WireframeMode m_wireframeMode = WireframeMode::Off; //!< Display > Wireframe.
         AZ::Transform m_worldFromLocal = AZ::Transform::CreateIdentity(); //!< Cached world transform of Entity.
         Api::WhiteBoxMeshStream m_whiteBoxData; //!< Serialized White Box mesh data.
         //! Holds a reference to an optional WhiteBoxMeshAsset and manages the lifecycle of adding/removing an asset.

@@ -543,6 +543,7 @@ namespace WhiteBox
                 ->Field("FlipYZForExport", &EditorWhiteBoxComponent::m_flipYZForExport)
                 ->Field("DrawShapeData", &EditorWhiteBoxComponent::m_drawShapeData)
                 ->Field("EdgesOnly", &EditorWhiteBoxComponent::m_edgesOnly)
+                ->Field("WireframeMode", &EditorWhiteBoxComponent::m_wireframeMode)
                 ->Field("UseGlobalTint", &EditorWhiteBoxComponent::m_useGlobalTint)
                 ->Field("MaterialOverride", &EditorWhiteBoxComponent::m_materialOverrideAssetId)
                 ->Field("DefaultMaterialAsset", &EditorWhiteBoxComponent::m_defaultMaterialAsset)
@@ -654,6 +655,14 @@ namespace WhiteBox
                         AZ::Edit::UIHandlers::CheckBox, &EditorWhiteBoxComponent::m_edgesOnly, "Edges Only",
                         "Hide the solid render mesh and draw only the mesh edges.")
                     ->Attribute(AZ::Edit::Attributes::ChangeNotify, &EditorWhiteBoxComponent::OnEdgesOnlyChange)
+                    ->DataElement(
+                        AZ::Edit::UIHandlers::ComboBox, &EditorWhiteBoxComponent::m_wireframeMode, "Wireframe",
+                        "Draw the mesh edges on the GPU. Overlay keeps the shaded mesh and draws dark edges over it; "
+                        "Wireframe Only hides the shaded mesh. Editor only: game mode is unaffected.")
+                    ->EnumAttribute(WireframeMode::Off, "Off")
+                    ->EnumAttribute(WireframeMode::Overlay, "Overlay")
+                    ->EnumAttribute(WireframeMode::WireframeOnly, "Wireframe Only")
+                    ->Attribute(AZ::Edit::Attributes::ChangeNotify, &EditorWhiteBoxComponent::OnWireframeModeChange)
                     ->DataElement(
                         AZ::Edit::UIHandlers::CheckBox, &EditorWhiteBoxComponent::m_lightmapUvs, "Lightmap UVs",
                         "Give the mesh a second, non-overlapping UV set (UV1, exported as glTF TEXCOORD_1) for baked lighting. "
@@ -1163,6 +1172,7 @@ namespace WhiteBox
         m_componentModeDelegate.Disconnect();
         m_editorMeshAsset->Release();
         m_layerRenderMeshes.clear();
+        m_wireframeRenderMesh.reset();
         m_renderMesh.reset();
         m_whiteBox.reset();
         m_displayMesh.reset();
