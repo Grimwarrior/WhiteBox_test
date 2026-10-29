@@ -420,6 +420,15 @@ namespace WhiteBox
         }
     }
 
+    AZ::Crc32 EditorWhiteBoxComponent::OnRefreshGlobalBooleans()
+    {
+        // One undo step for the whole refresh (it touches many entities). The batch must be open when
+        // RefreshGlobalBooleans marks the changed entities dirty, or the engine drops the marks.
+        AzToolsFramework::ScopedUndoBatch undoBatch("White Box Refresh Global Booleans");
+        RefreshGlobalBooleans();
+        return AZ::Edit::PropertyRefreshLevels::None;
+    }
+
     void EditorWhiteBoxComponent::EvaluateLiveBoolean()
     {
         // Always evaluate the boolean whenever a source is set, independent of the live flag,

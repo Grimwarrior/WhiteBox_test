@@ -817,6 +817,9 @@ namespace WhiteBox
         //! clean manifold (via Api::RepairMesh). A single non-manifold region blocks every
         //! boolean, so this button lets the user repair the mesh on demand.
         AZ::Crc32 FixNonManifoldMesh();
+        //! Boolean group button: re-evaluate every White Box in the level against the current global
+        //! cutters (RefreshGlobalBooleans) as one undo step.
+        AZ::Crc32 OnRefreshGlobalBooleans();
         // Data-layer plumbing. The working members (m_whiteBox, the two grids, occupancy)
         // always hold the ACTIVE layer; StoreLayer/LoadActiveLayer move data to/from m_layers.
         void StoreLayer(int index);          //!< Working members -> m_layers[index].

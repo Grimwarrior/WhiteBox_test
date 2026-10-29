@@ -672,6 +672,11 @@ namespace WhiteBox
 
                     ->ClassElement(AZ::Edit::ClassElements::Group, "Boolean")
                     ->Attribute(AZ::Edit::Attributes::AutoExpand, false)
+                    ->UIElement(
+                        AZ::Edit::UIHandlers::Button, "",
+                        "Re-evaluate every non-excluded White Box in the level against the current Cut Others cutters.")
+                    ->Attribute(AZ::Edit::Attributes::ChangeNotify, &EditorWhiteBoxComponent::OnRefreshGlobalBooleans)
+                    ->Attribute(AZ::Edit::Attributes::ButtonText, "Refresh Global Booleans")
                     ->DataElement(
                         AZ::Edit::UIHandlers::Default, &EditorWhiteBoxComponent::m_boolean, "",
                         "Cut this mesh with another entity's mesh.")
