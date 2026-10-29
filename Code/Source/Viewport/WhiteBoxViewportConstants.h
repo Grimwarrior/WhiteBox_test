@@ -12,7 +12,9 @@
 
 namespace WhiteBox
 {
-    AZ_CVAR_EXTERNED(float, cl_whiteBoxVertexManipulatorSize);
+    AZ_CVAR_EXTERNED(float, cl_whiteBoxVertexManipulatorSize); //!< Pick radius of a vertex handle.
+    AZ_CVAR_EXTERNED(float, cl_whiteBoxVertexDrawSize); //!< Drawn radius of a vertex handle.
+    AZ_CVAR_EXTERNED(float, cl_whiteBoxVertexHoverSize); //!< Drawn radius of a vertex handle under the cursor.
     AZ_CVAR_EXTERNED(float, cl_whiteBoxMouseClickDeltaThreshold);
     AZ_CVAR_EXTERNED(float, cl_whiteBoxModifierMidpointEpsilon);
     AZ_CVAR_EXTERNED(float, cl_whiteBoxEdgeVisualWidth);

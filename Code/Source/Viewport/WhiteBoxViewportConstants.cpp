@@ -11,7 +11,15 @@
 namespace WhiteBox
 {
 
-    AZ_CVAR(float, cl_whiteBoxVertexManipulatorSize, 0.125f, nullptr, AZ::ConsoleFunctorFlags::Null, "");
+    AZ_CVAR(
+        float, cl_whiteBoxVertexManipulatorSize, 0.08f, nullptr, AZ::ConsoleFunctorFlags::Null,
+        "Radius used to pick a vertex handle, in screen-scaled units. Larger than the drawn dot so it stays easy to hit.");
+    AZ_CVAR(
+        float, cl_whiteBoxVertexHoverSize, 0.05f, nullptr, AZ::ConsoleFunctorFlags::Null,
+        "Radius of a vertex handle's dot while the cursor is over it, in screen-scaled units.");
+    AZ_CVAR(
+        float, cl_whiteBoxVertexDrawSize, 0.03f, nullptr, AZ::ConsoleFunctorFlags::Null,
+        "Radius of the dot drawn for a vertex handle, in screen-scaled units.");
     AZ_CVAR(float, cl_whiteBoxMouseClickDeltaThreshold, 0.001f, nullptr, AZ::ConsoleFunctorFlags::Null, "");
     AZ_CVAR(float, cl_whiteBoxModifierMidpointEpsilon, 0.01f, nullptr, AZ::ConsoleFunctorFlags::Null, "");
     AZ_CVAR(float, cl_whiteBoxEdgeVisualWidth, 5.0f, nullptr, AZ::ConsoleFunctorFlags::Null, "");
