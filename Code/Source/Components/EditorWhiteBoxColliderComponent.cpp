@@ -21,6 +21,7 @@
 #include <AzFramework/Physics/PhysicsScene.h>
 #include <AzFramework/Physics/SystemBus.h>
 #include <AzFramework/Physics/Configuration/StaticRigidBodyConfiguration.h>
+#include <AzToolsFramework/ToolsComponents/EditorNonUniformScaleComponent.h>
 #include <WhiteBox/EditorWhiteBoxComponentBus.h>
 #include <numeric>
 
@@ -29,6 +30,24 @@ namespace WhiteBox
     // defined below; forward-declared so the members above can use it
     static bool ConvertToTriangles(
         const WhiteBoxMesh& whiteBox, AZStd::vector<AZ::Vector3>& vertices, AZStd::vector<AZ::u32>& indices);
+
+    //! The entity's non-uniform scale as baked into the White Box physics mesh. BuildGameEntity can run
+    //! on a clone that was never activated, where the bus has no handler, so read the Non-Uniform Scale
+    //! component's serialized value directly in that case.
+    static AZ::Vector3 EntityBakedNonUniformScale(AZ::Entity* entity)
+    {
+        if (AZ::NonUniformScaleRequestBus::HasHandlers(entity->GetId()))
+        {
+            AZ::Vector3 scale = AZ::Vector3::CreateOne();
+            AZ::NonUniformScaleRequestBus::EventResult(scale, entity->GetId(), &AZ::NonUniformScaleRequests::GetScale);
+            return scale;
+        }
+        if (const auto* component = entity->FindComponent<AzToolsFramework::Components::EditorNonUniformScaleComponent>())
+        {
+            return component->GetScale();
+        }
+        return AZ::Vector3::CreateOne();
+    }
 
     void EditorWhiteBoxColliderComponent::Reflect(AZ::ReflectContext* context)
     {
@@ -220,6 +239,16 @@ namespace WhiteBox
         if (collider != nullptr)
         {
             collider->SetDrawCollider(m_drawCollider);
+
+            // The strict physics mesh, the physics render data and the non-live-boolean base cook have the
+            // entity's non-uniform scale baked into their geometry (BakeEntityScaleIntoPhysicsMesh). The
+            // boolean variant (m_physicsDisplayMesh) and the live-boolean base (BuildPhysicsFilteredBaseMesh)
+            // are cooked in the entity's unscaled local space. The runtime applies only the scale that is
+            // left over on top of what each variant already contains.
+            const AZ::Vector3 bakedScale = EntityBakedNonUniformScale(GetEntity());
+            const AZ::Vector3 baseBakedScale = liveBoolean ? AZ::Vector3::CreateOne() : bakedScale;
+            collider->SetBakedNonUniformScale(baseBakedScale, AZ::Vector3::CreateOne(), bakedScale);
+
             if (UseConvexParts())
             {
                 collider->SetConvexParts(baseParts, booleanParts);
@@ -238,11 +267,11 @@ namespace WhiteBox
             if (UseConvexParts())
             {
                 AppendPartsDebugMesh(baseParts, hullVertices, hullIndices);
-                collider->SetDebugMesh(hullVertices, hullIndices);
+                collider->SetDebugMesh(hullVertices, hullIndices, baseBakedScale);
             }
             else if ((UseConvex() || KeepFraction() < 1.0f) && ConvexDebugMesh(baseConfiguration, hullVertices, hullIndices))
             {
-                collider->SetDebugMesh(hullVertices, hullIndices);
+                collider->SetDebugMesh(hullVertices, hullIndices, baseBakedScale);
             }
             else if (auto* whiteBoxComponent = GetEntity()->FindComponent<WhiteBox::EditorWhiteBoxComponent>())
             {
@@ -255,7 +284,7 @@ namespace WhiteBox
                     {
                         ConvertToTriangles(*mesh, debugVertices, debugIndices);
                     }
-                    collider->SetDebugMesh(debugVertices, debugIndices);
+                    collider->SetDebugMesh(debugVertices, debugIndices, bakedScale);
                 }
             }
         }
