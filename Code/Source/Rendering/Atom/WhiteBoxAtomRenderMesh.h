@@ -34,6 +34,9 @@ namespace AZ::RPI
 namespace WhiteBox
 {
     class WhiteBoxMeshAtomData;
+    struct SharedModel;
+    struct SharedMaterial;
+    struct WhiteBoxMaterial;
 
     //! A concrete implementation of RenderMeshInterface to support Atom rendering for the White Box Tool.
     //! The primary mesh is also a material consumer, so a Material component on the entity can override
@@ -64,6 +67,11 @@ namespace WhiteBox
 
         // AZ::TickBus overrides ...
         void OnTick(float deltaTime, AZ::ScriptTimePoint time) override;
+
+        //! Console helpers (wb_renderStats, wb_renderVisible): what every live White Box mesh submits and stores,
+        //! and a switch that shows or hides all of them for an A/B frame-time comparison.
+        static void PrintRenderStats();
+        static void SetAllVisible(bool visible);
 
     private:
         //! Creates an attribute buffer in the slot dictated by AttributeTypeT.
@@ -111,10 +119,17 @@ namespace WhiteBox
         bool CreateMeshBuffers(const WhiteBoxMeshAtomData& meshData);
         bool UpdateMeshBuffers(const WhiteBoxMeshAtomData& meshData);
         bool MeshRequiresFullRebuild(const WhiteBoxMeshAtomData& meshData) const;
-        bool CreateMesh(const WhiteBoxMeshAtomData& meshData);
+        bool CreateMesh(const WhiteBoxMeshAtomData& meshData, uint64_t modelKey, const WhiteBoxMaterial& material);
+        //! Give each group the material instance for its asset and @p material settings, shared with every other
+        //! White Box that asks for the same thing. Fills @p assets with the asset each model slot defaults to.
+        bool CreateMaterialInstances(const WhiteBoxMaterial& material, AZStd::vector<AZ::Data::Asset<AZ::RPI::MaterialAsset>>& assets);
+        //! Draw with a model another White Box already built from identical geometry instead of building one.
+        bool UseSharedModel(const AZStd::shared_ptr<SharedModel>& shared, const WhiteBoxMaterial& material);
         bool CreateLodAsset(const WhiteBoxMeshAtomData& meshData);
-        void CreateModelAsset();
+        bool CreateModelAsset(const AZStd::vector<AZ::Data::Asset<AZ::RPI::MaterialAsset>>& materialAssets);
         bool CreateModel();
+        //! Hand m_modelAsset to the mesh feature processor with this entity's materials.
+        bool AcquireMesh();
         void AddLodBuffers(AZ::RPI::ModelLodAssetCreator& modelLodCreator);
         void AddMeshBuffers(AZ::RPI::ModelLodAssetCreator& modelLodCreator, uint32_t indexOffset, uint32_t indexCount);
         bool AreAttributesValid() const;
@@ -135,6 +150,8 @@ namespace WhiteBox
             uint32_t m_indexOffset = 0;
             uint32_t m_indexCount = 0;
             AZ::Data::Instance<AZ::RPI::Material> m_instance;
+            AZStd::shared_ptr<SharedMaterial> m_shared; //!< Keeps m_instance in the shared cache while this group uses it.
+            AZ::u64 m_materialKey = 0;                  //!< What m_instance was made for; changes when the settings do.
             bool m_customMaterial = false;
             AZ::u32 m_stableId = 0; //!< Model slot id, hashed from material and paint colour so overrides survive edits.
         };
@@ -143,6 +160,7 @@ namespace WhiteBox
         AZStd::unordered_map<AZ::u32, const AZ::RPI::Material*> m_boundMaterials; //!< Instance each slot draws with.
         AZStd::unordered_set<AZ::u32> m_reloadRequested; //!< Slots already sent for a reload, so it is asked once.
         uint32_t m_vertexCount = 0;
+        AZStd::shared_ptr<SharedModel> m_sharedModel; //!< Keeps the model alive while any White Box draws with it.
         AZStd::unique_ptr<IndexBuffer> m_indexBuffer;
         AZStd::array<
             AZStd::variant<
