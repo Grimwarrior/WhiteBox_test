@@ -9,6 +9,7 @@
 #pragma once
 
 #include <AzCore/Component/EntityId.h>
+#include <AzCore/std/string/string.h>
 
 namespace WhiteBox
 {
@@ -19,4 +20,9 @@ namespace WhiteBox
     //! deferred to the next tick (once the entity/component have activated). Runs as one undo step.
     //! @return the created child entity id (invalid on failure).
     AZ::EntityId CreateChildWhiteBoxLayer(AZ::EntityId parentEntityId);
+
+    //! Move (or copy, with @p keepInSource) a layer onto a new sibling entity with the same transform,
+    //! White Box settings and collider. One undo step. @return the new entity (invalid + @p error on failure).
+    AZ::EntityId ExportWhiteBoxLayerToEntity(
+        AZ::EntityId sourceEntityId, int layerIndex, bool keepInSource, AZStd::string& error);
 } // namespace WhiteBox

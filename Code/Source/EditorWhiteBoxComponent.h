@@ -453,6 +453,9 @@ namespace WhiteBox
         void DeleteActiveLayer() { OnDeleteLayer(); }
         //! Copy the active layer, geometry and settings alike, and insert it directly above.
         void DuplicateActiveLayer() { OnDuplicateLayer(); }
+        //! A caller-owned copy of this component (all settings) holding only layer @p index. Null if
+        //! @p index is not a layer or the mesh lives in a shared asset.
+        EditorWhiteBoxComponent* CloneWithSingleLayer(int index);
         //! Move polygons of the active layer into a new layer directly above it, which becomes active. Keeps transform and settings.
         bool DetachPolygonsToLayer(const Api::PolygonHandles& polygons, AZStd::string& error);
         //! Move the layer at @p from so it ends up at index @p to (both are indices into the
