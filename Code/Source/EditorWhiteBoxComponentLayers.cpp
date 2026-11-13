@@ -24,6 +24,7 @@
 #include <AzCore/Serialization/SerializeContext.h>
 #include <AzToolsFramework/API/ToolsApplicationAPI.h>
 #include <AzToolsFramework/ComponentMode/ComponentModeDelegate.h>
+#include <AzFramework/Translation/TranslationDef.h>
 
 namespace WhiteBox
 {
@@ -100,39 +101,49 @@ namespace WhiteBox
 
             if (AZ::EditContext* editContext = serializeContext->GetEditContext())
             {
-                editContext->Class<WhiteBoxLayer>("White Box Layer", "One editable White Box layer.")
+                editContext->Class<WhiteBoxLayer>(
+                    QT_TRANSLATE_NOOP("WhiteBox", "White Box Layer"),
+                    QT_TRANSLATE_NOOP("WhiteBox", "One editable White Box layer."))
                     ->ClassElement(AZ::Edit::ClassElements::EditorData, "")
-                    ->DataElement(AZ::Edit::UIHandlers::Default, &WhiteBoxLayer::m_name, "Name", "Layer name.")
+                    ->DataElement(AZ::Edit::UIHandlers::Default, &WhiteBoxLayer::m_name,
+                    QT_TRANSLATE_NOOP("WhiteBox", "Name"),
+                    QT_TRANSLATE_NOOP("WhiteBox", "Layer name."))
                     ->DataElement(
-                        AZ::Edit::UIHandlers::CheckBox, &WhiteBoxLayer::m_visible, "Visible",
-                        "Show or hide this layer (hidden layers are excluded from the combined output).")
+                        AZ::Edit::UIHandlers::CheckBox, &WhiteBoxLayer::m_visible,
+                        QT_TRANSLATE_NOOP("WhiteBox", "Visible"),
+                        QT_TRANSLATE_NOOP("WhiteBox", "Show or hide this layer (hidden layers are excluded from the combined output)."))
                     ->DataElement(
-                        AZ::Edit::UIHandlers::CheckBox, &WhiteBoxLayer::m_collision, "Collision",
-                        "Include or exclude this layer from the physics collision mesh.")
+                        AZ::Edit::UIHandlers::CheckBox, &WhiteBoxLayer::m_collision,
+                        QT_TRANSLATE_NOOP("WhiteBox", "Collision"),
+                        QT_TRANSLATE_NOOP("WhiteBox", "Include or exclude this layer from the physics collision mesh."))
                     ->DataElement(
-                        AZ::Edit::UIHandlers::Color, &WhiteBoxLayer::m_tint, "Tint",
-                        "Render colour for this layer (used when 'Use Global Tint' is off).")
+                        AZ::Edit::UIHandlers::Color, &WhiteBoxLayer::m_tint, QT_TRANSLATE_NOOP("WhiteBox", "Tint"),
+                        QT_TRANSLATE_NOOP("WhiteBox", "Render colour for this layer (used when 'Use Global Tint' is off)."))
                     ->DataElement(
-                        AZ::Edit::UIHandlers::ComboBox, &WhiteBoxLayer::m_combineMode, "Combine",
-                        "How this layer combines with the layers below it: Separate keeps it as its own island; "
-                        "Union fuses it; Subtract carves it out; Intersect keeps only the overlap.")
-                    ->EnumAttribute(LayerCombineMode::Separate, "Separate")
-                    ->EnumAttribute(LayerCombineMode::Union, "Union")
-                    ->EnumAttribute(LayerCombineMode::Subtract, "Subtract")
-                    ->EnumAttribute(LayerCombineMode::Intersect, "Intersect")
+                        AZ::Edit::UIHandlers::ComboBox, &WhiteBoxLayer::m_combineMode,
+                        QT_TRANSLATE_NOOP("WhiteBox", "Combine"),
+                        QT_TRANSLATE_NOOP("WhiteBox", "How this layer combines with the layers below it: Separate keeps it as its own island; "
+                        "Union fuses it; Subtract carves it out; Intersect keeps only the overlap."))
+                    ->EnumAttribute(LayerCombineMode::Separate, QT_TRANSLATE_NOOP("WhiteBox", "Separate"))
+                    ->EnumAttribute(LayerCombineMode::Union, QT_TRANSLATE_NOOP("WhiteBox", "Union"))
+                    ->EnumAttribute(LayerCombineMode::Subtract, QT_TRANSLATE_NOOP("WhiteBox", "Subtract"))
+                    ->EnumAttribute(LayerCombineMode::Intersect, QT_TRANSLATE_NOOP("WhiteBox", "Intersect"))
                     ->DataElement(
-                        AZ::Edit::UIHandlers::CheckBox, &WhiteBoxLayer::m_invertNormals, "Invert Normals",
-                        "Render this layer inside-out (flips its normals / winding). Non-destructive and reversible; "
-                        "applies to existing and new geometry in the layer.")
+                        AZ::Edit::UIHandlers::CheckBox, &WhiteBoxLayer::m_invertNormals,
+                        QT_TRANSLATE_NOOP("WhiteBox", "Invert Normals"),
+                        QT_TRANSLATE_NOOP("WhiteBox", "Render this layer inside-out (flips its normals / winding). Non-destructive and reversible; "
+                        "applies to existing and new geometry in the layer."))
                     ->DataElement(
-                        AZ::Edit::UIHandlers::Default, &WhiteBoxLayer::m_position, "Position",
-                        "Translate this layer's geometry (applied non-destructively at combine time).")
+                        AZ::Edit::UIHandlers::Default, &WhiteBoxLayer::m_position,
+                        QT_TRANSLATE_NOOP("WhiteBox", "Position"),
+                        QT_TRANSLATE_NOOP("WhiteBox", "Translate this layer's geometry (applied non-destructively at combine time)."))
                     ->DataElement(
-                        AZ::Edit::UIHandlers::Default, &WhiteBoxLayer::m_rotation, "Rotation",
-                        "Rotate this layer's geometry, Euler degrees (XYZ).")
+                        AZ::Edit::UIHandlers::Default, &WhiteBoxLayer::m_rotation,
+                        QT_TRANSLATE_NOOP("WhiteBox", "Rotation"),
+                        QT_TRANSLATE_NOOP("WhiteBox", "Rotate this layer's geometry, Euler degrees (XYZ)."))
                     ->DataElement(
-                        AZ::Edit::UIHandlers::Default, &WhiteBoxLayer::m_scale, "Scale",
-                        "Scale this layer's geometry (non-uniform).")
+                        AZ::Edit::UIHandlers::Default, &WhiteBoxLayer::m_scale, QT_TRANSLATE_NOOP("WhiteBox", "Scale"),
+                        QT_TRANSLATE_NOOP("WhiteBox", "Scale this layer's geometry (non-uniform)."))
                     ->Attribute(AZ::Edit::Attributes::Min, 0.001f);
             }
         }

@@ -24,6 +24,7 @@
 #include <AzToolsFramework/ToolsComponents/EditorNonUniformScaleComponent.h>
 #include <WhiteBox/EditorWhiteBoxComponentBus.h>
 #include <numeric>
+#include <AzFramework/Translation/TranslationDef.h>
 
 namespace WhiteBox
 {
@@ -66,7 +67,8 @@ namespace WhiteBox
             {
                 editContext
                     ->Class<EditorWhiteBoxColliderComponent>(
-                        "White Box Collider", "Physics collider for White Box Component")
+                        QT_TRANSLATE_NOOP("WhiteBox", "White Box Collider"),
+                        QT_TRANSLATE_NOOP("WhiteBox", "Physics collider for White Box Component"))
                     ->ClassElement(AZ::Edit::ClassElements::EditorData, "")
                     ->Attribute(AZ::Edit::Attributes::Category, "Shape")
                     ->Attribute(AZ::Edit::Attributes::Icon, "Editor/Icons/Components/WhiteBox_collider.svg")
@@ -79,18 +81,21 @@ namespace WhiteBox
                     ->Attribute(AZ::Edit::Attributes::AutoExpand, true)
                     ->DataElement(
                         AZ::Edit::UIHandlers::Default, &EditorWhiteBoxColliderComponent::m_physicsColliderConfiguration,
-                        "Configuration", "Collider configuration")
+                        QT_TRANSLATE_NOOP("WhiteBox", "Configuration"),
+                        QT_TRANSLATE_NOOP("WhiteBox", "Collider configuration"))
                     ->Attribute(AZ::Edit::Attributes::Visibility, AZ::Edit::PropertyVisibility::ShowChildrenOnly)
                     ->Attribute(AZ::Edit::Attributes::ChangeNotify, &EditorWhiteBoxColliderComponent::OnColliderSettingsChanged)
                     ->DataElement(
                         AZ::Edit::UIHandlers::Default,
                         &EditorWhiteBoxColliderComponent::m_whiteBoxColliderConfiguration,
-                        "White Box Collider Configuration", "White Box collider configuration properties")
+                        QT_TRANSLATE_NOOP("WhiteBox", "White Box Collider Configuration"),
+                        QT_TRANSLATE_NOOP("WhiteBox", "White Box collider configuration properties"))
                     ->Attribute(AZ::Edit::Attributes::Visibility, AZ::Edit::PropertyVisibility::ShowChildrenOnly)
                     ->Attribute(AZ::Edit::Attributes::ChangeNotify, &EditorWhiteBoxColliderComponent::OnColliderSettingsChanged)
                     ->DataElement(
                         AZ::Edit::UIHandlers::Default, &EditorWhiteBoxColliderComponent::m_drawCollider,
-                        "Draw Collider", "Draw the actual cooked collision mesh as a green wireframe in the viewport");
+                        QT_TRANSLATE_NOOP("WhiteBox", "Draw Collider"),
+                        QT_TRANSLATE_NOOP("WhiteBox", "Draw the actual cooked collision mesh as a green wireframe in the viewport"));
             }
         }
     }
