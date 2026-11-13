@@ -61,10 +61,7 @@ namespace WhiteBox
 
     void WhiteBoxColliderComponent::GetIncompatibleServices(AZ::ComponentDescriptor::DependencyArrayType& incompatible)
     {
-        // NonUniformScaleService intentionally NOT listed - the runtime collider folds the entity's
-        // non-uniform scale into its cooked shape scale.
-        // Incompatible with other rigid bodies because it handles its own rigid body
-        // internally and it would conflict if another rigid body is added to the entity.
+        // Handles its own rigid body, so other rigid bodies would conflict.
         incompatible.push_back(AZ_CRC_CE("PhysicsRigidBodyService"));
     }
 
@@ -144,21 +141,12 @@ namespace WhiteBox
         AZ::Transform worldTransform = AZ::Transform::CreateIdentity();
         AZ::TransformBus::EventResult(worldTransform, entityId, &AZ::TransformInterface::GetWorldTM);
 
-        // Copy the cooked config and apply the entity's uniform scale to the shape geometry.
-        // The mesh is cooked in local (unscaled) space and the physics body only carries
-        // translation + rotation, so without applying the scale here the collider ignores
-        // the entity's scale (while the render mesh scales via its transform).
+        // The mesh is cooked unscaled and the body carries no scale, so apply the entity scale to the shape.
         Physics::CookedMeshShapeConfiguration shapeConfiguration = ActiveShapeConfiguration();
         m_builtScale = worldTransform.GetUniformScale();
 
-        // Fold in the entity's CURRENT non-uniform scale as well as the uniform scale, so a runtime
-        // resize (game mode) is reflected in the collider. The cooked triangle-mesh shape honours a
-        // Vector3 m_scale (that is how the uniform path below already works), so a non-uniform value
-        // scales it the same way.
-        //
-        // The editor bakes the non-uniform scale that exists AT BAKE TIME straight into the cooked
-        // mesh geometry (BakeEntityScaleIntoPhysicsMesh), and records that factor on this component.
-        // Only the scale relative to it is applied here, so it is not applied twice.
+        // Also apply the current non-uniform scale, relative to the factor the editor baked into the
+        // mesh, so a runtime resize is reflected without applying it twice.
         AZ::Vector3 nonUniformScale = AZ::Vector3::CreateOne();
         AZ::NonUniformScaleRequestBus::EventResult(
             nonUniformScale, entityId, &AZ::NonUniformScaleRequests::GetScale);
@@ -273,9 +261,7 @@ namespace WhiteBox
         }
 
         m_useBooleanMesh = desired;
-        // RebuildBody() re-reads the entity's current world transform (including its uniform
-        // scale) and folds it into the cooked shape, so a forced rebuild re-bakes the collider
-        // to the entity's current size.
+        // Rebuilding re-reads the entity scale, re-baking the collider to the current size.
         RebuildBody();
     }
 
@@ -300,10 +286,7 @@ namespace WhiteBox
         AZ::Transform worldTransform = AZ::Transform::CreateIdentity();
         AZ::TransformBus::EventResult(worldTransform, GetEntityId(), &AZ::TransformBus::Events::GetWorldTM);
 
-        // The AZ::Transform only carries uniform scale, so fold in the entity's current non-uniform
-        // scale exactly as RebuildBody does for the physics shape. The debug vertices already contain
-        // the non-uniform scale baked in the editor, so they get the relative scale; so do the
-        // fallback physics render faces.
+        // The transform has no non-uniform scale; apply the part not already baked into the debug vertices.
         AZ::Vector3 nonUniformScale = AZ::Vector3::CreateOne();
         AZ::NonUniformScaleRequestBus::EventResult(
             nonUniformScale, GetEntityId(), &AZ::NonUniformScaleRequests::GetScale);
@@ -320,9 +303,7 @@ namespace WhiteBox
         debugDisplay.DepthTestOn();
         debugDisplay.SetColor(AZ::Color(1.0f, 0.25f, 0.1f, 1.0f)); // orange wireframe (game mode)
 
-        // Prefer the actual cooked collider geometry (e.g. the greedy-merged voxel collider) baked in
-        // from the editor - this is what physics really uses. Only fall back to the render mesh faces
-        // when no collider geometry was supplied (older data).
+        // Prefer the cooked collider geometry; fall back to the render faces for older data.
         if (m_debugVertices.size() >= 3 && m_debugIndices.size() >= 3)
         {
             for (size_t i = 0; i + 2 < m_debugIndices.size(); i += 3)
@@ -358,9 +339,7 @@ namespace WhiteBox
     void WhiteBoxColliderComponent::OnTransformChanged(
         [[maybe_unused]] const AZ::Transform& local, const AZ::Transform& world)
     {
-        // The cooked shape's scale is baked when the body is built, so a change in the
-        // entity's uniform scale requires rebuilding the body (translation/rotation alone
-        // do not rescale a triangle-mesh shape).
+        // The shape scale is baked at build time, so a uniform scale change needs a rebuild.
         if (!AZ::IsClose(world.GetUniformScale(), m_builtScale))
         {
             RebuildBody();

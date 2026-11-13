@@ -196,11 +196,7 @@ namespace WhiteBox
         //! Keeps the Material and Collider cards and the Material Instance Editor usable during this mode.
         AZStd::unique_ptr<WhiteBoxMaterialUiUnlock> m_materialUiUnlock;
 
-        //! Lifetime token for deferred (queued) work. EnterDefaultMode has to set the action
-        //! context mode one event-loop turn late (see the comment there); this token lets that
-        //! callback detect that this component mode has since been destroyed - leaving component
-        //! mode and THEN applying a White Box sub-mode strands the editor in a mode where Play
-        //! and most editor actions are inactive. Captured as a weak_ptr by the deferred lambda.
+        //! Lets deferred work (EnterDefaultMode) detect that this mode was destroyed in the meantime.
         AZStd::shared_ptr<bool> m_deferredWorkToken;
 
         AzToolsFramework::ViewportUi::ClusterId
@@ -230,10 +226,7 @@ namespace WhiteBox
         AZ::Event<AzToolsFramework::ViewportUi::ButtonId>::Handler
             m_modeSelectionHandler;
 
-        //! The modeling cluster: Extrude / Inset / edge patterns / Bridge / Weld / Loop Cut / Bevel,
-        //! shown only while Transform mode is active because that is the only mode whose selection they
-        //! can act on. Created on entering that mode and torn down on leaving it, so the viewport never
-        //! carries buttons that do nothing.
+        //! The modeling cluster (Extrude, Inset, Bridge, Weld, Loop Cut, Bevel...), shown in Transform mode only.
         AzToolsFramework::ViewportUi::ClusterId m_modelingClusterId;
         AzToolsFramework::ViewportUi::ButtonId m_bridgeButtonId;
         AzToolsFramework::ViewportUi::ButtonId m_transformExtrudeButtonId;
@@ -285,9 +278,7 @@ namespace WhiteBox
         QPointer<WhiteBoxUvProjectionWindow> m_uvProjectionWindow;
         QPointer<WhiteBoxSmoothingWindow> m_smoothingWindow;
 
-        //! The Draw Shape primitive switcher: one entry per DrawShapeType, shown along the bottom of
-        //! the viewport while Draw Shape mode is active. A cluster, so the active primitive gets the same
-        //! highlight the mode cluster uses and the row folds into the toolbar arrow when it does not fit.
+        //! The Draw Shape primitive switcher along the bottom of the viewport.
         AzToolsFramework::ViewportUi::ClusterId m_shapeSwitcherId;
         AZStd::vector<AZStd::pair<AzToolsFramework::ViewportUi::ButtonId, DrawShapeType>> m_shapeButtons;
         //! The cube stamp sits in the same cluster because it answers the same question - what does a
@@ -297,9 +288,7 @@ namespace WhiteBox
 
         QPointer<WhiteBoxShapeOptionsWindow> m_shapeOptionsWindow;
 
-        //! The Vertex Paint cluster: the four paint verbs, with the active one highlighted the way the
-        //! mode cluster highlights the active mode. Its payload (which material, which colour) lives in
-        //! the paint window beside it.
+        //! The Vertex Paint cluster; the paint window holds its material and colour.
         AzToolsFramework::ViewportUi::ClusterId m_paintClusterId;
         AZStd::vector<AZStd::pair<AzToolsFramework::ViewportUi::ButtonId, FacePaintOperation>> m_paintButtons;
         AZ::Event<AzToolsFramework::ViewportUi::ButtonId>::Handler m_paintHandler;
@@ -346,9 +335,7 @@ namespace WhiteBox
         void RefreshSelectionClusterState();
         void RefreshToolClusterState();
         void RemoveModelingCluster();
-        //! Enable each modeling button according to what the current selection allows, so a disabled
-        //! button says "not with this selection" before it is clicked rather than after, and highlight
-        //! whichever drag latch is armed.
+        //! Enable each modeling button for what the selection allows, and highlight the armed latch.
         void RefreshModelingClusterState();
     };
 

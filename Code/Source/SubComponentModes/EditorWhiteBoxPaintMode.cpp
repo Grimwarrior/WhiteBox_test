@@ -321,10 +321,8 @@ namespace WhiteBox
         {
             return;
         }
-        // Outline what the next click will actually affect. With Whole Polygon on that is the polygon's
-        // border, drawn the way Sketch mode draws it, not the triangle under the cursor - a highlight
-        // that disagrees with what gets painted is worse than none. Read live rather than from
-        // m_settings, which is only sampled when a stroke begins, so toggling updates the hover at once.
+        // Outline what the next click affects (the whole polygon with Whole Polygon on). Read live so
+        // toggling updates the hover at once.
         AZStd::vector<AZ::Vector3> outline;
         const FacePaintSettings& live = component->GetFacePaintSettings();
         if (IsBlendOperation(live.m_operation))

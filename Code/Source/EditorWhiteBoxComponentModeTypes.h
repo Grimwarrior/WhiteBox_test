@@ -135,12 +135,8 @@ namespace WhiteBox
         SelectionFilter m_selectionFilter = SelectionFilter::None;
     };
 
-    //! Utility function to draw all edge handles in edgeBoundsWithHandle.
-    //! Note: Any edges in excludedEdgeHandles will be filtered out and not drawn.
-    //! @param lineBuffer Scratch storage for the batched vertex list. Owned by the caller so it keeps
-    //! its capacity between frames; its previous contents are discarded. Every edge goes out in one
-    //! DrawLines call - DebugDisplayRequests::DrawLine is a whole AuxGeom draw call each, which on a
-    //! dense mesh meant thousands of them per frame.
+    //! Draw all edge handles except @p excludedEdgeHandles, batched into one DrawLines call.
+    //! @param lineBuffer caller-owned scratch storage, kept between frames.
     void DrawEdges(
         AzFramework::DebugDisplayRequests& debugDisplay,
         const AZ::Color& color,

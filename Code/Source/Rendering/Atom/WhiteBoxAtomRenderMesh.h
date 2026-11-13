@@ -38,9 +38,8 @@ namespace WhiteBox
     struct SharedMaterial;
     struct WhiteBoxMaterial;
 
-    //! A concrete implementation of RenderMeshInterface to support Atom rendering for the White Box Tool.
-    //! The primary mesh is also a material consumer, so a Material component on the entity can override
-    //! each material slot and edit a per-entity material instance, as it does for the Mesh component.
+    //! Atom RenderMeshInterface for White Box. The primary mesh is a material consumer, so a Material
+    //! component can override its slots as for the Mesh component.
     class AtomRenderMesh
         : public RenderMeshInterface
         , private AZ::Render::MeshHandleStateRequestBus::Handler

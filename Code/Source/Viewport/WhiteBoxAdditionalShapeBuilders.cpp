@@ -62,9 +62,7 @@ namespace WhiteBox::Detail
             }
             return;
         }
-        // Elliptical torus; Width/Depth are outer diameters and Height is tube height. The tube
-        // tessellation is its own parameter: deriving it from `sides` made that one control scale the
-        // mesh quadratically, so a smoother ring cost far more triangles than anyone asked for.
+        // Elliptical torus: Width/Depth are outer diameters, Height the tube height, tube tessellation separate.
         const int tubeCount = AZStd::clamp(tubeSides, MinTubeSides, MaxTubeSides);
         const float major = (1.0f + hole) * 0.5f;
         const float minor = (1.0f - hole) * 0.5f;

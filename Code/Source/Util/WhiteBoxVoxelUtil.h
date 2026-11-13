@@ -19,10 +19,7 @@
 
 namespace WhiteBox
 {
-    //! Voxel (stamped-cube) helpers: cell packing, per-size grouping, occupancy surface
-    //! meshing (greedy and per-cell variants) and voxel-surface face signatures.
-    //! Extracted from EditorWhiteBoxComponent.cpp; the namespace name is kept so call
-    //! sites are unchanged.
+    //! Voxel (stamped-cube) helpers: cell packing, size grouping, surface meshing and face signatures.
     namespace VoxelDetail
     {
         //! Pack integer cell coordinates into a single key (21 bits per axis, biased so
@@ -36,9 +33,7 @@ namespace WhiteBox
         //! The world-space cube size a quantized key represents.
         float SizeFromQuantized(AZ::s32 q);
 
-        //! Voxel cells are stored as two parallel arrays (packed coordinate + world-space cube
-        //! size per cell). Grouping by quantized size gives one single-grid cell set per
-        //! distinct cube size, consumed one size at a time by the surface builders.
+        //! Cells grouped by quantized cube size, one set per size.
         using CellSet = AZStd::unordered_set<AZ::u64>;
         using SizeGroups = AZStd::unordered_map<AZ::s32, CellSet>;
 
@@ -46,16 +41,10 @@ namespace WhiteBox
         void FlattenGroups(
             const SizeGroups& groups, AZStd::vector<AZ::u64>& outCells, AZStd::vector<float>& outSizes);
 
-        //! Build a light, vertex-shared surface for a set of filled voxel cells (each cell is a
-        //! cellSize cube). Exposed faces are greedy-merged into maximal rectangles committed as
-        //! quad polygons. @note Greedy merging can leave T-junctions on non-convex clusters, so
-        //! this surface is NOT guaranteed to be a valid CSG operand - use GenerateSurfacePerCell
-        //! for boolean operands.
+        //! Greedy-merged surface for filled cells. May have T-junctions, so not a CSG operand (use GenerateSurfacePerCell).
         void GenerateSurface(WhiteBoxMesh& mesh, const AZStd::unordered_set<AZ::u64>& cells, float cellSize);
 
-        //! Build the surface WITHOUT greedy merging: one quad per exposed cell face. Guaranteed
-        //! watertight and 2-manifold for ANY cell set (no T-junctions), so it is a valid CSG
-        //! boolean operand.
+        //! One quad per exposed cell face: watertight and manifold, so a valid CSG operand.
         void GenerateSurfacePerCell(WhiteBoxMesh& mesh, const AZStd::unordered_set<AZ::u64>& cells, float cellSize);
 
         //! Quantize a vertex position to its voxel-grid cell index. Returns false if the
@@ -100,10 +89,7 @@ namespace WhiteBox
             AZStd::vector<AZ::u32>& indices);
     } // namespace VoxelDetail
 
-    //! True when every vertex of @p mesh lies inside (or on the boundary of, within a small
-    //! tolerance) one of the given cells. Manifold reports a boolean that would produce an
-    //! EMPTY result as a failure and leaves the input unchanged, so "the cut removes
-    //! everything" must be detected separately - this is that test.
+    //! Whether every vertex of @p mesh lies within the cells - Manifold reports an empty result as failure.
     bool MeshFullyInsideCells(
         const WhiteBoxMesh& mesh, const AZStd::vector<AZ::u64>& cells, const AZStd::vector<float>& sizes);
 } // namespace WhiteBox

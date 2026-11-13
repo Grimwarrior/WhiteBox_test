@@ -27,16 +27,13 @@ namespace WhiteBox
         Block       //!< Run it now on the calling thread (game builds, where a stand-in would ship).
     };
 
-    //! Splits collision geometry into convex parts, one connected shell at a time: a convex shell is kept exactly, a flat
-    //! one is given a thin backing, and only concave shells go through V-HACD. V-HACD runs on one background worker
-    //! shared by every collider, and results are cached by shell content for the session, so edits and undo only pay
-    //! for the shells that actually changed.
+    //! Splits collision geometry into convex parts per shell: convex shells as-is, flat ones backed, concave
+    //! ones through V-HACD on a shared background worker, with results cached by shell content.
     class ConvexDecomposer
     {
     public:
-        //! @param vertices / indices a welded triangle list (shared corners share an index).
-        //! @param requester who is told (once per queued shell) through onReady.
-        //! @param pending set when any shell is still a stand-in hull.
+        //! @param vertices / indices a welded triangle list. @p requester is told through onReady;
+        //! @p pending is set while any shell is still a stand-in hull.
         static AZStd::vector<HullPoints> Decompose(
             const AZStd::vector<AZ::Vector3>& vertices, const AZStd::vector<AZ::u32>& indices,
             const WhiteBoxColliderConfiguration& configuration, DecomposeWait wait = DecomposeWait::Block,

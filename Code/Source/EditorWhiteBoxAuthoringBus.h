@@ -23,11 +23,8 @@ namespace AZ
 
 namespace WhiteBox
 {
-    // Everything here is reflected to Python (module whitebox.authoring) so scripts and an MCP server can drive a White Box
-    // entity without the viewport. Elements are addressed by plain integer ids: a vertex id and an edge id are the handle
-    // indices, a face id is a face handle index, and a polygon id is the smallest face id the polygon contains.
-    // Ids stay valid until the next edit that changes topology, so re-query after every call that returns ids.
-    // Enum-like parameters travel as ints; whitebox_author.py maps names to them.
+    // Reflected to Python (whitebox.authoring) for scripts and MCP. Ids are handle indices (a polygon's id is its
+    // smallest face id) and stay valid until the next topology change. Enums travel as ints (see whitebox_author.py).
 
     //! Outcome of an authoring call. m_ids carries the new or changed element ids when the call produces any.
     struct AuthoringResult
@@ -216,8 +213,7 @@ namespace WhiteBox
         virtual AZStd::vector<AuthoringEdgeInfo> GetEdges(bool includeInterior) = 0;
 
         // ---- Mesh authoring (active layer) --------------------------------------------------------------------------
-        //! Replace the layer's mesh with an indexed triangle list. Coincident vertices weld and coplanar neighbours
-        //! become polygons. Counter-clockwise triangles face outward.
+        //! Replace the layer's mesh with an indexed triangle list (welded, coplanar faces merged, CCW outward).
         virtual AuthoringResult SetMeshFromTriangles(
             const AZStd::vector<AZ::Vector3>& positions, const AZStd::vector<AZ::u32>& indices) = 0;
         //! Add one polygon from an ordered outline of at least three points; it is fan-triangulated, so keep it convex.

@@ -405,9 +405,7 @@ def make_geometry(width=WIDTH, depth=DEPTH, storey_height=STOREY_HEIGHT,
     # stairwell opening so they never cross the stairs.
     floor_joists(timber, depth, upper, upper_width, stair_hole)
 
-    # The stairs are a parametric Staircase layer built by the caller; this fallback is
-    # sixteen solid treads rising to the upper floor. Either way the open side gets a balustrade
-    # and the wall side a wall-mounted handrail.
+    # Fallback stairs: sixteen solid treads. Either way the open side gets a balustrade.
     if not parametric_stairs:
         for step in range(stairs["steps"]):
             rise = storey_height * (step + 1) / stairs["steps"]

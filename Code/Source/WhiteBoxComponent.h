@@ -61,9 +61,7 @@ namespace WhiteBox
         //! Record whether a boolean variant was baked and the initial live-boolean state.
         void SetLiveBooleanState(bool hasBoolean, bool live);
 
-        //! The render data currently active (base or boolean). The collider component uses
-        //! this to draw a debug wireframe of the collision shape at runtime (the collider is
-        //! cooked from the same mesh).
+        //! The active render data (base or boolean), used for the collider's runtime debug wireframe.
         const WhiteBoxRenderData& GetActiveRenderData() const;
 
     private:
@@ -86,11 +84,7 @@ namespace WhiteBox
         WhiteBoxRenderData m_booleanRenderData; //!< Pre-baked boolean-evaluated render data (live-boolean enabled).
         WhiteBoxRenderData m_physicsRenderData;
         WhiteBoxRenderData m_booleanPhysicsRenderData;
-        //! Whether authoritative physics geometry was baked for this entity (set once the editor
-        //! hands over physics data, even when that data is empty because collision is disabled).
-        //! Distinguishes "collision intentionally off" (empty + flag set) from "legacy data with
-        //! no physics bake" (flag clear) so the debug wireframe never falls back to the full
-        //! visual geometry for a deliberately-disabled collider.
+        //! Physics geometry was baked (possibly empty, collision off), so never fall back to the visual geometry.
         bool m_hasPhysicsData = false;
         bool m_hasBooleanMesh = false; //!< Whether a boolean-evaluated variant was baked.
         bool m_liveBoolean = false; //!< Whether the boolean-evaluated variant is currently selected.

@@ -797,9 +797,7 @@ namespace WhiteBox
             const auto& polygonProps = whiteBox.mesh.property(polygonPropsHandle);
 
             AZStd::vector<PolygonHandle> polygonHandles;
-            // Every face in a polygon maps to the same ordered face list. Its first
-            // face is a unique representative. Preserve first-encounter order while
-            // avoiding a linear search through all previously emitted polygons.
+            // A polygon's first face represents it; keep first-encounter order without a linear search.
             AZStd::unordered_set<int> seenPolygons;
             seenPolygons.reserve(polygonProps.size());
             for (const auto& polygonProp : polygonProps)
@@ -3542,9 +3540,7 @@ namespace WhiteBox
             bool removedAny = false;
             for (const auto& vertexHandle : whiteBox.mesh.vertices())
             {
-                // An isolated vertex belongs to no face/edge - RemoveFaces leaves these
-                // behind (delete_face is called with delete_isolated_vertices = false), so
-                // they keep showing up as manipulator dots in vertex/edge editing modes.
+                // RemoveFaces leaves isolated vertices behind, which would show as manipulator dots.
                 if (whiteBox.mesh.is_isolated(vertexHandle))
                 {
                     whiteBox.mesh.delete_vertex(vertexHandle, false);
@@ -3554,9 +3550,7 @@ namespace WhiteBox
 
             if (removedAny)
             {
-                // Compact the mesh so the deleted vertices are actually purged (and vertex
-                // handles renumbered). Callers re-serialize/rebuild afterwards, so the
-                // renumbering is not observed across the boundary.
+                // Purge deleted vertices (renumbers handles; callers rebuild afterwards).
                 whiteBox.mesh.garbage_collection();
             }
         }
@@ -4549,10 +4543,7 @@ namespace WhiteBox
         {
             AZ_PROFILE_FUNCTION(AzToolsFramework);
 
-            // OpenMesh copies connectivity and deep-copies all property containers,
-            // including polygon groups, UVs, hidden vertices, materials and paint.
-            // Live rebuilds clone meshes repeatedly; avoid a binary write/read
-            // round-trip and reconstruction of every face for each copy.
+            // OpenMesh deep-copies connectivity and all properties - far cheaper than a write/read round-trip.
             WhiteBoxMeshPtr newMesh(aznew WhiteBoxMesh());
             newMesh->mesh = whiteBox.mesh;
             return newMesh;
@@ -4802,9 +4793,7 @@ namespace WhiteBox
         static constexpr float EarMinimumTurn = 1e-10f;
         static constexpr float PlanarTolerance = 1e-3f;
 
-        // Ear clipping in the hole's own plane, so concave outlines fill without adding vertices.
-        // Indices address the caller's border; an outline that crosses itself runs out of ears and
-        // is reported rather than filled with overlapping triangles.
+        // Ear clipping in the hole's plane; a self-crossing outline runs out of ears and is reported.
         static bool TriangulateLoop(
             const AZStd::vector<AZ::Vector2>& points, AZStd::vector<AZStd::array<size_t, 3>>& triangles)
         {
@@ -4865,10 +4854,8 @@ namespace WhiteBox
                     {
                         continue;
                     }
-                    // Take the squattest ear rather than the first one found. A border that runs
-                    // straight through a vertex - what a hole through a grid of quads leaves behind -
-                    // has corners that can never be ears themselves, and clipping greedily around
-                    // them strands them in a final sliver with no area.
+                    // Take the squattest ear: corners on a straight border can never be ears, and greedy
+                    // clipping would strand them in a zero-area sliver.
                     const float spread = (points[ear[1]] - points[ear[0]]).GetLengthSq() +
                         (points[ear[2]] - points[ear[1]]).GetLengthSq() +
                         (points[ear[0]] - points[ear[2]]).GetLengthSq();
@@ -5047,9 +5034,8 @@ namespace WhiteBox
             faces.reserve(triangles.size());
             for (const auto& triangle : triangles)
             {
-                // The border order came from the hole's own halfedges, so these wind to agree with
-                // the faces already around it. Deliberately not AddPolygon: its duplicate-vertex
-                // fallback would leave a loose patch floating in the hole instead of filling it.
+                // Border order follows the hole's halfedges, so these wind with their neighbours. Not
+                // AddPolygon: its duplicate-vertex fallback would leave a loose patch.
                 const auto face = candidate->mesh.add_face(
                     om_vh(border[triangle[0]]), om_vh(border[triangle[1]]), om_vh(border[triangle[2]]));
                 if (!face.is_valid())
@@ -5418,9 +5404,7 @@ namespace WhiteBox
             if (selected.size() < 2) { return fail("Ctrl-select at least two vertices in Transform mode."); }
             target = toLastSelected ? VertexPosition(whiteBox, vertices.back()) : target / static_cast<float>(selected.size());
 
-            // Collapsing an existing corner edge can leave two open wall patches
-            // meeting at the merged vertex. Distinguish this intentional collapse
-            // from joining otherwise unrelated surfaces at a single point.
+            // Tell an intended corner collapse (open patches meeting at the merged vertex) from joining unrelated surfaces.
             AZStd::unordered_set<int> connectedSelection;
             VertexHandles selectedPending{vertices.front()};
             while (!selectedPending.empty())
@@ -5527,9 +5511,7 @@ namespace WhiteBox
             {
                 return fail("Weld would remove all faces around the selection.");
             }
-            // Usually require one connected face fan. At the merged point only,
-            // permit separate open patches produced by collapsing connected vertices.
-            // Strict OpenMesh insertion below still rejects incompatible connections.
+            // One connected face fan per vertex, except separate open patches at the merged point.
             for (size_t vertex = 0; vertex < vertexFaces.size(); ++vertex)
             {
                 const auto& incident = vertexFaces[vertex];
@@ -7775,10 +7757,7 @@ namespace WhiteBox
                     ++groupCount;
                 }
             }
-            // Only the side walls this operation invents. Everything else is either carried across
-            // untouched or translated rigidly, so its shape is not this operation's to vouch for -
-            // and refusing the whole extrude over a sliver that was already in the mesh leaves the
-            // user with nothing to act on.
+            // Validate only the side walls this operation creates; pre-existing slivers must not block the extrude.
             for (const auto& face : faces)
             {
                 if (!face.m_created)
@@ -8037,9 +8016,7 @@ namespace WhiteBox
                     replacements[polygon.m_faceHandles.front().Index()][index] = {cornerVertex(vertex, point)};
                 }
             }
-            // At a three-edge junction all offset face corners share one
-            // profile center. Using the original vertex as each strip's center
-            // instead pulls their endpoints inward and produces a groove.
+            // At a three-edge junction all strips share one profile centre, or the corner grooves inward.
             AZStd::map<int, AZ::Vector3> cornerCenters;
             for (const auto& item : selectedAtCorner)
             {
@@ -8281,11 +8258,8 @@ namespace WhiteBox
                 }
                 else
                 {
-                    // Split each odd-length boundary into two equal runs and
-                    // one middle edge. Three square corner grids are joined by
-                    // one-quad-wide strips, leaving just one central triangle.
-                    // This preserves rotational symmetry instead of placing an
-                    // entire row of triangles along one side of the corner.
+                    // Odd boundaries: two equal runs and a middle edge, so the corner stays symmetric
+                    // with a single central triangle.
                     const int size = segments / 2;
                     const AZStd::array<AZ::Vector3, 3> corners{{
                         AZ::Vector3::CreateAxisX(), AZ::Vector3::CreateAxisY(), AZ::Vector3::CreateAxisZ()}};
@@ -8675,9 +8649,7 @@ namespace WhiteBox
                 const float progress = (currentPosition - start.m_position).Dot(axis);
                 FaceHandle nextFace;
                 AZ::Vector3 nextPosition = AZ::Vector3::CreateZero();
-                // A plane through a vertex can meet several triangles. Accept one forward route
-                // (shared-edge duplicates count as one), and reject folds/branches rather than
-                // accidentally cutting through the rear surface or another disconnected island.
+                // Accept one forward route through a vertex; reject folds and branches.
                 for (auto it = mesh.vf_ccwbegin(om_vh(current)); it.is_valid(); ++it)
                 {
                     const auto face = wb_fh(*it);

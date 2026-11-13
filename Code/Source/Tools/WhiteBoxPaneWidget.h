@@ -46,11 +46,7 @@ namespace WhiteBox
 {
     class EditorWhiteBoxComponent;
 
-    //! The dockable White Box pane. Owns ALL White Box editing UI (the component itself is just
-    //! the data bridge to the entity): pick the White Box entity to edit from a dropdown (or
-    //! create a new one), enter/leave edit mode, switch the viewport tool sub-mode, and edit
-    //! every component setting - default shape, layers, Draw Shape tool, Unit Cube Stamp,
-    //! booleans, material and asset/export operations.
+    //! The dockable White Box pane: pick the White Box to edit, enter edit mode and manage its layers.
     class WhiteBoxPaneWidget
         : public QScrollArea
         , private AzToolsFramework::EditorEntityContextNotificationBus::Handler
@@ -70,9 +66,7 @@ namespace WhiteBox
         ~WhiteBoxPaneWidget() override;
 
     protected:
-        // React to being disabled (the editor MainWindow disables every dock pane when component
-        // mode begins): if White Box component mode is active, re-enable - this pane IS the
-        // White Box editing UI and must stay interactive.
+        // Stay enabled in White Box component mode, when the editor disables every dock pane.
         void changeEvent(QEvent* event) override;
 
     private:
@@ -93,9 +87,7 @@ namespace WhiteBox
         void OnEntityComponentAdded(const AZ::EntityId& entityId, const AZ::ComponentId& componentId) override;
         void OnEntityComponentRemoved(const AZ::EntityId& entityId, const AZ::ComponentId& componentId) override;
 
-        // ViewportEditorModeNotificationsBus overrides ...
-        // On entering component mode the editor MainWindow disables every dock pane; this pane
-        // must stay interactive (it IS the White Box editing UI), so it re-enables itself.
+        // ViewportEditorModeNotificationsBus overrides ... (re-enable the pane in component mode)
         void OnEditorModeActivated(
             const AzToolsFramework::ViewportEditorModesInterface& editorModeState,
             AzToolsFramework::ViewportEditorMode mode) override;
@@ -110,9 +102,7 @@ namespace WhiteBox
         // AZ::TransformNotificationBus overrides ... (live-update the Entity Transform section)
         void OnTransformChanged(const AZ::Transform& local, const AZ::Transform& world) override;
 
-        // EditorWhiteBoxComponentNotificationBus overrides ... (viewport edits change component
-        // state behind the pane's back - e.g. drawing into an empty white box auto-creates the
-        // first layer, which must appear in the layer list)
+        // EditorWhiteBoxComponentNotificationBus overrides ... (viewport edits change state behind the pane)
         void OnWhiteBoxMeshModified() override;
         void OnDefaultShapeTypeChanged(DefaultShapeType defaultShape) override;
         void OnLayerStructureChanged() override;
@@ -133,10 +123,8 @@ namespace WhiteBox
         void RefreshEntityList();
         //! Reload every control from the current component's state.
         void RefreshFromComponent();
-        //! RefreshEntityList + RefreshFromComponent once, on the next event-loop pass. A prefab reload
-        //! deletes and recreates every entity of an instance under the same ids: refreshing per
-        //! notification rebuilt the pane hundreds of times, and dropping the current entity on its
-        //! delete switched the pane to a different White Box.
+        //! RefreshEntityList + RefreshFromComponent once, next event-loop pass, so a prefab reload does
+        //! not rebuild the pane per entity or switch away from the current White Box.
         void QueueRefresh();
         //! Reload the layer list / active-layer combo / per-layer meta editors.
         void RefreshLayerControls(EditorWhiteBoxComponent* component);
@@ -230,9 +218,7 @@ namespace WhiteBox
         QLabel* m_shapeParamCavityGapLabel = nullptr;
         QPushButton* m_bakeShapeButton = nullptr;
         QGroupBox* m_shapeParamsGroup = nullptr;
-        //! Restarted by every shape spin-box change; committing the edit (rebuilding the collider and
-        //! the game-mode bake, and capturing an undo step) waits for it to expire. Without this a
-        //! click-and-hold on a spin-box arrow ran the full pipeline once per repeat.
+        //! Restarted by every shape spin-box change; the commit (cook, bake, undo step) waits for it.
         QTimer* m_shapeParamCommitTimer = nullptr;
         //! A preview has been applied to the component but not yet committed inside an undo batch, and
         //! the layer row it was applied to (the commit uses it, in case the selection moved meanwhile).

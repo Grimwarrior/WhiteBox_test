@@ -103,9 +103,8 @@ namespace WhiteBox
         void DeserializeWhiteBox() override;
         void WriteAssetToComponent() override;
         void RebuildWhiteBox() override;
-        //! RebuildWhiteBox without the synchronous collider cook and game-mode bake - both are queued
-        //! on m_rebuild and run from OnTick once the edits stop arriving. For streaming edits only:
-        //! the caller owes a real rebuild, or a SerializeWhiteBox, when the gesture ends.
+        //! RebuildWhiteBox with the collider cook and bake deferred to OnTick, for streaming edits.
+        //! The caller owes a real rebuild or SerializeWhiteBox when the gesture ends.
         void RebuildWhiteBoxDeferred();
         void SetDefaultShape(DefaultShapeType defaultShape) override;
         void SetMaterialTint(const AZ::Color& tint) override;
@@ -136,10 +135,7 @@ namespace WhiteBox
         bool GetDrawMergeUnion() override { return m_drawShapeData.m_mergeUnion; }
         bool GetDrawPolygonExtrude() override { return m_drawShapeData.m_polygonExtrude; }
         bool GetDrawUnitCube() override { return m_drawShapeData.m_unitCube; }
-        //! The world size used for the NEXT stamp and the stamp ghost grid. This is always
-        //! the desired "Cube Size", independent of any cubes already placed: each stamped
-        //! cube keeps its own size, so the size can be changed at any time and new cubes of
-        //! the new size coexist with the existing ones (no need to clear the stamp first).
+        //! Size of the next stamped cube; existing cubes keep their own size.
         float GetDrawUnitCubeSize() override
         {
             const float s = m_drawShapeData.m_unitCubeSize;
@@ -167,12 +163,7 @@ namespace WhiteBox
         void BuildVisibleGeometry(const AZ::Aabb& bounds, AzFramework::VisibleGeometryContainer& geometryContainer) const override;
 
         // AzFramework::RenderGeometry::IntersectionRequestBus overrides ...
-        //! Ray test against this mesh for the editor's render geometry intersector.
-        //!
-        //! Upstream White Box never implemented this, so its meshes were invisible to every
-        //! system built on scene raycasts - vertex snapping's occlusion test among them, but also
-        //! surface snapping and anything else asking "what is under this ray". Implemented in
-        //! terms of the same cached face list EditorSelectionIntersectRayViewport uses.
+        //! Ray test for the editor's render geometry intersector (scene raycasts, snapping occlusion).
         AzFramework::RenderGeometry::RayResult RenderGeometryIntersect(
             const AzFramework::RenderGeometry::RayRequest& ray) const override;
 
@@ -206,27 +197,18 @@ namespace WhiteBox
         //! @note EditorWhiteBoxComponent takes ownership of the editorMeshAsset and will handle deleting it
         void OverrideEditorWhiteBoxMeshAsset(EditorWhiteBoxMeshAsset* editorMeshAsset);
 
-        //! Returns the mesh used for render / collision / selection: the live-boolean
-        //! evaluated result when active, otherwise the editable base mesh.
-        //! Public so the collider component can bake physics from the same mesh the
-        //! render path uses.
+        //! The mesh used for render / collision / selection (the live-boolean result when active).
         WhiteBoxMesh* GetEvaluatedWhiteBoxMesh();
-        //! Evaluate (base [op] source) into a new mesh, regardless of the live-boolean
-        //! flag, and return it (or nullptr if no boolean source is set or evaluation
-        //! fails). Used to bake the "with boolean" variant when building the game entity.
-        //! @note Uses the CSG API which is only available in the Editor.
+        //! Evaluate base [op] source into a new mesh regardless of the live flag; null if unset or failed.
+        //! Editor only (uses the CSG API). Used to bake the boolean variant.
         Api::WhiteBoxMeshPtr EvaluateBooleanMesh(bool physicsPass = false);
-        //! One overlapping global cutter, already baked into this entity's (target) UNSCALED local
-        //! space - including both entities' non-uniform scale - so the CSG uses an identity operand
-        //! transform. Owns its mesh clone.
+        //! An overlapping global cutter, cloned into this entity's unscaled local space (identity operand transform).
         struct ResolvedCutter
         {
             Api::WhiteBoxMeshPtr m_mesh;         //!< Cutter geometry baked into this target's local space.
             Api::BooleanOperation m_operation = Api::BooleanOperation::Subtraction;
         };
-        //! Gather every global cutter (m_booleanOthers) whose world AABB overlaps this entity's,
-        //! resolved into this entity's local space. Empty when this entity is excluded or nothing
-        //! overlaps. @p physicsPass selects the cutter's collision-filtered evaluated mesh.
+        //! Global cutters overlapping this entity, in its local space. @p physicsPass uses collision-filtered meshes.
         AZStd::vector<ResolvedCutter> CollectOverlappingCutters(bool physicsPass);
         //! Lightweight AABB-only test: is there at least one overlapping global cutter? Used to set
         //! m_globalBooleanActive without doing any mesh/CSG work.
@@ -234,45 +216,25 @@ namespace WhiteBox
         //! Whether this entity's evaluated (m_displayMesh) result should be shown/baked: either the
         //! single-source live boolean is on, or it is an active global-boolean target.
         bool BooleanDisplayActive() const { return m_boolean.m_live || m_globalBooleanActive; }
-        //! The cached live-boolean result evaluated during editing (nullptr if the live
-        //! boolean is off or no result). Unlike EvaluateBooleanMesh this does not touch the
-        //! boolean source entity, so it is safe to read during the game-mode / spawnable
-        //! build where the source entity id is not resolvable.
+        //! The cached live-boolean result (null when off); safe during the game build, unlike EvaluateBooleanMesh.
         WhiteBoxMesh* GetLiveBooleanDisplayMesh();
         //! Whether the live (non-destructive) boolean is currently enabled.
         bool GetLiveBoolean() const { return m_boolean.m_live; }
-        //! Collision-filtered counterparts of the mesh accessors used by the collider. These
-        //! drop every layer whose per-layer "Collision" flag is off, so the cooked physics
-        //! shape matches only the layers the user marked as collidable. Without cooking from
-        //! these, the collider bakes the full (visual) geometry and the Collision toggle has no
-        //! effect on the actual physics body.
-        //! Current displayed variant (base, or the live-boolean cut result when live is on),
-        //! with non-collidable layers removed. May be empty (0 faces) when collision is disabled
-        //! for every visible layer, or null on a clone where no live mesh exists.
+        //! Collision-filtered meshes for the collider (layers with Collision off removed). The displayed
+        //! variant; empty when nothing collides, null on a clone.
         WhiteBoxMesh* GetPhysicsFilteredMesh() { return GetPhysicsMesh(); }
-        //! STRICT variant of GetPhysicsFilteredMesh: returns the cached collision-filtered mesh, or
-        //! NULL if it has not been built (e.g. during the game-entity / asset-processor build on a
-        //! clone). Unlike GetPhysicsFilteredMesh it never falls back to the UNFILTERED evaluated
-        //! mesh, so callers that must not resurrect non-collidable geometry (the game-entity cook
-        //! and its debug wireframe) can rely on it and fall back to serialized filtered data instead.
+        //! The cached collision-filtered mesh or null - never the unfiltered fallback - for the game-entity cook.
         WhiteBoxMesh* GetPhysicsCombinedMeshStrict() { return m_physicsCombinedMesh.get(); }
         //! The physics-filtered boolean-evaluated mesh (null when no boolean source is set).
         WhiteBoxMesh* GetPhysicsFilteredBooleanMesh() { return m_physicsDisplayMesh.get(); }
-        //! Build the true (uncut) base collider mesh with non-collidable layers removed. Used
-        //! for the base variant when the live boolean is on (where the displayed mesh is the cut
-        //! result). Returns null on the single-active-identity-layer fast path (caller then uses
-        //! the raw base mesh) or an empty mesh when every collidable layer was filtered out.
+        //! The uncut collision-filtered base, for the base variant while the live boolean is on. Null on
+        //! the single identity layer fast path.
         Api::WhiteBoxMeshPtr BuildPhysicsFilteredBaseMesh() { return BuildCombined(GetWhiteBoxMesh(), true); }
-        //! Enter this component's White Box edit (component) mode. Routes through the
-        //! ComponentModeDelegate, which issues ComponentModeSystemRequests::BeginComponentMode
-        //! with the correct builders (as an undoable ComponentModeCommand). The entity must be
-        //! selected and the component active first.
+        //! Enter White Box component mode (undoable). The entity must be selected and the component active.
         void EnterComponentMode();
 
         // ---- Pane API -------------------------------------------------------------------
-        // The dockable White Box pane (WhiteBoxPaneWidget) drives ALL White Box editing through
-        // this block. The component itself is just the bridge that binds the data to the entity;
-        // it no longer presents any editing UI of its own in the Entity Inspector.
+        // The White Box pane drives all editing through this block.
 
         //! Metadata for one layer (everything the pane edits - not the mesh data itself).
         struct LayerMeta
@@ -366,11 +328,8 @@ namespace WhiteBox
         void SetTrimEdges(const AZ::Data::AssetId& material, AZStd::vector<float> edges);
 
         // Layers.
-        //! Vertex positions of layer @p index in ENTITY-local space, i.e. with that layer's own
-        //! position/rotation/scale already applied - the same space LayerMeta::m_position lives in.
-        //! Used by the layer gizmo to pick a snap anchor. Empty if @p index is out of range.
-        //! @note Not cheap (the non-active path deserialises and transforms the layer), so call it
-        //! once at the start of a drag rather than every frame.
+        //! Layer @p index's vertex positions in entity-local space (layer transform applied), for the layer
+        //! gizmo's snap anchor. Not cheap: call once per drag.
         AZStd::vector<AZ::Vector3> GetLayerVertexPositionsEntityLocal(int index);
 
         int GetLayerCount() const { return static_cast<int>(m_layers.size()); }
@@ -431,10 +390,8 @@ namespace WhiteBox
         ShapeParams GetLayerShapeParams(int index) const;
         //! Write new shape parameters and regenerate the layer's mesh (live rebuild).
         void SetLayerShapeParams(int index, const ShapeParams& params);
-        //! As SetLayerShapeParams, but for the intermediate values of a slider/spin-box drag: the mesh
-        //! and render mesh update immediately while the .om stream write, the collider cook and the
-        //! game-mode bake are skipped or deferred. The caller must follow up with SetLayerShapeParams
-        //! (inside an undo batch) once the value settles.
+        //! SetLayerShapeParams for intermediate drag values: the mesh updates now, the stream write, cook and
+        //! bake wait. Follow up with SetLayerShapeParams (in an undo batch) when the value settles.
         void SetLayerShapeParamsPreview(int index, const ShapeParams& params);
         //! Freeze a parametric layer into an ordinary mesh layer (enables vertex editing;
         //! the shape parameters stop driving it).
@@ -462,10 +419,8 @@ namespace WhiteBox
         EditorWhiteBoxComponent* CloneWithSingleLayer(int index);
         //! Move polygons of the active layer into a new layer directly above it, which becomes active. Keeps transform and settings.
         bool DetachPolygonsToLayer(const Api::PolygonHandles& polygons, AZStd::string& error);
-        //! Move the layer at @p from so it ends up at index @p to (both are indices into the
-        //! CURRENT list). Layer order matters - it is the order the combine modes accumulate in -
-        //! so this is how the user restacks booleans. The active/loaded layer is tracked by its
-        //! stable id, so whichever layer was being edited stays the edit target after the move.
+        //! Move layer @p from to index @p to; order is the order combine modes accumulate in. The edited
+        //! layer stays the edit target.
         void MoveLayer(int from, int to);
         void ApplyActiveLayerTransform() { OnApplyLayerTransform(); }
         //! Bake the active layer's mirror and array into its mesh and switch them off.
@@ -590,9 +545,7 @@ namespace WhiteBox
         //! global cutters (manual "Refresh Global Booleans"). Static: it walks the whole scene.
         static void RefreshGlobalBooleans();
 
-        // CSG solver selection (applies to every boolean this component runs: the per-layer combine
-        // modes and the entity boolean). Fast/BSP is face-based (brush-style) and handles inward
-        // shells + inverted normals; Manifold is the volumetric, precision-first backend.
+        // CSG solver for every boolean of this component: Fast (face-based BSP) or Manifold (volumetric).
         Api::CsgSolver GetCsgSolver() const { return m_csgSolver; }
         void SetCsgSolver(Api::CsgSolver solver)
         {
@@ -614,9 +567,7 @@ namespace WhiteBox
         void ExportDescendantsToFile();
         bool GetFlipYZForExport() const { return m_flipYZForExport; }
         void SetFlipYZForExport(bool flip) { m_flipYZForExport = flip; }
-        //! Voxel stamp bookkeeping: INERT cell records (for "Clear Cube Stamp") plus the
-        //! legacy grid streams that are folded into the freeform mesh on load.
-        //! Public so the version converter (a free function) can construct one during migration.
+        //! Voxel stamp cell records (for "Clear Cube Stamp") and legacy grid streams folded in on load.
         struct VoxelData
         {
             AZ_TYPE_INFO(VoxelData, "{7D2B4F63-9A11-4E5B-8C27-3A6F0D51B9E2}");
@@ -701,9 +652,8 @@ namespace WhiteBox
             AZ::Crc32 StairVisibility() const;
         };
 
-        //! One editable "layer": its own geometry (freeform mesh + the two cube grids and the
-        //! occupancy) plus a name, visibility and a transform. All layers live in this one
-        //! component and are combined for output; editing always targets the active layer.
+        //! One editable layer: geometry, name, visibility and transform. Layers are combined for output;
+        //! edits target the active one.
         struct WhiteBoxLayer
         {
             AZ_TYPE_INFO(WhiteBoxLayer, "{3F2A9B84-7C1E-4D6A-9E2F-1B5C8A0D6E44}");
@@ -726,9 +676,7 @@ namespace WhiteBox
             bool m_mirrorZ = false;
             int m_arrayCount = 1;   //!< Copies in the array (1 = no array).
             AZ::Vector3 m_arrayOffset = AZ::Vector3(2.0f, 0.0f, 0.0f); //!< Step between copies, layer units.
-            // Parametric shape: when set, this layer's mesh is GENERATED from the shape
-            // parameters below (editing them rebuilds the layer live). Hand-edits are
-            // overwritten by the next parameter change until the layer is baked to mesh.
+            // Parametric: the mesh is generated from the parameters below and rebuilt when they change.
             bool m_parametric = false;
             DrawShapeType m_paramShape = DrawShapeType::Box;
             float m_paramWidth = 1.0f;  //!< Full extent along local X.
@@ -776,9 +724,7 @@ namespace WhiteBox
             //! A streaming edit (slider/spin-box drag) is in flight: skip work that only the serialized
             //! state needs, since a committing rebuild always follows once the value settles.
             bool m_streaming = false;
-            //! A preview replaced the working mesh without writing it back to the layer's stream. The
-            //! tick that ends the debounce flushes it, so the serialized state cannot be left behind
-            //! even if the committing pass never arrives (the pane closed mid-drag, say).
+            //! A preview replaced the working mesh without writing it back; the debounce tick flushes it.
             bool m_workingMeshUnwritten = false;
         };
 
@@ -821,9 +767,7 @@ namespace WhiteBox
         //! Remove every cube placed by the Unit Cube Stamp tool (clears the voxel set and
         //! regenerates the surface, leaving any hand-edited freeform geometry intact).
         AZ::Crc32 ClearVoxelCubes();
-        //! Weld coincident vertices and regroup coplanar faces so the whole mesh becomes a
-        //! clean manifold (via Api::RepairMesh). A single non-manifold region blocks every
-        //! boolean, so this button lets the user repair the mesh on demand.
+        //! Weld coincident vertices and regroup coplanar faces (Api::RepairMesh) so booleans work again.
         AZ::Crc32 FixNonManifoldMesh();
         //! Boolean group button: re-evaluate every White Box in the level against the current global
         //! cutters (RefreshGlobalBooleans) as one undo step.
@@ -848,32 +792,22 @@ namespace WhiteBox
         AZStd::string UniqueLayerName(const AZStd::string& base, const char* suffix = " copy") const;
         AZ::u32 OnLayersMetaChanged();       //!< Layer name/visibility edited: recombine + resync.
         void RefreshComponentMode();
-        //! Rebuild the editing manipulators in place so they pick up a changed layer transform.
-        //! Cheaper than RefreshComponentMode, and it keeps the selection - which matters because the
-        //! layer gizmo writes a new transform on every mouse move of a drag.
+        //! Rebuild the manipulators for a changed layer transform, keeping the selection (cheaper than a refresh).
         void RefreshManipulatorSpaces();         //!< Mark the component mode intersection data dirty after a layer swap.
         void ClearWorkingLayer();            //!< Reset the working members to empty (used when there are zero layers).
         AZ::Crc32 OnApplyLayerTransform();   //!< Bake the active layer's transform into its geometry, then reset it.
         AZ::Crc32 OnApplyLayerModifiers();
-        //! Build the full combined mesh from an active-layer freeform: every visible layer
-        //! (active from @p activeFreeform + grids + its transform, others from their stored data),
-        //! CSG-accumulated in list order per each layer's combine mode. Null == the single-active
-        //! identity/no-grid fast path (caller falls back to the raw freeform).
-        // Change the signature of BuildCombined to accept a physics filter:
+        //! Combine every visible layer in list order per its combine mode (the active one from
+        //! @p activeFreeform). Null on the single identity layer fast path.
         Api::WhiteBoxMeshPtr BuildCombined(WhiteBoxMesh* activeFreeform, bool physicsPass = false);
         AZ::u64 AllocLayerId();                 //!< Hand out a fresh stable layer id.
         int IndexOfLayerId(AZ::u64 id) const;   //!< Index of the layer with @p id, or -1.
         AZ::u64 LayerSignature() const;         //!< Hash of the current layer id order + count.
         void SyncLayerStructure();              //!< Reconcile working state after the list is reordered / added to / removed from.
-        //! Per-layer render faces honouring each layer's tint and Invert Normals flag (used when Use
-        //! Global Tint is off or any visible layer inverts). Pass @p freeformOverride to build from a
-        //! specific active-layer mesh (e.g. the base or boolean variant during the game-mode bake);
-        //! null selects the live freeform (boolean display mesh when the live boolean is on).
+        //! Per-layer render faces with each layer's tint and Invert Normals. @p freeformOverride picks
+        //! the active-layer mesh (null: the live freeform or boolean display mesh).
         WhiteBoxRenderData BuildColoredRenderData(WhiteBoxMesh* freeformOverride = nullptr);
-        //! Build render faces for the visible layers with inter-layer booleans applied, re-colouring
-        //! every merged face with the tint of the source layer its surface came from (Subtract cut
-        //! walls take the cutting layer's tint). Used whenever a visible layer has a boolean combine
-        //! mode so the coloured render matches the boolean geometry.
+        //! Render faces with inter-layer booleans applied, each face tinted by the layer it came from.
         WhiteBoxRenderData BuildColoredBooleanRenderData(WhiteBoxMesh* freeformOverride);
         //! True when at least one visible non-base layer uses a boolean (Union/Subtract/Intersect)
         //! combine mode, so the merged surface must be re-coloured per source layer.
@@ -909,9 +843,8 @@ namespace WhiteBox
         //! Clamp @p params into the layer's valid ranges and store them. Returns false (and changes
         //! nothing) when @p index is not a parametric layer.
         bool StoreLayerShapeParams(int index, const ShapeParams& params);
-        //! Regenerate a parametric layer's mesh from its shape parameters, then rebuild. With @p commit
-        //! false this is a preview: the mesh stream write is skipped for the active layer and the
-        //! collider cook / game-mode bake are left to the tick debounce.
+        //! Regenerate a parametric layer from its parameters and rebuild. With @p commit false (a preview)
+        //! the stream write, cook and bake are deferred.
         void RegenerateParametricLayer(int index, bool commit = true);
 
         //! The mesh used for RENDER / collision / bounds / selection. In live
@@ -921,9 +854,7 @@ namespace WhiteBox
         //! The grid mesh holding the stamped cubes (appended to the freeform for output).
         //! Created on first use.
         WhiteBoxMesh* GridMesh();
-        //! Rebuild m_combinedMesh = (freeform display mesh) + (grid mesh) appended, used by
-        //! EvaluatedMesh so render/collision/bounds/selection see both layers. Null when the
-        //! grid is empty (callers then use the freeform mesh directly).
+        //! Rebuild m_combinedMesh (freeform plus grid) for EvaluatedMesh; null when the grid is empty.
         void RebuildCombinedMesh();
         //! Return a new mesh = @p freeform with the grid layer appended, or null if there is
         //! no grid (caller uses @p freeform as-is) or @p freeform is null.
@@ -1010,9 +941,7 @@ namespace WhiteBox
 
         mutable AZStd::optional<AZ::Aabb> m_worldAabb; //!< Cached world aabb (used for selection/view determination).
         mutable AZStd::optional<AZ::Aabb> m_localAabb; //!< Cached local aabb (used for center pivot calculation).
-        //! Cached faces (triangles of mesh used for intersection/selection).
-        //! Mutable because it is a lazily built cache, like m_worldAabb / m_localAabb below, and
-        //! the const RenderGeometryIntersect needs to be able to populate it on first use.
+        //! Cached triangles for intersection/selection, built lazily (hence mutable).
         mutable AZStd::optional<Api::Faces> m_faces;
         WhiteBoxRenderData m_renderData; //!< Cached render data constructed from the White Box mesh source data.
         WhiteBoxMaterial m_material = {
@@ -1031,9 +960,7 @@ namespace WhiteBox
         float m_lightmapMargin = 0.005f; //!< Gap between lightmap charts, in UV units.
         bool m_useGlobalTint = true; //!< When set, every layer renders with the global material tint; otherwise each layer uses its own tint.
         AZ::Data::AssetId m_materialOverrideAssetId; //!< External material asset override (invalid = built-in material).
-        //! What the card's Default Material picker binds to. The asset id above stays the value the
-        //! render path and the Pane API read; this mirror is re-derived from it on Activate, so a
-        //! change made through either surface shows up on the other and the two cannot drift.
+        //! What the card's Default Material picker binds to; re-derived from the asset id above on Activate.
         AZ::Data::Asset<AZ::RPI::MaterialAsset> m_defaultMaterialAsset;
         //! A trim sheet: the horizontal bands of one material's texture that UVs can be fitted into.
         struct TrimSheet
@@ -1077,36 +1004,22 @@ namespace WhiteBox
 
         Api::WhiteBoxMeshPtr m_displayMesh; //!< Evaluated (base [op] source) mesh used for display while live.
         Api::WhiteBoxMeshPtr m_physicsDisplayMesh;
-        //! This entity is a global-boolean TARGET with at least one overlapping cutter, so its
-        //! evaluated result (m_displayMesh) should be shown/baked like the live boolean. Set by
-        //! RefreshGlobalBooleans; cleared when no cutter overlaps. Serialized so the composed result
-        //! stays the default shown geometry after reload and in game mode.
+        //! A global-boolean target with an overlapping cutter: show and bake m_displayMesh. Serialized.
         bool m_globalBooleanActive = false;
         Api::WhiteBoxMeshPtr m_gridMesh; //!< Stamped cubes kept SEPARATE from the freeform mesh (appended for output).
         Api::WhiteBoxMeshPtr m_combinedMesh; //!< Non-serialized freeform+grid mesh used for render/collision/bounds/selection.
         Api::WhiteBoxMeshPtr m_physicsCombinedMesh; // <-- ADD THIS
-        //! Serialized boolean-evaluated render data. Persisted so the game-mode bake can supply
-        //! the boolean render variant even when BuildGameEntity runs on a cloned entity (where
-        //! the non-serialized m_displayMesh is null). Empty (no faces) when there is no boolean.
+        //! Boolean render variant for the game-mode bake (serialized for clones). Empty without a boolean.
         WhiteBoxRenderData m_bakedBooleanRenderData;
         WhiteBoxRenderData m_bakedPhysicsBooleanRenderData;
-        //! Serialized copy of the true (uncut) base render data. Persisted so the game-mode bake
-        //! always has the base variant even on a clone where GetWhiteBoxMesh() is null - otherwise
-        //! the base would wrongly fall back to the evaluated (possibly cut) m_renderData.
+        //! Uncut base render variant for the game-mode bake (serialized for clones).
         WhiteBoxRenderData m_bakedBaseRenderData;
         WhiteBoxRenderData m_bakedPhysicsBaseRenderData;
-        //! True once the collision-filtered physics render data above has been baked at least once.
-        //! Serialized so the game-mode / asset-processor build (which runs on a clone that is never
-        //! live-edited) can tell "collision intentionally off -> empty physics bake" apart from
-        //! "legacy data with no physics bake". Without this the build falls back to the full visual
-        //! geometry for physics, which is why the runtime collider wireframe showed non-collidable
-        //! layers even though the real (filtered) collider was correct.
+        //! The collision-filtered physics data has been baked, so an empty bake means collision off rather
+        //! than legacy data. Serialized for the game build.
         bool m_physicsBaked = false;
-        //! Serialized form of m_renderData and of the four bake caches above, as compact byte streams.
-        //! The face vectors themselves are NOT reflected: a reflected WhiteBoxRenderData turns every
-        //! triangle into its own node of the prefab DOM that the undo system builds (twice, plus a
-        //! diff) on every edit, which is what made editing a dense mesh crawl. As byte streams they
-        //! serialize through the base64 json serializer and cost one string each.
+        //! m_renderData and the bake caches as byte streams: reflected face vectors put every triangle
+        //! in the undo system's prefab DOM, which made dense meshes crawl.
         AZStd::vector<AZ::u8> m_renderDataBlob;
         AZStd::vector<AZ::u8> m_bakedDataBlob;
         //! Refresh the blobs above from the live render data. Called wherever that data is rebuilt, so

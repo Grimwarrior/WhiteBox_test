@@ -37,26 +37,18 @@ namespace WhiteBox
         //! Return a pointer to the WhiteBoxMesh.
         virtual WhiteBoxMesh* GetWhiteBoxMesh() = 0;
 
-        //! Return the mesh used for render / collision / selection: the freeform mesh with
-        //! the stamp/grid layer folded in (and the live-boolean result when active). Defaults
-        //! to the plain white box mesh for handlers that do not override it.
+        //! The mesh used for render / collision / selection (stamps and live boolean folded in).
         virtual WhiteBoxMesh* GetEvaluatedWhiteBoxMesh() { return GetWhiteBoxMesh(); }
 
-        //! Subtract @p cutter (expressed by @p cutterTransform) from the stamped-cube grid
-        //! meshes so a draw-shape carve cuts through cubes as well as the freeform mesh.
-        //! Returns true if any grid geometry was changed. Default no-op for handlers without cubes.
+        //! Subtract @p cutter from the stamped-cube grids. Returns true if any grid changed.
         virtual bool CarveCubeGrids(
             [[maybe_unused]] const WhiteBoxMesh& cutter, [[maybe_unused]] const AZ::Transform& cutterTransform)
         {
             return false;
         }
 
-        //! Map geometry expressed in entity-local (viewport) space into the ACTIVE layer's
-        //! storage space by applying the inverse of the layer's non-destructive transform.
-        //! Only vertices whose handle index is >= @p firstVertexIndex are affected (pass 0 for
-        //! the whole mesh). No-op when the active layer's transform is identity. Editing tools
-        //! interact in entity-local space while the layer displays transformed, so committed
-        //! geometry must be mapped back or it appears shifted by the layer transform.
+        //! Map entity-local geometry into the active layer's storage space (inverse layer transform),
+        //! for vertices from @p firstVertexIndex on. No-op for an identity layer transform.
         virtual void MapMeshToActiveLayerSpace(
             [[maybe_unused]] WhiteBoxMesh& mesh, [[maybe_unused]] size_t firstVertexIndex)
         {
@@ -88,9 +80,7 @@ namespace WhiteBox
         //! Set the white box mesh default shape.
         virtual void SetDefaultShape(DefaultShapeType defaultShape) = 0;
 
-        //! Set the global material tint (the colour used when "Use Global Tint" is on). Provided so
-        //! other gems can recolour a White Box mesh at edit/runtime. Default no-op for handlers
-        //! that do not support materials.
+        //! Set the global material tint (used when "Use Global Tint" is on).
         virtual void SetMaterialTint([[maybe_unused]] const AZ::Color& tint) {}
         //! Get the global material tint.
         virtual AZ::Color GetMaterialTint() { return AZ::Color(1.0f, 1.0f, 1.0f, 1.0f); }
@@ -157,9 +147,7 @@ namespace WhiteBox
         virtual void SetVoxelCells(
             [[maybe_unused]] const AZStd::vector<AZ::Vector3>& cellMins, [[maybe_unused]] bool filled) {}
 
-        //! Build a simplified (greedy-meshed) collision triangle set for a voxel-stamped
-        //! mesh. Returns false if this mesh has no stamped cubes, in which case the collider
-        //! should fall back to its default per-face triangulation.
+        //! Build a simplified collision triangle set for a voxel-stamped mesh; false if it has no stamps.
         virtual bool BuildColliderMesh(
             [[maybe_unused]] AZStd::vector<AZ::Vector3>& vertices, [[maybe_unused]] AZStd::vector<AZ::u32>& indices)
         {

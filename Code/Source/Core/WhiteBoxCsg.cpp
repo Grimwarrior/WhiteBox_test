@@ -987,11 +987,8 @@ namespace WhiteBox
 
             Csg::TriangleMesh result;
 
-            // Choose the solver. The Fast (BSP) solver is face-based, so inward-facing shells
-            // (rooms/corridors) and inverted-normal operands compose the way Blender's "Fast" solver
-            // does, rather than being treated as volumetric complements like Manifold. Whichever
-            // solver is selected, fall back to the other if it yields an empty result, so a
-            // degenerate case one backend cannot handle is not silently dropped.
+            // Fast (BSP) composes inward-facing shells like Blender's Fast solver. Either solver falls
+            // back to the other when it returns nothing.
             const bool preferBsp = (solver == CsgSolver::Fast);
             const bool primaryOk = preferBsp ? Csg::MeshBooleanBsp(meshA, meshB, csgOperation, result)
                                              : Csg::MeshBoolean(meshA, meshB, csgOperation, result);
@@ -1012,10 +1009,7 @@ namespace WhiteBox
 
         bool RepairMesh(WhiteBoxMesh& whiteBox)
         {
-            // Convert to a triangle soup (which welds coincident vertices at WeldTolerance)
-            // and rebuild the white box from it (regrouping coplanar triangles into clean
-            // polygons and recomputing normals/UVs). This is exactly what the boolean does
-            // to its inputs, so a mesh that survives this will be accepted by the boolean.
+            // Round-trip through a triangle soup, exactly as the boolean does with its inputs.
             const Csg::TriangleMesh soup = Detail::ToTriangleMesh(whiteBox, AZ::Transform::CreateIdentity());
             if (soup.m_indices.empty())
             {

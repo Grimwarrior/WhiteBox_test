@@ -263,10 +263,7 @@ namespace WhiteBox
                 ->Event(
                     "OnWhiteBoxMeshModified", &EditorWhiteBoxComponentNotificationBus::Events::OnWhiteBoxMeshModified);
 
-            // note: WhiteBoxComponentRequestBus is reflected to the BehaviorContext in
-            // WhiteBoxComponent::Reflect (with Common scope) so that it is available to both
-            // Editor automation and runtime (game) Lua. Reflecting it again here would be a
-            // duplicate registration.
+            // WhiteBoxComponentRequestBus is reflected in WhiteBoxComponent::Reflect (Common scope).
 
             behaviorContext->Class<WhiteBoxUtil>("util")
                 ->Attribute(AZ::Script::Attributes::Scope, AZ::Script::Attributes::ScopeFlags::Automation)

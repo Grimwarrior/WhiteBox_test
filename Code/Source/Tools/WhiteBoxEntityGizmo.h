@@ -24,10 +24,7 @@ namespace AzToolsFramework
 
 namespace WhiteBox
 {
-    //! Viewport gizmo (the editor's standard translate / rotate / scale manipulators) that
-    //! edits the ENTITY transform via the TransformBus. Exists because the editor's built-in
-    //! entity gizmo is unavailable while a component mode is active - this one, owned by the
-    //! White Box pane, works at all times.
+    //! Entity transform gizmo owned by the White Box pane; the editor's own is unavailable during component mode.
     class WhiteBoxEntityGizmo : private AZ::TransformNotificationBus::Handler
     {
     public:

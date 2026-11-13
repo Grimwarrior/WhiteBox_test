@@ -7,18 +7,13 @@
 #
 
 include(FetchContent)
-# Always start by checking if the target already exists.
-# This prevents repeated calls but also allows the user to substitute their own 3rd party library
-# if they wish to do so.
+# Return early if the target exists (also lets users substitute their own library).
 
 if (TARGET 3rdParty::Manifold)
     return()
 endif()
 
-# Variables inside a local function are scoped to the function body.
-# Putting all of this inside a function lets us basically ensure that any variables set by the 
-# external 3rdParty CMake file do not have any effect on the outside world.
-# and allows us not to have to save and restore anything.
+# A function scope keeps the external CMake file's variables from leaking out.
 
 function(GetManifold)
     # Part 1:  Where do you get the library from?  Make sure to inform the user of the source of the library and any patches applied.

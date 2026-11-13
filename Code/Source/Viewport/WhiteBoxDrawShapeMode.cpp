@@ -634,11 +634,8 @@ namespace WhiteBox
                 tubeSides);
             return;
         }
-        // Room, Door and Circular Stairs are parametric shells, not extruded footprints, so they have
-        // their own builders and were falling through to the prism path below - drawing one produced a
-        // plain box. Build the real shape at the origin from the drawn footprint's dimensions, then map
-        // it onto that footprint. BuildParametricShapeMesh dispatches all three and never re-enters
-        // here for them, so there is no recursion.
+        // Room, Door and Circular Stairs are shells with their own builders: build at the origin from the
+        // footprint's size, then map onto the footprint.
         if (shapeType == DrawShapeType::Room || shapeType == DrawShapeType::Door ||
             shapeType == DrawShapeType::CircularStairs)
         {
@@ -873,10 +870,7 @@ namespace WhiteBox
             }
         }
 
-        // 1b. this entity's EVALUATED mesh (freeform + stamp/grid layer). The precomputed
-        //     intersection data above only covers the freeform mesh, so raycast the evaluated
-        //     mesh too - otherwise the stamp cannot snap to cubes in the separate grid layer.
-        //     Its layer transforms are already baked in, so use only the entity transform.
+        // 1b. Also raycast the evaluated mesh (with stamps), with the entity transform only.
         {
             WhiteBoxMesh* evaluated = nullptr;
             EditorWhiteBoxComponentRequestBus::EventResult(
@@ -1037,10 +1031,7 @@ namespace WhiteBox
         using MouseEvent = AzToolsFramework::ViewportInteraction::MouseEvent;
 
         const auto& mouseInteraction = mouse.m_mouseInteraction;
-        // Drawing and cube stamps use entity-local coordinates. The editing-mode transform
-        // in mouse.m_worldFromLocal also includes the active layer transform; using it here
-        // would apply the inverse layer transform twice when MapMeshToActiveLayerSpace
-        // converts the committed geometry into the layer's storage space.
+        // Entity-local, without the layer transform: MapMeshToActiveLayerSpace applies its inverse later.
         const AZ::Transform worldFromLocal =
             AzToolsFramework::WorldFromLocalWithUniformScale(m_entityComponentIdPair.GetEntityId());
         const IntersectionAndRenderData& intersectionData = mouse.m_intersectionData;
@@ -1158,10 +1149,8 @@ namespace WhiteBox
             return m_state == DrawState::DrawingPolygon;
         }
 
-        // Unit-cube stamp mode: press anchors a corner, drag stretches a footprint of
-        // grid cells across the clicked surface, and release stamps the whole region.
-        // The "Cube Size" property sets the block's thickness (in cells) along the
-        // surface normal. Ctrl (or the Carve toggle) subtracts instead of adds.
+        // Unit-cube stamp: press anchors, drag stretches a footprint of cells, release stamps it. Ctrl
+        // (or Carve) subtracts.
         if (UnitCubeMode())
         {
             // Right-click aborts an in-progress preview drag (and is consumed only then).
@@ -1211,12 +1200,8 @@ namespace WhiteBox
             {
                 if (m_unitCubeDragging)
                 {
-                    // Grow direction follows the LIVE Ctrl state relative to how it was at
-                    // press-time: change Ctrl from its press-time state -> grow ACROSS the
-                    // surface; match it -> extrude DEPTH along the normal. Tracking the live
-                    // modifier (rather than latching on a press edge) makes it respond the
-                    // instant Ctrl is pressed or released - no release-then-repress needed.
-                    // Carve is still fixed by whether Ctrl was held at press-time.
+                    // Ctrl changed since press: grow across the surface; unchanged: extrude along the
+                    // normal. Carve stays as it was at press time.
                     const bool ctrlNow = mi.m_keyboardModifiers.Ctrl();
                     m_unitCubeAcrossGrow = (ctrlNow != m_unitCubeCtrlPrev);
 
@@ -1369,9 +1354,7 @@ namespace WhiteBox
                 const AZ::Vector3 hitWorld = RaycastToSurface(mi, worldFromLocal, intersectionData, hitNormal);
                 m_surfaceNormal = hitNormal;            // remember the surface orientation
 
-                // Vertex snapping: start the shape exactly on an existing corner when one is
-                // under the cursor. The orientation still comes from the surface that was hit -
-                // only the anchor point moves.
+                // Snap the anchor onto a vertex under the cursor; the orientation still comes from the hit surface.
                 const auto anchorSnap = SnapTargetUnderCursor(mi.m_interactionId.m_viewportId);
                 const AZ::Vector3 anchorWorld =
                     anchorSnap.has_value() ? *anchorSnap : SnapToGrid(hitWorld, hitWorld, mi.m_interactionId.m_viewportId);
@@ -1394,9 +1377,7 @@ namespace WhiteBox
                 AZ::Vector3 dummyNormal;
                 const AZ::Vector3 rawHit = RaycastToSurface(mi, worldFromLocal, intersectionData, dummyNormal);
 
-                // Vertex snapping: pull the far corner onto an existing vertex when one is under
-                // the cursor. It is still projected onto the base plane below - a base rectangle
-                // has to stay flat, so a target off the plane lands on its in-plane projection.
+                // Snap the far corner too; it is projected onto the base plane below.
                 const auto cornerSnap = SnapTargetUnderCursor(mi.m_interactionId.m_viewportId);
                 SnapUtil::SetActiveSnapTarget(cornerSnap);
 
@@ -1538,9 +1519,7 @@ namespace WhiteBox
             0.0f, m_height, CurrentShape(), CurrentSides(), EffectiveStairSteps(), CurrentHoleRatio(),
             CurrentTubeSides());
 
-        // Drawing happens in entity-local space, but the active layer may carry a
-        // non-destructive transform applied at display time - map the NEW geometry into
-        // layer space so the shape shows up exactly where it was drawn.
+        // Map the new geometry into the active layer's space so it shows where it was drawn.
         EditorWhiteBoxComponentRequestBus::Event(
             m_entityComponentIdPair, &EditorWhiteBoxComponentRequests::MapMeshToActiveLayerSpace, *whiteBox,
             vertsBeforeCommit);
@@ -1765,9 +1744,7 @@ namespace WhiteBox
 
         AzToolsFramework::ScopedUndoBatch undoBatch(carve ? "Carve White Box" : "Add White Box");
 
-        // Apply the boolean (identity transform: the cutter is already built in
-        // the target's local space). Do NOT early-out if the freeform mesh is not hit - the
-        // cutter may still intersect stamped cubes.
+        // Identity transform: the cutter is in local space. No early out - it may still hit stamped cubes.
         const bool freeformChanged =
             Api::ApplyMeshBoolean(*whiteBox, cutter, AZ::Transform::CreateIdentity(), operation);
         if (freeformChanged)
@@ -2094,9 +2071,7 @@ namespace WhiteBox
             debugDisplay.DepthTestOn();
             return;
         }
-        // Unit-cube stamp hover ghost (drawn even when the draw state is Idle). The
-        // preview shows the grid subdivisions so you can see the individual cubes that
-        // make up the block, not just its outer box.
+        // Unit-cube stamp hover ghost, showing the individual cubes.
         if (m_unitCubeHoverValid)
         {
             const int mx = static_cast<int>(std::lround(m_unitCubeMinLocal.GetX()));
@@ -2118,10 +2093,7 @@ namespace WhiteBox
                     AZ::Vector3(static_cast<float>(cx), static_cast<float>(cy), static_cast<float>(cz)) * m_unitCubeCellSize);
             };
 
-            // Grid lines are drawn at Cube-Size boundaries so each cell of the grid is one
-            // stamped cube (not one voxel cell). The "Show Cube Grid Preview" toggle picks
-            // between the subdivided grid and a single outer box; a cap avoids flooding the
-            // debug renderer for very large blocks.
+            // Grid lines at Cube Size boundaries (one cell per stamped cube), capped for large blocks.
             const int step = AZ::GetMax(1, m_unitCubeSize);
             const int cubesX = nx / step;
             const int cubesY = ny / step;
@@ -2627,9 +2599,7 @@ namespace WhiteBox
     {
         const AZ::Transform localFromWorld = worldFromLocal.GetInverse();
 
-        // Vertex snap: put the stamped cell's corner on the target vertex. Rounded rather than
-        // floored - the target is a corner, not a point inside a cell, and the surface-normal
-        // nudge below would push it into the wrong neighbour.
+        // Snap the cell corner onto the target, rounded (a corner, not a point inside a cell).
         if (snapTargetWorld.has_value())
         {
             const AZ::Vector3 snapCell = localFromWorld.TransformPoint(snapTargetWorld.value()) / m_unitCubeCellSize;
@@ -2707,9 +2677,7 @@ namespace WhiteBox
             const int baseLo = AZStd::min(baseA, baseB);
             const int baseHi = AZStd::max(baseA, baseB);
 
-            // Grow from the anchor toward the cursor, but SNAP the grown side to whole
-            // Cube-Size blocks so the region is always an integer number of cubes (size 1
-            // -> 1 cube, drag -> 2, 3, ...). Never shifts: the base cube is always kept.
+            // Grow toward the cursor in whole cubes; the base cube is always kept.
             int lo = baseLo;
             int hi = baseHi;
             if (cur[a] > baseHi)

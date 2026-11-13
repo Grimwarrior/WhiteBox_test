@@ -13,9 +13,8 @@
 
 namespace WhiteBox
 {
-    //! Reduce a welded triangle list to about keepFraction of its triangles with quadric edge collapses, never flipping
-    //! a face by more than maxNormalDeviationDegrees. Triangles OpenMesh cannot take (non-manifold) pass through unchanged.
-    //! @return false and leaves the input alone when nothing could be simplified.
+    //! Reduce a welded triangle list to about keepFraction with quadric collapses, limiting normal flips.
+    //! @return false, leaving the input alone, when nothing could be simplified.
     bool SimplifyTriangles(
         AZStd::vector<AZ::Vector3>& vertices, AZStd::vector<AZ::u32>& indices, float keepFraction,
         float maxNormalDeviationDegrees = 60.0f);

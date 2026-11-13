@@ -24,10 +24,7 @@ namespace WhiteBox
 {
     void EditorWhiteBoxComponent::NormalizeVoxelData()
     {
-        // Older scenes stored just the cell coordinates plus a single baked cell size
-        // (m_voxel.m_legacySize). Give every such cell its own size entry so the rest of the
-        // pipeline can treat all data as per-cell sized. Also guards against any stale
-        // mismatch between the two parallel arrays.
+        // Older scenes have one baked cell size; give every cell its own size entry.
         if (m_voxel.m_sizes.size() != m_voxel.m_cells.size())
         {
             const float legacy = m_voxel.m_legacySize < 0.05f ? 0.05f : m_voxel.m_legacySize;
@@ -38,11 +35,8 @@ namespace WhiteBox
 
     bool EditorWhiteBoxComponent::CarveCubeGrids(const WhiteBoxMesh& cutter, const AZ::Transform& cutterTransform)
     {
-        // Subtract the draw-shape cutter from the cube grid so a carve cuts through stamped
-        // cubes too. The freeform mesh is handled separately by the draw mode. The caller
-        // serializes and rebuilds afterwards.
-        // @note The carve edits the grid MESH, not the voxel occupancy, so a later stamp of the
-        // same cube size (which regenerates the surface from occupancy) restores carved cubes.
+        // Subtract the draw-shape cutter from the cube grid (the draw mode handles the freeform mesh).
+        // Occupancy is untouched, so restamping the same size restores carved cubes.
         WhiteBoxMesh* grid = m_gridMesh.get();
         return grid != nullptr && !Api::MeshFaceHandles(*grid).empty() &&
             Api::ApplyMeshBoolean(*grid, cutter, cutterTransform, Api::BooleanOperation::Subtraction, m_csgSolver);
@@ -127,9 +121,7 @@ namespace WhiteBox
         Api::CalculateNormals(*solid);
         Api::CalculatePlanarUVs(*solid);
 
-        // ... then commit it to the freeform mesh with ONE boolean for the whole gesture. From
-        // here on the stamped geometry IS ordinary mesh: editable with every tool, never
-        // regenerated, and free on the rebuild/live-boolean hot path (no grid mesh exists).
+        // Commit to the freeform mesh with one boolean per gesture; from here on it is ordinary geometry.
         AzToolsFramework::ScopedUndoBatch undoBatch(filled ? "Stamp Cubes" : "Carve Cubes");
         const AZ::Transform identity = AZ::Transform::CreateIdentity();
 
@@ -159,9 +151,7 @@ namespace WhiteBox
             if (!Api::MeshFaceHandles(*freeform).empty() &&
                 !Api::ApplyMeshBoolean(*freeform, *solid, identity, Api::BooleanOperation::Subtraction, m_csgSolver))
             {
-                // Manifold reports an EMPTY result (the cut removes everything) as failure and
-                // leaves the mesh untouched - e.g. carving the cell of the only cube. Detect
-                // that case and empty the mesh for real.
+                // Manifold reports an empty result as failure; detect it and empty the mesh ourselves.
                 AZStd::vector<AZ::u64> gestureList(gestureCells.begin(), gestureCells.end());
                 const AZStd::vector<float> gestureSizes(gestureList.size(), cellSize);
                 if (MeshFullyInsideCells(*freeform, gestureList, gestureSizes))
@@ -182,9 +172,7 @@ namespace WhiteBox
 
         SerializeWhiteBox();
         RebuildWhiteBox();
-        // The freeform mesh changed under the active component mode: refresh the intersection
-        // data only (a FULL mode refresh would destroy the DrawShapeMode instance that is
-        // mid-mouse-interaction right now).
+        // Refresh intersection data only: a full refresh would destroy the DrawShapeMode mid-interaction.
         EditorWhiteBoxComponentModeRequestBus::Event(
             AZ::EntityComponentIdPair(GetEntityId(), GetId()),
             &EditorWhiteBoxComponentModeRequests::MarkWhiteBoxIntersectionDataDirty);
@@ -200,18 +188,12 @@ namespace WhiteBox
             return AZ::Edit::PropertyRefreshLevels::None;
         }
 
-        // Stamped cubes were CSG-unioned into the freeform mesh, so "clearing" them means
-        // subtracting the recorded stamped volume back out. This cuts whatever now occupies
-        // those cells (including freeform geometry that was drawn into them - by design).
-        // Expensive (one big boolean) but rare and explicitly user-invoked.
+        // Stamps were unioned into the mesh, so clearing subtracts the recorded volume (whatever occupies it now).
         AzToolsFramework::ScopedUndoBatch undoBatch("Clear Cube Stamp");
 
         if (WhiteBoxMesh* freeform = GetWhiteBoxMesh(); freeform != nullptr && !Api::MeshFaceHandles(*freeform).empty())
         {
-            // Build the cutter PER CELL, not greedy-merged: greedy merging can leave
-            // T-junctions on a non-convex cell cluster, which the CSG library rejects as a
-            // non-manifold operand ("mesh B is not a valid manifold"). Per-cell cubes are the
-            // proven-valid boolean operand (this is what the old stamp path used).
+            // One cube per cell: a greedy-merged cutter can have T-junctions that the CSG rejects as non-manifold.
             Api::WhiteBoxMeshPtr cutter = Api::CreateWhiteBoxMesh();
             const VoxelDetail::SizeGroups groups = VoxelDetail::GroupBySize(m_voxel.m_cells, m_voxel.m_sizes);
             for (const auto& group : groups)
@@ -233,9 +215,7 @@ namespace WhiteBox
                 }
                 else if (MeshFullyInsideCells(*freeform, m_voxel.m_cells, m_voxel.m_sizes))
                 {
-                    // The subtract would remove EVERYTHING (e.g. the mesh is nothing but the
-                    // stamped cubes) - Manifold reports the empty result as failure, so empty
-                    // the mesh explicitly.
+                    // Everything is removed; Manifold reports that as failure, so empty the mesh explicitly.
                     ClearMeshInPlace(*freeform);
                 }
             }
@@ -277,11 +257,8 @@ namespace WhiteBox
         vertices.clear();
         indices.clear();
 
-        // Stamped cubes are CSG-unioned into the freeform mesh at stamp time, so the collider's
-        // normal per-face path already covers them exactly. The voxel records that remain are
-        // inert bookkeeping for "Clear Cube Stamp" - they describe stamped VOLUME, not live
-        // geometry (a cube may since have been carved or edited), so building collision from
-        // them would produce ghost surfaces. Always defer to the per-face path.
+        // Stamps are part of the mesh, so the per-face collider covers them; the voxel records are only
+        // bookkeeping and would produce ghost surfaces.
         return false;
     }
 

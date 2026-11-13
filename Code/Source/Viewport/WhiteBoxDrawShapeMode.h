@@ -82,9 +82,7 @@ namespace WhiteBox
         //! Required by EditorWhiteBoxComponentMode variant dispatch.
         void Refresh() {}
 
-        //! Handle Escape. Two stage, as before: the first drops any numeric entry, the second
-        //! abandons the shape being drawn.
-        //! @return True if the Escape was consumed (so it must not also leave component mode).
+        //! Escape drops numeric entry first, then the shape. True if consumed (do not leave component mode).
         bool HandleEscape();
 
         //! Draw mode is not manipulator driven, so right click already reaches its own
@@ -110,10 +108,7 @@ namespace WhiteBox
             PullingPolygonHeight, //!< Closed outline; previewing its extrusion.
         };
 
-        //! Raycast the mouse ray against the existing white box mesh polygons,
-        //! falling back to an infinite XZ plane through the entity origin.
-        //! Returns a position in world space. worldFromLocal is the entity transform only;
-        //! cached editable-mesh bounds use the active layer transform separately.
+        //! Raycast the mouse against the mesh, falling back to a plane through the entity origin. World space.
         AZ::Vector3 RaycastToSurface(
             const AzToolsFramework::ViewportInteraction::MouseInteraction& mouseInteraction,
             const AZ::Transform& worldFromLocal,
@@ -186,11 +181,7 @@ namespace WhiteBox
         float CurrentCellSize() const;
         //! Whether the ghost preview should show the per-cube grid (true) or a single box.
         bool UnitCubeShowGrid() const;
-        //! Snapped local-space min corner of the unit cube targeted by a hit.
-        //! @param carve subtract (true) targets the clicked cell; add (false) the empty cell beyond it.
-        //! The snappable vertex under the cursor, or nothing. Shared by the freeform draw path
-        //! and the unit-cube stamp. Nothing is excluded - the shape being drawn is new geometry,
-        //! so every existing vertex is a legitimate target.
+        //! The snappable vertex under the cursor (nothing excluded: the drawn shape is new geometry).
         AZStd::optional<AZ::Vector3> SnapTargetUnderCursor(int viewportId) const;
         //! Round a point to the viewport grid when grid snapping is on, then return it to the drawing plane through @p planePoint.
         AZ::Vector3 SnapToGrid(const AZ::Vector3& world, const AZ::Vector3& planePoint, int viewportId) const;
@@ -210,10 +201,7 @@ namespace WhiteBox
         //! normal - used to pick the region's thickness axis/direction.
         void UnitCubeAxisFromNormal(
             const AZ::Transform& worldFromLocal, const AZ::Vector3& worldNormal, int& outAxis, int& outSign) const;
-        //! Recompute the previewed region box (min corner + per-axis cell extents) as the
-        //! base cube unioned with the remembered cursor cell on every axis. Lateral and
-        //! vertical drags write different axes of the cursor cell, so their growth
-        //! accumulates. The region only ever grows from the anchor; it never shifts.
+        //! Recompute the previewed region as the base cube unioned with the cursor cell; it only grows.
         void UpdateUnitCubeRegion(const AZ::Vector3& cursorCell);
         //! Stamp (union) or remove (subtract) every cell in the current region box in
         //! a single undo batch.
@@ -259,9 +247,7 @@ namespace WhiteBox
         //! Latches true once the drag moves clearly past the press point (~1 cell), so a
         //! near-stationary click keeps a fixed preview and can't jitter across a cell edge.
         bool m_unitCubeDragMoved = false;
-        //! When true the drag grows the footprint ACROSS the clicked surface (like the box
-        //! tool); when false it extrudes DEPTH along the normal. Follows the live Ctrl state
-        //! relative to press-time (changed Ctrl = across), so it responds immediately.
+        //! Grow across the surface (true) or extrude along the normal (false); follows the live Ctrl state.
         bool m_unitCubeAcrossGrow = false;
         //! Ctrl state captured at press-time (also what decides carve). The drag compares
         //! the live Ctrl state against this to pick depth vs across.
@@ -275,13 +261,9 @@ namespace WhiteBox
         int m_unitCubeSign = 1;
         //! Anchored corner cell (local min), set on left-press.
         AZ::Vector3 m_unitCubeAnchorMin = AZ::Vector3::CreateZero();
-        //! Hysteretic cursor cell during a drag. A given axis only switches cells once
-        //! the cursor moves decisively past the boundary, so sub-cell jitter can never
-        //! flip the previewed region while the mouse is essentially held still.
+        //! Hysteretic cursor cell, so sub-cell jitter does not flip the preview.
         AZ::Vector3 m_unitCubeCursorCell = AZ::Vector3::CreateZero();
-        //! World-space anchor hit point and surface normal captured on left-press. The
-        //! drag projects the cursor onto this fixed plane so the footprint always grows
-        //! contiguously from the anchor instead of jumping to other surfaces.
+        //! Anchor point and normal from the press; the drag stays on this plane.
         AZ::Vector3 m_unitCubeAnchorWorld = AZ::Vector3::CreateZero();
         AZ::Vector3 m_unitCubeAnchorNormalWorld = AZ::Vector3::CreateAxisZ();
         //! Previewed region box: local min corner and per-axis cell extents.

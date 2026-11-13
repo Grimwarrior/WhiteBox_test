@@ -77,10 +77,8 @@ namespace WhiteBox
     //! Builds a vector of visible faces by removing the degenerate faces from the source data
     WhiteBoxFaces BuildCulledWhiteBoxFaces(const WhiteBoxFaces& sourceData);
 
-    //! Packs render data sets into one compact byte blob.
-    //! Reflecting a WhiteBoxRenderData directly makes every triangle its own node in the prefab DOM the
-    //! undo system builds (twice, plus a diff) on every edit - tens of thousands of nodes for a dense
-    //! mesh. A byte stream instead hits the base64 json serializer and lands as a single string.
+    //! Packs render data sets into one byte blob, so serialization is a single string rather than a
+    //! prefab DOM node per triangle.
     AZStd::vector<AZ::u8> PackWhiteBoxRenderData(const AZStd::vector<const WhiteBoxRenderData*>& renderDataSets);
 
     //! Unpacks a blob produced by PackWhiteBoxRenderData into @p renderDataSets, in the packed order.

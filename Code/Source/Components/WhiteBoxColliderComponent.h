@@ -51,10 +51,8 @@ namespace WhiteBox
         //! component's "Draw Collider" toggle when the game entity is built).
         void SetDrawCollider(bool draw) { m_drawCollider = draw; }
 
-        //! Supply the actual cooked collider geometry (as a triangle list) so the runtime "Draw
-        //! Collider" overlay shows the real physics shape - e.g. the greedy-merged voxel collider -
-        //! rather than the render mesh. Set from the editor collider when the game entity is built.
-        //! bakedNonUniformScale is the entity non-uniform scale already baked into these vertices.
+        //! The cooked collider triangles for the runtime "Draw Collider" overlay, set when the game entity
+        //! is built. bakedNonUniformScale is the non-uniform scale already in these vertices.
         void SetDebugMesh(
             const AZStd::vector<AZ::Vector3>& vertices, const AZStd::vector<AZ::u32>& indices,
             const AZ::Vector3& bakedNonUniformScale = AZ::Vector3::CreateOne())
@@ -64,11 +62,8 @@ namespace WhiteBox
             m_debugBakedNonUniformScale = bakedNonUniformScale;
         }
 
-        //! The entity non-uniform scale the editor already baked into the cooked geometry of each variant.
-        //! The runtime applies only the remaining scale (current / baked) to the shape, so it is not
-        //! applied twice. A variant cooked from unscaled geometry keeps the default (1,1,1).
-        //! renderDataScale is the same for the physics render data that the overlay falls back to when
-        //! no debug mesh was supplied.
+        //! The non-uniform scale already baked into each variant (and the render data), so the runtime
+        //! applies only current / baked.
         void SetBakedNonUniformScale(
             const AZ::Vector3& baseScale, const AZ::Vector3& booleanScale, const AZ::Vector3& renderDataScale)
         {

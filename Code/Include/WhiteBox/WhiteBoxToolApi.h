@@ -578,10 +578,7 @@ namespace WhiteBox
         //! @note Collect all face handles to remove and call once per operation --
         //! do not call in a loop, as handles may be invalidated during garbage_collect.
         void RemoveFaces(WhiteBoxMesh& whiteBox, const FaceHandles& faceHandles);
-        //! Delete every vertex that no longer belongs to any face (isolated vertices) and
-        //! compact the mesh. RemoveFaces intentionally keeps isolated vertices, so callers
-        //! that fully remove geometry (e.g. clearing the voxel/cube stamp) must run this to
-        //! stop orphaned vertices lingering in vertex/edge editing modes.
+        //! Delete vertices that belong to no face and compact the mesh (RemoveFaces keeps them).
         void RemoveIsolatedVertices(WhiteBoxMesh& whiteBox);
         //! Set the position of the provided vertex handle to the new vertex position.
         void SetVertexPosition(WhiteBoxMesh& whiteBox, VertexHandle vertexHandle, const AZ::Vector3& position);
@@ -677,15 +674,9 @@ namespace WhiteBox
         //! Which CSG solver backend performs the boolean.
         enum class CsgSolver
         {
-            //! Volumetric, orientation-based (Manifold library). Robust and precise, but requires
-            //! closed two-manifold inputs and treats normal direction as the definition of "solid",
-            //! so a mesh with inverted normals becomes its complement.
+            //! Volumetric (Manifold library): robust, needs closed manifold inputs; inverted normals mean the complement.
             Manifold,
-            //! Face/plane-based BSP (brush-style, like Blender's "Fast" solver). Tolerant of open
-            //! and non-manifold meshes. Closed inward-facing (shell/room) inputs are normalized for
-            //! CSG classification and the result inherits the target orientation, so inverted rooms
-            //! compose without being treated as infinite complements. Best suited to blocky geometry.
-            //! Less numerically robust than Manifold on tiny slivers, and may emit non-manifold output.
+            //! Face-based BSP, like Blender's "Fast": tolerates open meshes and inward-facing rooms; less robust on slivers.
             Fast
         };
 
@@ -707,23 +698,12 @@ namespace WhiteBox
             WhiteBoxMesh& whiteBox, const WhiteBoxMesh& operand, const AZ::Transform& operandTransform,
             BooleanOperation operation, CsgSolver solver = CsgSolver::Manifold);
 
-        //! Repair a mesh so it becomes a clean, weldable manifold: coincident vertices are
-        //! welded and coplanar triangles are regrouped into single polygons (the exact
-        //! conversion the CSG boolean runs on its inputs). This removes the duplicate /
-        //! near-coincident vertices and stray faces that make a mesh non-manifold. A single
-        //! non-manifold region otherwise blocks EVERY boolean, because the CSG library
-        //! rejects the whole mesh if any part of it is non-manifold.
-        //! @return True if the mesh had geometry to repair, false if it was empty.
+        //! Weld coincident vertices and regroup coplanar triangles (what CSG does to its inputs), so a
+        //! non-manifold mesh stops blocking booleans. False if the mesh was empty.
         bool RepairMesh(WhiteBoxMesh& whiteBox);
 
-        //! Build a coplanar-merged triangle list suitable for a physics collider. Coplanar-adjacent
-        //! faces are grouped and re-triangulated with redundant collinear edge vertices removed, so a
-        //! flat region (e.g. the merged top of a stamped-cube block) collapses to a handful of
-        //! triangles instead of one pair per cell - dramatically lighter than a raw per-face cook,
-        //! while always reflecting the actual geometry (carves, multiple layers, transforms). Any
-        //! region that cannot be safely simplified falls back to its original triangles, so the result
-        //! is never worse than the raw triangulation.
-        //! @return True if any triangles were produced, false if the mesh was empty.
+        //! Collider triangles with coplanar faces merged and re-triangulated (far fewer triangles); regions
+        //! that cannot be simplified keep their original triangles. False if the mesh was empty.
         bool BuildColliderTriangles(
             const WhiteBoxMesh& whiteBox, AZStd::vector<AZ::Vector3>& vertices, AZStd::vector<AZ::u32>& indices);
 
@@ -853,9 +833,7 @@ namespace WhiteBox
         //! Per-corner normals in FaceHalfedgeHandles order: angle-weighted over faces sharing a smoothing group, else the face normal.
         AZStd::array<AZ::Vector3, 3> FaceCornerNormals(const WhiteBoxMesh& whiteBox, FaceHandle face);
 
-        //! Layer weights for vertex-blend materials (StandardMultilayerPBR, blend source Vertex Colors): x weights layer 2,
-        //! y layer 3 (which wins over layer 2), zero is the base layer. A vertex never painted takes the average of its
-        //! painted neighbours, so vertices an edit adds do not punch holes in a painted area.
+        //! Vertex-blend layer weights (x: layer 2, y: layer 3). Unpainted vertices average their painted neighbours.
         AZ::Vector3 VertexBlend(const WhiteBoxMesh& whiteBox, VertexHandle vertex);
         bool VertexBlendPainted(const WhiteBoxMesh& whiteBox, VertexHandle vertex);
         void SetVertexBlend(WhiteBoxMesh& whiteBox, VertexHandle vertex, const AZ::Vector3& weights);
@@ -973,26 +951,17 @@ namespace WhiteBox
             WhiteBoxMesh& whiteBox, const PolygonHandles& selection, float amount, bool inset,
             PolygonHandles& result, AZStd::string& error, PolygonHandles* preview = nullptr);
 
-        //! Bridge two disjoint boundary edges, connect open polygons at their nearest
-        //! compatible boundary edges, or replace two facing polygon caps with
-        //! a connecting strip. Caps must have one boundary each with equal corner counts.
-        //! The operation is transactional: failures return a message and leave the input unchanged.
-        //! New faces inherit material/paint from the first selection; existing UVs are retained.
+        //! Bridge two boundary edges, open polygons or two facing caps with a connecting strip.
+        //! Transactional: a failure returns a message and leaves the mesh unchanged.
         bool BridgeSelection(
             WhiteBoxMesh& whiteBox, const PolygonHandles& polygons, const EdgeHandles& edges, AZStd::string& error);
 
-        //! Fill the single planar hole bordered by the selected open edges with one new polygon.
-        //! Concave outlines are supported; the border must be flat, must not touch itself and must
-        //! belong to one hole. The new faces wind to match the surrounding surface and inherit the
-        //! material and paint of the face beside the first selected edge.
+        //! Fill the planar hole bordered by the selected open edges with one polygon (concave allowed).
         //! Transactional: a failure returns a message and leaves the mesh unchanged.
         bool FillHole(
             WhiteBoxMesh& whiteBox, const EdgeHandles& edges, AZStd::string& error, PolygonHandle* filled = nullptr);
 
-        //! Delete the selected polygons, keeping their vertices so the opening can be refilled or
-        //! rebuilt by hand. Edges left without a face on either side go with them, matching the
-        //! delete-faces behaviour in other modelling tools.
-        //! Transactional: a failure returns a message and leaves the mesh unchanged.
+        //! Delete the selected polygons, keeping their vertices. Transactional.
         bool DeletePolygons(WhiteBoxMesh& whiteBox, const PolygonHandles& polygons, AZStd::string& error);
 
         //! As DeletePolygons, but at triangle granularity, so one triangle of a quad can go while
@@ -1013,15 +982,10 @@ namespace WhiteBox
         EdgeHandles FindLinkedEdges(const WhiteBoxMesh& whiteBox, const EdgeHandles& seeds);
         VertexHandles FindLinkedVertices(const WhiteBoxMesh& whiteBox, const VertexHandles& seeds);
 
-        //! Merge selected vertices at their average position or the last selected vertex.
-        //! Collapsed triangles are removed; surviving face properties and UVs are retained.
-        //! Connected corner collapses may leave open face patches meeting at the merged point.
-        //! Rejects folded/duplicate faces and incompatible connections without changing the mesh.
+        //! Merge selected vertices at their average or the last selected one. Failure leaves the mesh unchanged.
         bool WeldVertices(WhiteBoxMesh& whiteBox, const VertexHandles& vertices, bool toLastSelected, AZStd::string& error);
 
-        //! Insert one continuous cut across a strip of planar convex quad polygons.
-        //! Position is measured from the selected edge's first endpoint (0 < fraction < 1).
-        //! The strip must close or terminate at open mesh boundaries; failure leaves the mesh unchanged.
+        //! Cut an edge loop across a strip of convex quads at @p fraction along @p edge. Failure leaves the mesh unchanged.
         bool InsertEdgeLoop(WhiteBoxMesh& whiteBox, EdgeHandle edge, float fraction, AZStd::string& error);
         //! Expand edge seeds along regular quad loops, or along unambiguous open borders.
         //! Invalid handles and internal triangulation edges are ignored. Does not modify the mesh.
@@ -1071,9 +1035,7 @@ namespace WhiteBox
         //! Add a visible corner on a polygon border edge at fraction (0, 1) from its first endpoint; invalid on failure.
         VertexHandle InsertVertexOnEdge(WhiteBoxMesh& whiteBox, EdgeHandle edge, float fraction, AZStd::string& error);
 
-        //! Bevel convex or concave sharp edges on planar, hole-free faces. Width is the face offset.
-        //! Connected selections can cross straight split edges and fully surround higher-valence corners.
-        //! Segments (1-32) controls the rounded profile. Failure leaves the mesh unchanged.
+        //! Bevel sharp edges by @p width with @p segments (1-32). Failure leaves the mesh unchanged.
         bool BevelEdges(WhiteBoxMesh& whiteBox, const EdgeHandles& edges, float width, int segments, AZStd::string& error, float profile = 0.5f);
 
         //! Insert 1-64 evenly spaced cuts as one transactional mesh edit. Slide [-1, 1] translates the group within its end margins.
@@ -1089,11 +1051,8 @@ namespace WhiteBox
             AZ::Vector3 m_position = AZ::Vector3::CreateZero();
         };
 
-        //! Cut a connected surface along the plane through two anchors and the viewing direction.
-        //! Transactional: failure leaves mesh and end unchanged. On success end references a resulting
-        //! face, ready for another segment. Lines are pairs of actual surface points for the preview.
-        //! Preserves materials, face colours and interpolated per-corner UVs. Open-ended cuts may
-        //! expose supporting triangle edges because WhiteBox polygons require closed boundaries.
+        //! Cut the surface along the plane through two anchors and the view direction. Transactional;
+        //! on success @p end references a resulting face, ready for the next segment.
         bool KnifeCut(
             WhiteBoxMesh& mesh, const KnifePoint& start, KnifePoint& end, const AZ::Vector3& viewDirection,
             AZStd::vector<AZ::Vector3>& lines, AZStd::string& error);

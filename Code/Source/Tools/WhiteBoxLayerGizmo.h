@@ -27,10 +27,7 @@ namespace WhiteBox
 {
     class EditorWhiteBoxComponent;
 
-    //! Viewport gizmo (translate / rotate / scale manipulators - the same ones the editor's
-    //! Transform component uses) that edits a layer's non-destructive Position / Rotation /
-    //! Scale: the exact values shown in the White Box pane's "Selected Layer" spin boxes.
-    //! Owned and driven by the pane; independent of the White Box component mode.
+    //! Translate / rotate / scale gizmo for a layer's Position / Rotation / Scale, driven by the pane.
     class WhiteBoxLayerGizmo : private AZ::TransformNotificationBus::Handler
     {
     public:
@@ -84,10 +81,7 @@ namespace WhiteBox
         AZStd::unique_ptr<AzToolsFramework::RotationManipulators> m_rotation;
         AZStd::unique_ptr<AzToolsFramework::ScaleManipulators> m_scale;
 
-        //! Vertex snapping (translate only). Offset from the layer's origin to the vertex chosen as
-        //! the drag anchor, in entity-local space. Resolved on the first move of a drag and held,
-        //! so the anchor cannot flip mid-drag. Rotation and scale do not change during a translate,
-        //! so this stays valid for the whole drag.
+        //! Snap anchor (translate only): offset from the layer origin to the anchor vertex, held for the drag.
         AZStd::optional<AZ::Vector3> m_snapAnchorOffset;
         bool m_snapAnchorResolved = false;
 

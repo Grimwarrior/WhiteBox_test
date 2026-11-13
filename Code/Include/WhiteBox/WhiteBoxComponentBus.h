@@ -12,9 +12,7 @@
 
 namespace WhiteBox
 {
-    //! WhiteBoxComponent requests.
-    //! @note Addressed by EntityId (a single runtime White Box per entity) so it can be
-    //! called ergonomically from runtime Lua, e.g. WhiteBoxComponentRequestBus.Event.BakeWhiteBox(entityId).
+    //! WhiteBoxComponent requests, addressed by EntityId so runtime Lua can call them.
     class WhiteBoxComponentRequests : public AZ::ComponentBus
     {
     public:
@@ -26,11 +24,7 @@ namespace WhiteBox
         //! Show or hide the runtime render mesh (the collider is unaffected), e.g. to fade out a wall the camera has moved behind.
         virtual void SetWhiteBoxVisible([[maybe_unused]] bool visible) {}
 
-        //! Select whether the runtime White Box uses its baked live-boolean geometry.
-        //! @note The CSG boolean is evaluated in the Editor when the game entity is built,
-        //! so this switches between the pre-baked base and boolean-evaluated variants rather
-        //! than re-running the boolean. Call BakeWhiteBox to apply the change to the render
-        //! mesh and physics collider. If no boolean variant was baked this has no effect.
+        //! Select the pre-baked boolean variant (or the base). Call BakeWhiteBox to apply it.
         virtual void SetLiveBoolean([[maybe_unused]] bool enabled) {}
 
         //! Whether the runtime White Box is currently set to use its baked boolean geometry.
@@ -39,15 +33,8 @@ namespace WhiteBox
             return false;
         }
 
-        //! Apply the current live-boolean selection: rebuild the render mesh and re-create
-        //! the physics collider from the matching pre-baked geometry. This is the "bake"
-        //! command callable from Lua at runtime.
-        //! @param rebakeCollider When true, force the physics collider to rebuild from the
-        //! entity's current size/scale even if the live-boolean selection has not changed.
-        //! The cooked collision mesh is authored in local (unscaled) space and the runtime
-        //! body folds in the entity's current uniform scale when it is (re)built, so this is
-        //! how a resized entity gets a matching collider at runtime. Defaults to false so
-        //! existing callers keep the original behaviour (only rebuild on a boolean change).
+        //! Apply the live-boolean selection to the render mesh and collider.
+        //! @param rebakeCollider also rebuild the collider at the entity's current scale.
         virtual void BakeWhiteBox([[maybe_unused]] bool rebakeCollider = false) {}
 
     protected:

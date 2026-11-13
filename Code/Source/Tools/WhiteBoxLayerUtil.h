@@ -13,12 +13,8 @@
 
 namespace WhiteBox
 {
-    //! Create a new "layer": a child entity under @p parentEntityId with its own
-    //! EditorWhiteBoxComponent, then select it and enter its White Box component (edit) mode so
-    //! the next shape/cube is drawn into the new layer. The child inherits the parent's world
-    //! transform, so geometry lines up with the parent's origin. Selection + mode entry are
-    //! deferred to the next tick (once the entity/component have activated). Runs as one undo step.
-    //! @return the created child entity id (invalid on failure).
+    //! Create a child White Box entity under @p parentEntityId, select it and enter its edit mode (next
+    //! tick). One undo step. @return the new entity (invalid on failure).
     AZ::EntityId CreateChildWhiteBoxLayer(AZ::EntityId parentEntityId);
 
     //! Move (or copy, with @p keepInSource) a layer onto a new sibling entity with the same transform,

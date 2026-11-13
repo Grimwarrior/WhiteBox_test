@@ -52,9 +52,7 @@ namespace WhiteBox
         // Fresh data is about to replace everything the cache was built from.
         m_layerRuntime.m_meshCache.clear();
 
-        // Migrate a LEGACY scene (single mesh stored in the loose fields, no layer list) that
-        // actually has geometry into one layer. Components with no layers and no loose geometry
-        // (freshly added, or intentionally emptied by deleting all layers) stay empty.
+        // Migrate a legacy single-mesh scene with geometry into one layer; empty components stay empty.
         const bool looseHasGeometry = !m_whiteBoxData.empty() || !m_voxel.m_legacyGridData.empty() ||
             !m_voxel.m_legacyGridMergedData.empty() || !m_voxel.m_cells.empty();
         if (m_layers.empty() && looseHasGeometry)
@@ -87,10 +85,7 @@ namespace WhiteBox
             }
         }
 
-        // Migrate legacy grid meshes (both features removed): stamped cubes now live directly in
-        // the freeform mesh (unioned at stamp time), so fold each layer's separate-grid and
-        // merged-grid streams into its freeform stream. Geometry is preserved exactly; the voxel
-        // cell records stay so "Clear Cube Stamp" can still subtract the stamped volume.
+        // Fold legacy grid streams into each layer's freeform mesh; voxel cell records stay for "Clear Cube Stamp".
         for (WhiteBoxLayer& migrate : m_layers)
         {
             if (!migrate.m_gridData.empty() || !migrate.m_gridMergedData.empty())

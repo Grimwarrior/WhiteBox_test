@@ -25,9 +25,7 @@
 
 namespace WhiteBox
 {
-    //! Walk up the transform hierarchy to the TOP-MOST consecutive White Box ancestor. All layers
-    //! are parented to this root so the hierarchy stays flat (one parent, many layer children)
-    //! instead of nesting a new grandchild every time.
+    //! The top-most consecutive White Box ancestor; all layers parent to it to keep the hierarchy flat.
     static AZ::EntityId FindRootWhiteBoxEntity(const AZ::EntityId entityId)
     {
         AZ::EntityId root = entityId;
@@ -142,9 +140,7 @@ namespace WhiteBox
 
         undoBatch.MarkEntityDirty(childId);
 
-        // 4. Select the child and enter its White Box edit (component) mode. Deferred to the next
-        //    tick so the freshly created entity and component are fully activated first - entering
-        //    component mode inline on a not-yet-active entity is unreliable.
+        // 4. Select the child and enter its edit mode next tick, once it has fully activated.
         AZ::TickBus::QueueFunction(
             [childId, sourceSubMode]()
             {

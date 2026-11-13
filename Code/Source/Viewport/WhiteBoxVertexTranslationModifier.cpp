@@ -56,14 +56,8 @@ namespace WhiteBox
         return axisIndex != VertexTranslationModifier::InvalidAxisIndex;
     }
 
-    //! Ask the editor-wide vertex snapper for a target under the cursor.
-    //! Returns nothing when the gem is absent, snapping is switched off, or no vertex is in range.
-    //! @param excludeVertexHandle The vertex being dragged - snapping to itself would be a no-op.
-    //! @note Known limitation: the snap source publishes vertices from EvaluatedMesh (what is
-    //! rendered) while the drag edits the base mesh from GetWhiteBoxMesh. The two share indices
-    //! for a plain mesh, but diverge once a live boolean or the voxel/grid layer is in play, so
-    //! the self-exclusion below can miss. Worst case is a harmless no-op snap onto the dragged
-    //! vertex's own position, or a nearby vertex being skipped.
+    //! The snap target under the cursor, excluding @p excludeVertexHandle (the dragged vertex). Source indices
+    //! come from the evaluated mesh, so with a live boolean or stamps the exclusion can miss (harmlessly).
     static AZStd::optional<AZ::Vector3> FindVertexSnapTargetWorld(
         const AZ::EntityId entityId, const int viewportId, const Api::VertexHandle excludeVertexHandle)
     {
@@ -86,9 +80,7 @@ namespace WhiteBox
     {
         AzFramework::ViewportDebugDisplayEventBus::Handler::BusDisconnect();
 
-        // Safety net - see the note in EdgeTranslationModifier's destructor. The manipulator's
-        // invalidate callback covers the same ground, but only fires via Unregister; doing it
-        // here makes the behaviour identical across all three modifiers.
+        // Safety net, as in the other modifiers (the invalidate callback only fires via Unregister).
         CancelDrag(false);
         DestroyManipulator();
     }
@@ -206,9 +198,7 @@ namespace WhiteBox
                 m_actionIndex =
                     FindClosestAxis(m_entityComponentIdPair.GetEntityId(), action, sharedState->m_edgeBeginEnds);
 
-                // vertex snapping: when a snap target is under the cursor the
-                // vertex jumps exactly onto it, overriding the axis-constrained position. Queried
-                // before the axis check so the marker clears correctly on a non-moving frame.
+                // A snap target overrides the axis-constrained position; queried first so the marker clears.
                 m_snapTargetWorld = FindVertexSnapTargetWorld(
                     m_entityComponentIdPair.GetEntityId(), action.m_viewportId, m_vertexHandle);
                 SnapUtil::SetActiveSnapTarget(m_snapTargetWorld);
@@ -420,9 +410,7 @@ namespace WhiteBox
     void VertexTranslationModifier::DisplayViewport(
         [[maybe_unused]] const AzFramework::ViewportInfo& viewportInfo, AzFramework::DebugDisplayRequests& debugDisplay)
     {
-        // note: the snap highlight is published to SnapUtil (see the mouse move callback) and
-        // drawn once per frame by EditorWhiteBoxComponentMode, so every snapping tool shows the
-        // same marker. Nothing to draw here.
+        // The snap marker is drawn by EditorWhiteBoxComponentMode.
 
         if (PerformingAction() && m_pressTime >= cl_whiteBoxVertexTranslationPressTime)
         {

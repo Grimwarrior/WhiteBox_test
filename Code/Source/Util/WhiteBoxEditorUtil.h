@@ -17,20 +17,11 @@ namespace WhiteBox
 {
     class EditorWhiteBoxComponent;
 
-    //! The White Box component named by @p entityComponentIdPair, or null when the entity is gone or
-    //! the id names something else. Shared because the floating tool windows and the modeling
-    //! operations all need it - and because four private copies in anonymous namespaces collide the
-    //! moment two of them land in the same unity build translation unit.
+    //! The White Box component named by @p entityComponentIdPair, or null. Shared to avoid unity-build collisions.
     EditorWhiteBoxComponent* FindWhiteBoxComponent(const AZ::EntityComponentIdPair& entityComponentIdPair);
 
-    //! The space every White Box editing overlay and manipulator lives in: the entity's world
-    //! transform with the ACTIVE LAYER's transform folded in. A layer's transform is applied when the
-    //! mesh is combined for display, never to the vertices being edited, so without this the handles
-    //! stay on the untransformed geometry until Apply Transform bakes the layer transform in. It is
-    //! exactly the entity transform while the layer's own is identity, which is the usual case.
-    //! @note Manipulators take an AZ::Transform, which carries a single scale, so a non-uniform layer
-    //! scale is folded in as its largest component - the one part of a layer transform the handles
-    //! cannot follow exactly.
+    //! The space White Box overlays and manipulators live in: the entity transform with the active layer's
+    //! transform folded in (non-uniform layer scale as its largest component).
     AZ::Transform EditorSpaceFromLocal(const AZ::EntityComponentIdPair& entityComponentIdPair);
     //! As above, for the callers that only carry an entity id. Uses the entity's White Box component.
     AZ::Transform EditorSpaceFromLocal(AZ::EntityId entityId);

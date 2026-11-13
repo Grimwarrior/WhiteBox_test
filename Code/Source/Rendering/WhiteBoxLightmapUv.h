@@ -15,9 +15,7 @@ namespace WhiteBox
     //! Default gap between lightmap charts, in UV units (about 2.5 texels on a 512 lightmap).
     inline constexpr float DefaultLightmapMargin = 0.005f;
 
-    //! Give every face a second, non-overlapping UV set for baked lighting (the UV1 stream, glTF TEXCOORD_1). Connected
-    //! coplanar triangles form a chart flattened onto its own plane, so a chart never overlaps itself; the charts are packed
-    //! into the unit square keeping their world sizes in proportion, @p margin apart. Works on the finished triangles, so
-    //! it covers every layer, boolean and bake alike.
+    //! Generate a non-overlapping UV1 set for baked lighting: coplanar charts packed into the unit square
+    //! at proportional sizes, @p margin apart.
     void GenerateLightmapUvs(WhiteBoxFaces& faces, float margin = DefaultLightmapMargin);
 } // namespace WhiteBox

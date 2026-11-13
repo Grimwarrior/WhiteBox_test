@@ -47,9 +47,7 @@ VertexShaderOutput MainVS(VertexShaderInput IN, uint instanceId : SV_InstanceID)
     float4 worldPosition4 = mul(objectToWorld, float4(IN.m_position, 1.0));
     float3 worldPosition = worldPosition4.xyz;
     OUT.m_position = mul(ViewSrg::m_viewProjectionMatrix, worldPosition4);
-    // The shaded mesh draws the same triangles with its own pass, so the two depths differ by rounding and the
-    // edges lose the depth test on some faces. Scale clip z toward the camera (reverse depth: larger is nearer) by a
-    // small relative amount, which is a few millimetres per 10 m regardless of distance.
+    // Pull edges slightly toward the camera (reverse depth) so they win the depth test against the shaded mesh.
     OUT.m_position.z *= 1.0 + 5e-4;
     OUT.m_worldPos = worldPosition;
     OUT.m_normal = mul(GetObjectToWorldMatrixInverseTranspose(instanceId), IN.m_normal);

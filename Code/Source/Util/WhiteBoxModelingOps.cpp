@@ -54,9 +54,7 @@ namespace WhiteBox::ModelingOps
             return vertices;
         }
 
-        //! Shared tail of Bridge and Weld: the selection's handles point into a mesh that no longer
-        //! exists, the layer stops being parametric (its vertices were edited) and the result is
-        //! written back and published.
+        //! Shared tail of Bridge and Weld: drop the layer's parametric flag and write back the result.
         void CommitMeshEdit(EditorWhiteBoxComponent& component, const AZ::EntityComponentIdPair& pair)
         {
             EditorWhiteBoxTransformModeRequestBus::Event(pair, &EditorWhiteBoxTransformModeRequests::ClearSelection);

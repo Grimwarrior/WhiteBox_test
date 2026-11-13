@@ -14,10 +14,7 @@ if (TARGET 3rdParty::OpenMesh)
     return()
 endif()
 
-# Variables inside a local function are scoped to the function body.
-# Putting all of this inside a function lets us basically ensure that any variables set by the 
-# external 3rdParty CMake file do not have any effect on the outside world.
-# and allows us not to have to save and restore anything.
+# A function scope keeps the external CMake file's variables from leaking out.
 
 function(GetOpenMesh)
     # Part 1:  Where do you get the library from?  Make sure to inform the user of the source of the library and any patches applied.

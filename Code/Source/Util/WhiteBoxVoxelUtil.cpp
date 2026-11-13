@@ -32,10 +32,7 @@ namespace WhiteBox
             z = static_cast<int>(key & CellMask) - CellBias;
         }
 
-        // Voxel sizes are stored per cube (so cubes of different sizes can coexist). To
-        // keep the geometry keyed on a single integer lattice, cells are grouped by size
-        // and each group is meshed on its own grid. Sizes are quantised to this many world
-        // units so tiny float differences map to the same group.
+        // Cubes of different sizes are meshed one size group at a time; sizes are quantised to this.
         constexpr float VoxelSizeQuantum = 1.0e-4f;
         AZ::s32 QuantizeSize(float size)
         {
@@ -79,13 +76,8 @@ namespace WhiteBox
             }
         }
 
-        // Build a light, vertex-shared surface for a set of filled voxel cells (each cell
-        // is a cellSize cube). Exposed faces are greedy-merged into maximal rectangles, so
-        // a single cube stays 8 verts / 6 faces and a wall or block becomes a handful of
-        // quads with only corner vertices - no interior/per-cell vertices exist to weigh
-        // the mesh down or clutter vertex/edge editing. Each merged rectangle is committed
-        // as one quad polygon. (Deliberately written with plain loops - no nested generic
-        // lambdas - so it behaves identically across compilers.)
+        // A light surface for filled cells: exposed faces greedy-merged into maximal quads, so a cube is
+        // 8 verts / 6 faces and walls carry only corner vertices.
         void GenerateSurface(WhiteBoxMesh& mesh, const AZStd::unordered_set<AZ::u64>& cells, const float cellSize)
         {
             AZStd::unordered_map<AZ::u64, Api::VertexHandle> verts;
@@ -117,9 +109,7 @@ namespace WhiteBox
                 ++polygonCount;
             };
 
-            // Greedy-merge a plane's exposed footprint cells (packed as PackCell(a, b, 0))
-            // into maximal (a0..a1, b0..b1) rectangles. Returns them as flat quads of four
-            // ints {a0, a1, b0, b1}.
+            // Greedy-merge a plane's exposed cells into maximal {a0, a1, b0, b1} rectangles.
             struct Rect { int a0, a1, b0, b1; };
             const auto greedyRects = [](AZStd::unordered_set<AZ::u64> mask) -> AZStd::vector<Rect>
             {
@@ -309,11 +299,7 @@ namespace WhiteBox
             clearPlanes();
         }
 
-        // Build the surface WITHOUT greedy merging: one quad per exposed cell face. Unlike
-        // the greedy version this is guaranteed watertight and 2-manifold for ANY cell set
-        // (including non-convex clusters), because every face is a full unit-cell face with
-        // no T-junctions. That makes it a valid CSG boolean operand - the greedy surface can
-        // contain T-junctions on concave clusters, which the boolean would reject.
+        // One quad per exposed cell face: always watertight and manifold (no T-junctions), so a valid CSG operand.
         void GenerateSurfacePerCell(WhiteBoxMesh& mesh, const AZStd::unordered_set<AZ::u64>& cells, const float cellSize)
         {
             AZStd::unordered_map<AZ::u64, Api::VertexHandle> verts;
@@ -359,9 +345,7 @@ namespace WhiteBox
             }
         }
 
-        // Quantize a vertex position to its voxel-grid cell index (positions are cell
-        // indices scaled by VoxelCellSize). Returns false if the position is not on the
-        // grid - such a vertex belongs to freeform geometry, not the voxel surface.
+        // A vertex position's grid cell index; false for off-grid (freeform) vertices.
         bool QuantizeCorner(const AZ::Vector3& p, const float cellSize, int& x, int& y, int& z)
         {
             constexpr float eps = 1e-3f;
@@ -401,9 +385,7 @@ namespace WhiteBox
             return true;
         }
 
-        // The set of triangle signatures that make up the voxel surface for `cells`.
-        // Generated through the exact same path as the live mesh, so the signatures
-        // match the faces actually present after a stamp/load.
+        // Triangle signatures of the voxel surface, generated the same way as the live mesh.
         FaceSignatureSet SurfaceFaceSignatures(const AZStd::unordered_set<AZ::u64>& cells, const float cellSize)
         {
             FaceSignatureSet sigs;
@@ -424,10 +406,7 @@ namespace WhiteBox
             return sigs;
         }
 
-        // Greedy-mesh the voxel cells into a minimal indexed triangle set for a physics
-        // collider. A PhysX triangle mesh is a plain soup, so coplanar exposed faces can be
-        // merged into big rectangles (2 triangles each) - hugely fewer triangles than one
-        // quad per cell. Triangles are APPENDED to verts/indices (absolute indices).
+        // Greedy-merged collider triangles for the cells, appended to verts/indices.
         void GreedyColliderTriangles(
             const AZStd::unordered_set<AZ::u64>& cells, const float cellSize, AZStd::vector<AZ::Vector3>& verts,
             AZStd::vector<AZ::u32>& indices)
@@ -461,10 +440,7 @@ namespace WhiteBox
                 indices.push_back(d);
             };
 
-            // Greedy-merge a plane's exposed (a,b) cells into maximal rectangles.
-            // Parameter is not named "emit": Qt defines that as an empty macro, and this target
-            // is built with AUTOMOC and unity builds, so a Qt-including translation unit batched
-            // into the same unity blob would silently delete the name.
+            // Greedy-merge a plane's exposed cells. Not "emit": Qt defines that as an empty macro.
             const auto greedy = [&](AZStd::unordered_set<AZ::u64>& mask, auto&& emitQuad)
             {
                 AZStd::vector<AZStd::pair<int, int>> list;

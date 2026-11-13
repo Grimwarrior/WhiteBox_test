@@ -188,9 +188,7 @@ namespace WhiteBox
         const auto readResult = Api::ReadMesh(*m_whiteBox, m_whiteBoxData); // empty layers stay empty
         if (readResult == Api::ReadResult::Full && !layer.m_bevelSource.empty())
         {
-            // OpenMesh may reorder serialized connectivity during a read. Establish the
-            // loaded mesh's byte representation as the baseline so StoreLayer does not
-            // mistake a layer switch for a direct edit and implicitly bake the live bevel.
+            // OpenMesh may reorder connectivity on read; re-baseline so StoreLayer does not see an edit.
             if (Api::WriteMesh(*m_whiteBox, m_whiteBoxData)) { layer.m_freeformData = m_whiteBoxData; }
         }
         m_gridMesh = Api::CreateWhiteBoxMesh();
@@ -232,9 +230,7 @@ namespace WhiteBox
 
         const WhiteBoxLayer& layer = m_layers[index];
 
-        // The active layer's geometry lives in the working mesh, not in its serialised data, so
-        // read that and apply the layer transform arithmetically - matching ApplyTransformToMesh
-        // (scale, then rotate, then translate) without paying for a mesh copy.
+        // The active layer lives in the working mesh; transform its positions directly (no mesh copy).
         if (index == m_layerRuntime.m_loadedIndex)
         {
             WhiteBoxMesh* working = GetWhiteBoxMesh();
@@ -297,9 +293,7 @@ namespace WhiteBox
         AZStd::vector<AZStd::pair<int, AZStd::string>> names;
         if (m_layers.empty())
         {
-            // Never return an empty value list: an empty combo would select index -1 and log
-            // "Out of range combo box index -1". A single placeholder keeps value 0 valid until a
-            // layer is created (drawing into the empty component auto-creates "Layer 1").
+            // A placeholder keeps the combo valid (an empty list selects index -1 and logs).
             names.emplace_back(0, AZStd::string("(no layers)"));
             return names;
         }
@@ -669,10 +663,7 @@ namespace WhiteBox
             params.m_stepsByHeight, params.m_stepHeight, params.m_holeRatio, params.m_tubeSides);
         if (index == m_layerRuntime.m_loadedIndex)
         {
-            // The parametric layer is the ACTIVE one: replace the working mesh so viewport
-            // display/selection track the new shape, then flush it into the layer's stream. On a
-            // preview the flush is skipped - it re-serializes the whole mesh to a .om stream, which
-            // nothing reads before the committing pass runs and does it anyway.
+            // Active layer: replace the working mesh; a preview skips the stream write, the commit does it.
             m_whiteBox = AZStd::move(mesh);
             if (commit)
             {
@@ -905,9 +896,7 @@ namespace WhiteBox
         m_layers.erase(m_layers.begin() + from);
         m_layers.insert(m_layers.begin() + to, AZStd::move(moved));
 
-        // SyncLayerStructure re-finds the loaded layer by its stable id (so the edit target
-        // follows the move rather than the slot), recombines, refreshes component mode and
-        // notifies the pane - exactly what the reflected container's reorder used to trigger.
+        // Re-finds the edited layer by id, recombines, refreshes component mode and notifies the pane.
         SyncLayerStructure();
         undoBatch.MarkEntityDirty(GetEntityId());
     }
@@ -969,13 +958,8 @@ namespace WhiteBox
 
     void EditorWhiteBoxComponent::RefreshComponentMode()
     {
-        // A layer swap replaces the working mesh, so any state cached by the active sub-mode
-        // holds stale handles into the OLD mesh - e.g. Transform mode's vertex selection, which
-        // crashes in Display() if it survives the swap. Issue a FULL component-mode refresh
-        // (EditorWhiteBoxComponentMode::Refresh resets every sub-mode and rebuilds the
-        // intersection data) instead of only marking the intersection data dirty. No-op when
-        // the component is not in component mode. This matters now that the White Box pane can
-        // add/delete/switch layers WHILE component mode is active.
+        // A full refresh, not just dirty intersection data: sub-modes hold handles into the old mesh
+        // (Transform mode's selection crashes if it survives a layer swap). No-op outside component mode.
         AzToolsFramework::ComponentModeFramework::ComponentModeSystemRequestBus::Broadcast(
             &AzToolsFramework::ComponentModeFramework::ComponentModeSystemRequests::Refresh,
             AZ::EntityComponentIdPair(GetEntityId(), GetId()));
@@ -1086,9 +1070,7 @@ namespace WhiteBox
             SerializeWhiteBox(); // flush the working members into this layer's streams first
         }
 
-        // Fold the grids into the freeform, bake the transform into every vertex, then clear the
-        // grids + voxel occupancy (rotated/scaled cubes cannot map back to axis-aligned voxels, so
-        // the stamps are frozen into the mesh) and reset the transform to identity.
+        // Fold the grids in and bake the transform; rotated cubes cannot stay voxels, so stamps are frozen.
         Api::WhiteBoxMeshPtr freeform = Api::CreateWhiteBoxMesh();
         Api::ReadMesh(*freeform, layer.m_freeformData);
         Api::WhiteBoxMeshPtr grid = Api::CreateWhiteBoxMesh();
@@ -1184,9 +1166,7 @@ namespace WhiteBox
             const int k = IndexOfLayerId(m_layerRuntime.m_loadedId);
             if (k >= 0)
             {
-                // The working members still belong to a live layer: the list was reordered or
-                // added to. Just reindex (so the render skips the correct slot) and keep the
-                // selection on the same layer - no reload, so no in-progress edits are lost.
+                // The loaded layer still exists (reordered or added to): reindex only, keeping in-progress edits.
                 m_layerRuntime.m_loadedIndex = k;
                 m_activeLayerIndex = k;
             }
@@ -1220,9 +1200,7 @@ namespace WhiteBox
         AzToolsFramework::ToolsApplicationEvents::Bus::Broadcast(
             &AzToolsFramework::ToolsApplicationEvents::InvalidatePropertyDisplay,
             AzToolsFramework::Refresh_EntireTree);
-        // Tell layer UI (the White Box pane) the layer structure changed. This is the one choke
-        // point every structural change funnels through - including the first layer auto-created
-        // by drawing into an empty white box, which the OnTick signature poll routes here.
+        // Every structural change ends here, including the first layer auto-created by drawing.
         EditorWhiteBoxComponentNotificationBus::Event(
             AZ::EntityComponentIdPair(GetEntityId(), GetId()),
             &EditorWhiteBoxComponentNotificationBus::Events::OnLayerStructureChanged);
@@ -1236,9 +1214,7 @@ namespace WhiteBox
         {
             return m_combinedMesh.get();
         }
-        // Non-destructive: render/collide/select against the evaluated result while
-        // the editable base (GetWhiteBoxMesh) stays untouched. Covers both the single-source
-        // live boolean and an active global-boolean target.
+        // Non-destructive: show the evaluated boolean result while the editable base stays untouched.
         if (BooleanDisplayActive() && m_displayMesh)
         {
             return m_displayMesh.get();
@@ -1313,27 +1289,15 @@ namespace WhiteBox
         const bool activeInverted = activeIdx >= 0 && activeIdx < count && m_layers[activeIdx].m_invertNormals;
         const bool activeModified = activeIdx >= 0 && activeIdx < count && HasLayerModifiers(m_layers[activeIdx]);
 
-        // Fast path: only the active layer is visible, identity transform, no grid, not inverted
-        // -> return null so EvaluatedMesh falls back to the raw working freeform (no clone).
-        // An inverted layer must NOT take this path: the raw working mesh has outward winding,
-        // and the flip (render + physics + selection) only exists in the combined mesh.
-        //
-        // This must NOT run on the physics pass: there, `visible` can collapse to just the active
-        // layer because OTHER visible layers were filtered out by their Collision flag. Returning
-        // null then makes the caller fall back to the UNFILTERED evaluated mesh (which still
-        // contains those non-collidable layers), so a per-layer Collision toggle would have no
-        // effect. On the physics pass we always build the filtered mesh explicitly below.
+        // Fast path: a single visible identity layer without grid, inversion or modifiers uses the raw
+        // working mesh. Never on the physics pass, where filtered-out layers would sneak back in.
         if (!physicsPass && visible.size() == 1 && visible[0] == activeIdx && activeIdentity && activeNoGrid &&
             !activeInverted && !activeModified)
         {
             return nullptr;
         }
 
-        // Accumulate the visible layers in list order (index 0 = bottom). The first visible layer is
-        // the base; every subsequent layer combines with the running result per its combine mode.
-        // NON-ACTIVE layers come from m_layerRuntime.m_meshCache: their built display mesh only changes when
-        // their data/meta change, so deserializing + transforming them on every rebuild (the old
-        // behaviour) was pure waste - and the reason edits got slow once real geometry existed.
+        // Accumulate visible layers bottom-up per combine mode. Inactive layers come from the mesh cache.
         Api::WhiteBoxMeshPtr acc;
         for (const int idx : visible)
         {
@@ -1381,9 +1345,7 @@ namespace WhiteBox
                 continue;
             }
             const AZ::Transform identity = AZ::Transform::CreateIdentity();
-            // Inter-layer booleans run in both tint modes. Under per-layer tint the merged surface is
-            // re-coloured per face by BuildColoredRenderData (each output face inherits the tint of
-            // the source layer it lies on), so a boolean no longer loses per-layer colour.
+            // Inter-layer booleans run in both tint modes; BuildColoredRenderData re-tints the merged faces.
             const LayerCombineMode mode = m_layers[idx].m_combineMode;
             switch (mode)
             {
@@ -1415,29 +1377,12 @@ namespace WhiteBox
         return acc;
     }
 
-    // void EditorWhiteBoxComponent::RebuildCombinedMesh()
-    // {
-    //     // When the entity boolean is live and applies to the WHOLE mesh (not just the active layer),
-    //     // m_displayMesh already folds in every layer, grid and transform, so use it directly.
-    //     if (m_boolean.m_live && m_displayMesh && !m_boolean.m_affectActiveOnly)
-    //     {
-    //         m_combinedMesh = Api::CloneMesh(*m_displayMesh);
-    //         return;
-    //     }
-
-    //     // Otherwise the active-layer base is the live-boolean result (active-only mode) or the raw
-    //     // editable mesh; BuildCombined folds in the grids, the other layers and all transforms.
-    //     WhiteBoxMesh* freeform = (m_boolean.m_live && m_displayMesh) ? m_displayMesh.get() : GetWhiteBoxMesh();
-    //     m_combinedMesh = BuildCombined(freeform);
-    // }
     void EditorWhiteBoxComponent::RebuildCombinedMesh()
     {
         if (BooleanDisplayActive() && m_displayMesh && !m_boolean.m_affectActiveOnly)
         {
             m_combinedMesh = Api::CloneMesh(*m_displayMesh);
-            // Physics uses the collision-FILTERED cut result (m_physicsDisplayMesh), not the visual
-            // one, so layers with Collision off stay out of the collider even while the live boolean
-            // is on. Fall back to the visual cut mesh only if the physics variant was not evaluated.
+            // Physics uses the collision-filtered cut result; the visual one only if that was not evaluated.
             m_physicsCombinedMesh =
                 Api::CloneMesh(m_physicsDisplayMesh ? *m_physicsDisplayMesh : *m_displayMesh);
             BakeEntityScaleIntoPhysicsMesh();
@@ -1459,12 +1404,8 @@ namespace WhiteBox
 
     void EditorWhiteBoxComponent::BakeEntityScaleIntoPhysicsMesh()
     {
-        // The render mesh gets the entity's non-uniform scale from its render transform (Atom applies
-        // it), but a cooked triangle-mesh collider does not reliably honour a non-uniform shape scale,
-        // so bake it straight into the PHYSICS mesh geometry instead - exactly how per-layer scale is
-        // handled. BuildCombined(physicsPass) always returns a fresh owned mesh, so mutating it here is
-        // safe (it never aliases the editable working mesh). The collider then cooks scaled geometry and
-        // its debug wireframe matches.
+        // Bake non-uniform scale into the physics mesh (cooked colliders ignore it; render applies it
+        // via the transform). The physics mesh is always a fresh copy, so this is safe.
         const AZ::Vector3 scale = EntityNonUniformScale();
         if (m_physicsCombinedMesh && !scale.IsClose(AZ::Vector3::CreateOne()))
         {

@@ -2913,9 +2913,7 @@ namespace UnitTest
                         EXPECT_NEAR(AZStd::abs(centroid.GetY()), AZStd::abs(centroid.GetZ()), 1e-5f);
                     }
                     else { EXPECT_EQ(borders.front().size(), 4); }
-                    // Every corner sample, including interior grid vertices,
-                    // lies on the same superellipsoid as the adjoining strips.
-                    // A pulled-in boundary or a flat center fan violates this.
+                    // Every corner sample lies on the strips' superellipsoid (catches pulled-in borders).
                     for (const auto vertex : borders.front())
                     {
                         const auto relative = (Api::VertexPosition(*mesh, vertex) - center) / width;
@@ -4285,9 +4283,7 @@ namespace UnitTest
     {
         namespace Api = WhiteBox::Api;
         auto mesh = Api::CreateWhiteBoxMesh();
-        // A flat 4x4 plate of quads with an L shaped block of three cells missing. The hole that
-        // leaves has a reflex corner, so no fan from a single corner can fill it, and its border
-        // runs straight through two vertices, which no corner of the outline can be an ear at.
+        // A 4x4 quad plate missing an L of three cells: a reflex corner and a straight border defeat naive fills.
         AZStd::vector<AZStd::vector<Api::VertexHandle>> grid;
         for (int x = 0; x <= 4; ++x)
         {

@@ -58,12 +58,8 @@ namespace WhiteBox
         void CreateView();
         bool PerformingAction() const;
 
-        //! Abandon the drag in progress: restore the mesh to its state at mouse down and ignore
-        //! any further mouse movement until the button is released. Driven by right click.
-        //! @param notify Raise the mesh-modified / intersection-dirty notifications. Pass false
-        //! when calling from the destructor - the surrounding component mode may already be part
-        //! way through its own teardown, and the rebuild those notifications trigger is redundant
-        //! there anyway.
+        //! Abandon the drag (right click): restore the mesh and ignore movement until release.
+        //! @param notify false from the destructor, where the component mode may be tearing down.
         //! @return True if there was a drag to cancel.
         bool CancelDrag(bool notify = true);
 

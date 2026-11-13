@@ -48,13 +48,8 @@ namespace WhiteBox
 {
     namespace
     {
-    // Maps each face of a merged CSG result back to the source layer whose surface it lies on, so a
-    // boolean run under per-layer tint can re-colour every output face with its originating layer's
-    // tint. Every contributing layer's (transformed) triangles are recorded, bucketed by supporting
-    // plane. A query face is matched to a coplanar source triangle that contains its centroid; new
-    // faces a Subtract carves lie on the cutting layer's plane and inside its polygon, so they too
-    // resolve to that layer. Falls back to the nearest on-plane (then global) source, so a match is
-    // always returned.
+    // Maps each face of a merged CSG result back to the source layer whose surface it lies on (a coplanar
+    // source triangle containing its centroid, else the nearest), so booleans keep per-layer tint.
     class LayerColorSource
     {
     public:
@@ -85,10 +80,7 @@ namespace WhiteBox
 
         int Match(const AZ::Vector3& centroid, const AZ::Vector3& normal, const int fallbackLayer) const
         {
-            // When several coplanar source layers overlap a point (e.g. a Subtract carves a wall that
-            // lies on the cutting layer's plane, itself overlapping the base layer's plane), the
-            // highest layer index wins - it is the layer drawn on top / the operand that produced the
-            // cut - so the merged surface takes that layer's tint.
+            // Where coplanar layers overlap, the highest layer index wins (the one drawn on top or that cut).
             int bestContainLayer = -1;
             int nearestLayer = fallbackLayer;
             float nearestDistSq = 1e30f;
@@ -431,10 +423,7 @@ namespace WhiteBox
 
     bool EditorWhiteBoxComponent::PerLayerRenderActive() const
     {
-        // Per-layer faces are needed for per-layer tint and for Edges Only layers (their solid
-        // faces must be excluded from the render). Invert Normals no longer forces this path:
-        // the winding flip lives in the combined MESH now (FlippedMeshWinding), so render,
-        // physics and selection all see it.
+        // Per-layer faces for per-layer tint and Edges Only layers (Invert Normals lives in the mesh now).
         if (!m_useGlobalTint)
         {
             return true;
@@ -768,9 +757,7 @@ namespace WhiteBox
         {
             m_layerRenderMeshes.clear(); // single mesh (with per-vertex colours) serves both modes
 
-            // Use the per-layer build when per-layer tint is on OR any visible layer inverts its
-            // normals (both need per-layer faces). Otherwise the CSG-combined mesh is used so
-            // inter-layer booleans render correctly.
+            // Per-layer build for per-layer tint or inverted layers; otherwise the CSG-combined mesh.
             const bool perLayerRender = PerLayerRenderActive();
 
             // Global tint -> plain (white-vertex) faces coloured by the material baseColor. Per-layer
@@ -778,9 +765,7 @@ namespace WhiteBox
             m_renderData = perLayerRender ? BuildColoredRenderData()
                                           : CreateWhiteBoxRenderData(*EvaluatedMesh(), m_material);
 
-            // it's possible the white box mesh data isn't yet ready (for example if it's stored
-            // in an asset which hasn't finished loading yet) so don't attempt to create a render
-            // mesh with no data
+            // The data may not be ready yet (e.g. an asset still loading), so skip empty render data.
             if (!m_renderData.m_faces.empty())
             {
                 // check if we need to instantiate a concrete render mesh implementation
@@ -799,10 +784,7 @@ namespace WhiteBox
             }
             else if (!IsWhiteBoxNullRenderMesh(m_renderMesh))
             {
-                // The geometry became empty (e.g. every layer was deleted) while a concrete render
-                // mesh is still showing the previous geometry. Building a zero-size mesh makes the
-                // RHI reject the (empty) buffers, so instead swap the concrete mesh back to a null
-                // render mesh: it draws nothing and stays rebuildable.
+                // The geometry became empty: swap to a null render mesh (the RHI rejects empty buffers).
                 m_renderMesh.emplace(AZStd::make_unique<WhiteBoxNullRenderMesh>(AZ::EntityId{}));
             }
         }
@@ -834,10 +816,7 @@ namespace WhiteBox
 
     void EditorWhiteBoxComponent::EnsureRenderDataUnpacked()
     {
-        // BuildGameEntity can run on a clone that was deserialized but never activated, so the live
-        // render data is still only in the blobs. When the members are all empty and a blob is not,
-        // that is exactly the case - unpack. An active component's members are already current (and
-        // can legitimately be empty), so it is left alone.
+        // On a never-activated clone (BuildGameEntity) the render data is only in the blobs: unpack it.
         const bool haveFaces = !m_renderData.m_faces.empty() || !m_bakedBaseRenderData.m_faces.empty() ||
             !m_bakedPhysicsBaseRenderData.m_faces.empty() || !m_bakedBooleanRenderData.m_faces.empty() ||
             !m_bakedPhysicsBooleanRenderData.m_faces.empty();
@@ -893,13 +872,6 @@ namespace WhiteBox
         }
     }
 
-    // void EditorWhiteBoxComponent::RebuildPhysicsMesh()
-    // {
-    //     AZ_PROFILE_FUNCTION(AzToolsFramework);
-
-    //     EditorWhiteBoxColliderRequestBus::Event(
-    //         GetEntityId(), &EditorWhiteBoxColliderRequests::CreatePhysics, *EvaluatedMesh());
-    // }
     void EditorWhiteBoxComponent::RebuildPhysicsMesh()
     {
         AZ_PROFILE_FUNCTION(AzToolsFramework);
@@ -939,10 +911,7 @@ namespace WhiteBox
 
         if (!m_localAabb.has_value())
         {
-            // EvaluatedMesh() can be null while entities are still activating (e.g. a cutter whose
-            // mesh has not been deserialized yet is queried for its bounds by CollectOverlappingCutters).
-            // Dereferencing it here caused a null read (EXCEPTION_ACCESS_VIOLATION in MeshVertexHandles).
-            // Return an invalid AABB so callers such as Overlaps() simply cull this mesh until it is ready.
+            // EvaluatedMesh() can be null while entities activate; an invalid Aabb culls it until ready.
             WhiteBoxMesh* evaluatedMesh = const_cast<EditorWhiteBoxComponent*>(this)->EvaluatedMesh();
             if (evaluatedMesh == nullptr)
             {
@@ -1056,9 +1025,7 @@ namespace WhiteBox
             return result;
         }
 
-        // Fold in the Non-Uniform Scale component the same way the rendered geometry and the snap
-        // vertices do, so a raycast agrees with what is actually on screen. (The older
-        // EditorSelectionIntersectRayViewport path predates that and only uses m_worldFromLocal.)
+        // Include Non-Uniform Scale, as the rendered geometry and snap vertices do.
         const AZ::Vector3 nonUniformScale = EntityNonUniformScale();
         const AZ::Transform localFromWorld = m_worldFromLocal.GetInverse();
 
@@ -1217,9 +1184,7 @@ namespace WhiteBox
 
     void EditorWhiteBoxComponent::OnEdgesOnlyChange()
     {
-        // Edges-only hides the solid render mesh; the edges themselves are drawn in
-        // DisplayEntityViewport so the shape still reads as a wireframe. A global cutter using
-        // Subtract also renders edges-only (ShowEdgesOnly), so it reads as a boolean brush.
+        // Edges-only (also subtract cutters) hides the solid mesh; DisplayEntityViewport draws the edges.
         if (ShowEdgesOnly())
         {
             HideRenderMesh();
@@ -1235,28 +1200,19 @@ namespace WhiteBox
     {
         AZ_PROFILE_FUNCTION(AzToolsFramework);
 
-        // Vertex snapping support outside component mode. EditorWhiteBoxComponentMode publishes
-        // the viewport and draws the snap marker while component mode is active, but the layer
-        // gizmo is driven from the White Box pane and can be used with component mode closed - so
-        // publish and draw here too. A wrong id in a multi-viewport layout only disables snapping
-        // (the cursor query returns nothing for a viewport the mouse is not over), it cannot
-        // produce a wrong snap. Drawing the marker from both places is harmless: it is the same
-        // ball at the same position.
+        // The layer gizmo can snap with component mode closed, so publish the viewport and draw the marker
+        // here too. A wrong id only disables snapping.
         SnapUtil::SetActiveViewportId(viewportInfo.m_viewportId);
         SnapUtil::DrawActiveSnapTarget(debugDisplay);
 
-        // DebugDisplay receives world-space line endpoints directly. Unlike Atom's render-mesh
-        // path, m_worldFromLocal does not contain the optional Non-Uniform Scale component, so
-        // fold that scale into each local point before applying the entity transform.
+        // m_worldFromLocal lacks Non-Uniform Scale, so apply it to each local point first.
         const AZ::Vector3 entityNonUniformScale = EntityNonUniformScale();
         const auto worldPoint = [this, &entityNonUniformScale](const AZ::Vector3& localPoint)
         {
             return m_worldFromLocal.TransformPoint(localPoint * entityNonUniformScale);
         };
 
-        // One DrawLines per mesh rather than a DrawLine (a whole AuxGeom draw call) per edge - a dense
-        // shape has thousands of edges and this runs every frame. m_debugLineBuffer keeps its capacity
-        // across frames so the steady state does not allocate.
+        // One DrawLines per mesh (DrawLine is a draw call per edge); the buffer keeps its capacity.
         const auto drawMeshEdges = [this, &debugDisplay](
                                        const WhiteBoxMesh& mesh, const AZ::Color& color, auto&& toWorld)
         {
@@ -1283,9 +1239,7 @@ namespace WhiteBox
                 GetEditorSelectionBoundsViewport(AzFramework::ViewportInfo{}));
         }
 
-        // Edges-only wireframe overlay: the solid render mesh is hidden, so draw the mesh's
-        // polygon edges here so the shape is still visible. Covers both the explicit Edges Only
-        // toggle and a subtract cutter (ShowEdgesOnly).
+        // Edges-only overlay: draw the polygon edges of the hidden solid mesh.
         if (ShowEdgesOnly())
         {
             if (WhiteBoxMesh* mesh = EvaluatedMesh())
@@ -1301,10 +1255,7 @@ namespace WhiteBox
             }
         }
 
-        // Per-layer Edges Only overlay: these layers contribute no solid render faces (see
-        // BuildColoredRenderData), so draw their polygon edges here instead. Non-active layers
-        // come from the layer mesh cache (already transformed + winding-flipped); the active
-        // layer draws from the working mesh with its layer transform applied per point.
+        // Per-layer Edges Only: these layers render no faces, so draw their edges (cached for inactive layers).
         if (!ShowEdgesOnly()) // the whole-component overlay above already covers everything
         {
             const int layerCount = static_cast<int>(m_layers.size());

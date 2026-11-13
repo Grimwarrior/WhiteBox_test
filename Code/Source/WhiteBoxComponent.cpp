@@ -37,9 +37,7 @@ namespace WhiteBox
                 ->Field("HasPhysicsData", &WhiteBoxComponent::m_hasPhysicsData);
         }
 
-        // Reflect the request bus to the BehaviorContext here (rather than in the Editor-only
-        // WhiteBoxToolApiReflection) so it is available to runtime (game) Lua as well as Editor
-        // automation. Common scope covers both the Launcher and Automation contexts.
+        // Reflected here (Common scope), not in the Editor-only reflection, so runtime Lua can use it.
         if (auto behaviorContext = azrtti_cast<AZ::BehaviorContext*>(context))
         {
             behaviorContext->EBus<WhiteBoxComponentRequestBus>("WhiteBoxComponentRequestBus")
@@ -169,10 +167,7 @@ namespace WhiteBox
         // apply the current selection to the render mesh ...
         RebuildRenderMesh();
 
-        // ... and to the physics collider (no-op if this entity has no White Box collider
-        // or no boolean collider variant was baked). When rebakeCollider is true the collider
-        // is rebuilt even when the boolean selection is unchanged, re-cooking it against the
-        // entity's current size/scale.
+        // ... and the collider (forced when rebakeCollider, to pick up the current scale).
         WhiteBoxColliderRequestBus::Event(
             GetEntityId(), &WhiteBoxColliderRequests::BakeCollider, m_liveBoolean, rebakeCollider);
     }
@@ -231,9 +226,7 @@ namespace WhiteBox
             return m_booleanPhysicsRenderData;
         }
 
-        // When authoritative physics data was baked, it is the source of truth - return it even
-        // when empty (collision disabled for every layer). Falling back to the visual geometry
-        // here is what made a disabled collider's debug wireframe reappear.
+        // Baked physics data is authoritative even when empty (collision off).
         if (m_hasPhysicsData)
         {
             return m_physicsRenderData;

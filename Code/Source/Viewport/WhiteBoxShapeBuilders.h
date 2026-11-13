@@ -17,9 +17,7 @@
 
 namespace WhiteBox
 {
-    //! Tube tessellation of a torus: how many segments go around the ring's cross-section. Separate
-    //! from the ring's own side count because the two multiply - a torus is sides x tubeSides quads,
-    //! so folding them into one control made it scale the mesh quadratically.
+    //! Torus tube tessellation, separate from the ring's sides (they multiply).
     inline constexpr int MinTubeSides = 3;
     inline constexpr int MaxTubeSides = 64;
     inline constexpr int DefaultTubeSides = 12;
@@ -35,9 +33,8 @@ namespace WhiteBox
             WhiteBoxMesh& mesh, const AZ::Transform& localFromWorld, const AZ::Vector3& center,
             const AZ::Vector3& uAxis, const AZ::Vector3& vAxis, const AZ::Vector3& up,
             float baseUp, float topUp, DrawShapeType shape, int sides, float holeRatio, int tubeSides);
-        //! Validate and triangulate a simple planar outline, including concave polygons.
-        //! A nonzero signed world-space height creates a closed solid with outward-facing caps and sides.
-        //! Returns false without modifying the mesh for crossing/degenerate outlines.
+        //! Triangulate a simple planar outline (concave allowed); a nonzero height makes a closed solid.
+        //! False, leaving the mesh unchanged, for crossing or degenerate outlines.
         bool BuildPolygonFace(
             WhiteBoxMesh& mesh, const AZ::Transform& localFromWorld,
             const AZStd::vector<AZ::Vector3>& points, const AZ::Vector3& normal, float extrusionHeight = 0.0f);
@@ -86,17 +83,8 @@ namespace WhiteBox
             const AZ::Vector3& uAxis, const AZ::Vector3& vAxis, const AZ::Vector3& up, float baseUp, float topUp,
             int segmentsIn);
 
-        //! Build a parametric hollow room sitting on z in [0, height] and centred at the XY origin.
-        //! The interior clear volume is @p interiorWidth x @p interiorDepth x @p interiorHeight.
-        //!
-        //! With a non-zero @p cavityGap the walls are DOUBLE: two concentric rectangular "leaves",
-        //! each @p wallThickness thick, separated by that empty gap. With @p cavityGap at zero a
-        //! single solid leaf of @p wallThickness is emitted instead - two leaves pressed together
-        //! would bury a pair of coincident faces inside the wall and double its thickness.
-        //!
-        //! Optionally caps the interior with a floor slab (below z=0) and/or a
-        //! ceiling slab (above z=height). Walls and slabs form one closed, outward-wound shell sharing vertices
-        //! wherever they meet, so no coincident faces are left for a later boolean to trip over. No CSG is used.
+        //! A hollow room on z in [0, height] centred at the origin, with interior size width x depth x height.
+        //! A nonzero @p cavityGap makes double walls; optional floor and ceiling slabs. One closed shell, no CSG.
         void BuildRoomSolid(
             WhiteBoxMesh& mesh, float interiorWidth, float interiorDepth, float interiorHeight, float wallThickness,
             float cavityGap, bool floor, bool ceiling);

@@ -71,13 +71,9 @@ namespace WhiteBox
 
         void ConvertToPhysicsMesh(const WhiteBoxMesh& whiteBox);
         //! Cook @p whiteBox into @p outConfiguration without touching the edit-time body.
-        //! Used to pre-bake the base and boolean collider variants for the game entity.
-        //! @param voxelComponent when non-null, a greedy-meshed collider is requested from it
-        //! (used for the base voxel-stamped mesh); pass null to always cook the plain per-face
-        //! triangulation (e.g. the boolean mesh, or a mesh with no stamped cubes).
-        //! @return true if cooking succeeded.
-        //! @param convex cook one convex hull of the mesh's vertices instead of a triangle mesh.
-        //! @param keepFraction below one, the triangle mesh is simplified to about that share of its triangles.
+        //! @param voxelComponent non-null to use its greedy voxel collider for stamped cubes.
+        //! @param convex cook one convex hull instead of a triangle mesh.
+        //! @param keepFraction below one, simplify the triangle mesh to about that share.
         static bool CookToConfiguration(
             const WhiteBoxMesh& whiteBox, Physics::CookedMeshShapeConfiguration& outConfiguration,
             EditorWhiteBoxComponent* voxelComponent = nullptr, bool convex = false, float keepFraction = 1.0f);
@@ -102,10 +98,7 @@ namespace WhiteBox
             AZStd::vector<AZ::u32>& indices) const;
         //! Re-cook when the trigger flag or collision shape changes in the Inspector.
         AZ::Crc32 OnColliderSettingsChanged();
-        //! Cook both the base and (if a boolean source is set) the boolean-evaluated mesh
-        //! into m_meshShapeConfiguration / m_booleanMeshShapeConfiguration. Runs at edit time
-        //! where the physics cooking backend is reliably available, so BuildGameEntity can
-        //! simply hand the already-cooked data to the runtime component.
+        //! Cook the base and boolean variants at edit time, so BuildGameEntity only hands them over.
         void CookColliderVariants();
 
         AzPhysics::SceneInterface* m_sceneInterface = nullptr;

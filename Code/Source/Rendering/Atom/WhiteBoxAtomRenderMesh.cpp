@@ -371,9 +371,7 @@ namespace WhiteBox
             {
                 return;
             }
-            // Per-layer tint is carried in the per-vertex COLOR0 stream; in that mode the base color
-            // must be white so it does not multiply the vertex colors. Global tint keeps using the
-            // proven baseColor.color path (so it works even if the shader ignores vertex colour).
+            // Per-layer tint travels in COLOR0, so the base colour must be white; global tint uses baseColor.
             const bool painted = paintColor != 0;
             const bool useVertexColor = material.m_useVertexColor && !painted;
             const AZ::Color baseColor = painted
@@ -388,10 +386,7 @@ namespace WhiteBox
                 materialInstance.SetPropertyValue(materialPropertyIndex, baseColor);
             }
 
-            // StandardPBR exposes a "Vertex Color" group ("Use Vertex Color" toggle, "Vertex Color
-            // Factor", "Vertex Color Blend Mode"). Enabling it makes the shader multiply the base
-            // colour by the per-vertex COLOR0 stream (our per-layer tint). The exact property id
-            // varies by engine version, so try the known candidates (all guarded).
+            // Enable StandardPBR's vertex colour group; the property id varies by engine version.
             for (const char* enableName :
                  {"vertexColor.enable", "vertexColor.useVertexColor", "vertexColor.enableVertexColor",
                   "vertexColor.toggle"})
@@ -793,15 +788,10 @@ namespace WhiteBox
 
     void AtomRenderMesh::UpdateTransform(const AZ::Transform& worldFromLocal)
     {
-        // An empty white box (zero faces - e.g. a component with no layers yet) never creates a
-        // model, so the feature processor is never acquired. Guard every use of it: an empty
-        // mesh simply has nothing to transform/show.
+        // An empty white box never creates a model, so the feature processor may be missing.
         if (m_meshFeatureProcessor)
         {
-            // Fold in the entity's non-uniform scale (from an optional Non-Uniform Scale component).
-            // AZ::Transform only carries uniform scale, so the non-uniform factor is passed to the
-            // mesh feature processor separately. GetScale returns (1,1,1) when no such component is
-            // present, so this is a no-op for uniformly-scaled entities.
+            // Pass Non-Uniform Scale separately (the transform carries uniform scale only).
             AZ::Vector3 nonUniformScale = AZ::Vector3::CreateOne();
             AZ::NonUniformScaleRequestBus::EventResult(
                 nonUniformScale, m_entityId, &AZ::NonUniformScaleRequests::GetScale);
@@ -1066,9 +1056,8 @@ namespace WhiteBox
                 {
                     continue;
                 }
-                // Re-setting the entry's own asset makes the Material component reload its materials, which fills in the slot's
-                // default asset. Slots-changed would do it too, but that rebuilds the inspector under any open asset picker.
-                // Deferred, since the Material component is mid-notification and a reload now would release what it is sending.
+                // Re-setting the entry's asset makes the Material component reload and fill in the slot default.
+                // Deferred: the component is mid-notification.
                 const AZ::EntityId entityId = m_entityId;
                 const AZ::Data::AssetId asset = it->second.m_materialAsset.GetId();
                 AZ::TickBus::QueueFunction(

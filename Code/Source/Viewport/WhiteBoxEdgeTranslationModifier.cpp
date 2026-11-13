@@ -150,9 +150,7 @@ namespace WhiteBox
             // vertex snapping: which of the edge group's vertices leads the drag. Resolved once at
             // mouse down (nearest to the cursor) and held, so the anchor cannot flip mid-drag.
             AZStd::optional<size_t> m_snapAnchorIndex;
-            // vertex snapping: running total of the snap corrections applied so far. The vertex
-            // move here is incremental but the manipulator position is absolute, so the gizmo has
-            // to be offset by the same amount or it drifts away from the geometry.
+            // Sum of snap corrections, to keep the absolute gizmo with the incrementally moved geometry.
             AZ::Vector3 m_snapAccumulatedOffset = AZ::Vector3::CreateZero();
         };
 
@@ -257,10 +255,7 @@ namespace WhiteBox
                             *whiteBox, vertexHandle, VertexPosition(*whiteBox, vertexHandle) + displacement);
                     }
 
-                    // vertex snapping: after the normal incremental move, pull the whole edge group
-                    // rigidly so the anchor vertex lands exactly on the target under the cursor.
-                    // Suppressed once an extrude has happened - the extrude wants the raw
-                    // manipulator offset, not a target the cursor happens to be over.
+                    // Snap the edge group so its anchor lands on the target; not after an extrude.
                     AZStd::optional<AZ::Vector3> snapTarget;
                     if (sharedState->m_appendStage == AppendStage::None &&
                         sharedState->m_snapAnchorIndex.has_value() &&

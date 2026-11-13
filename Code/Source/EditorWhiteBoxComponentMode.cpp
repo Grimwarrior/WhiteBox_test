@@ -125,12 +125,8 @@ namespace WhiteBox
         // callback that fires after this point cannot touch the editor's action context mode.
         m_deferredWorkToken.reset();
 
-        // Safety net: this mode is destroyed both when leaving component mode and when switching
-        // to another component's mode. In the FORMER case the editor has already put the action
-        // context back into its default mode (ComponentModeActionHandler::OnEditorModeDeactivated,
-        // which runs earlier in EndComponentMode) - but if anything left a White Box sub-mode
-        // active, the editor would stay locked out of Play and most other actions with no way
-        // back. Re-assert the default when we are no longer in component mode.
+        // Safety net: if a White Box sub-mode is still set after leaving component mode, restore the
+        // default, or Play and most actions stay locked out.
         if (!AzToolsFramework::ComponentModeFramework::InComponentMode())
         {
             if (auto actionManagerInterface = AZ::Interface<AzToolsFramework::ActionManagerInterface>::Get())
@@ -431,9 +427,7 @@ namespace WhiteBox
     {
         auto clusterIds = EditorBaseComponentMode::PopulateViewportUiImpl();
 
-        // EditorBaseComponentMode::PopulateViewportUi creates the border AFTER this returns, and puts it
-        // back on every refresh, so removing it here would be undone immediately. Queue the removal for
-        // the next tick instead, once the framework has finished putting it up.
+        // The framework adds the border after this returns and on every refresh, so remove it next tick.
         AZ::TickBus::QueueFunction(
             []()
             {
@@ -474,17 +468,8 @@ namespace WhiteBox
             },
             m_modes);
 
-        // Take over Escape.
-        //
-        // ComponentModeCollection binds Escape as an ActionOverride with the URI s_backAction
-        // ("leave component mode") on the phantom widget, and that widget gets first try at every
-        // shortcut - so an Escape bound through the ActionManager never fires while in component
-        // mode. Re-using the same URI here is the supported way to override it: SetBoundActions
-        // keys on the URI and the later entry (ours - mode actions are appended after the base
-        // ones) replaces the engine's.
-        //
-        // Order matters: cancel a drag first, then clear numeric input, and only leave component
-        // mode when the active sub-mode had nothing of its own to cancel.
+        // Take over Escape by reusing the back-action URI (the later binding wins). Cancel a drag, then
+        // numeric input, and only then leave component mode.
         actions.push_back(AzToolsFramework::CreateBackAction(
             "Done",
             "Cancel the current operation, or return to normal viewport editing",
@@ -621,14 +606,8 @@ namespace WhiteBox
         RemovePaintCluster();
         RemoveEdgeRestoreCluster();
         CreateSketchCluster();
-        // Change sub-mode to default at the next frame to go after the automated mode switching in ComponentModeActionHandler.
-        //
-        // Because it is deferred it can outlive the reason for it: if component mode ends before
-        // the callback runs, the editor has already restored its default action context mode and
-        // applying the White Box sub-mode here would strand it - Play and most editor actions are
-        // only bound to the default mode, so the editor keeps behaving as if it were still in edit
-        // mode. Guard on both this mode still being alive AND the editor still being in component
-        // mode before applying it.
+        // Switch to the default sub-mode next frame, after ComponentModeActionHandler's own switch - only
+        // if this mode and component mode are both still alive, or the editor is left stranded.
         QTimer::singleShot(
             0,
             [this, aliveToken = AZStd::weak_ptr<bool>(m_deferredWorkToken)]()
@@ -697,9 +676,7 @@ namespace WhiteBox
     {
         AZ_PROFILE_FUNCTION(AzToolsFramework);
 
-        // Vertex snapping highlight. Drawn here rather than in each tool because most of the
-        // draggable tools are not viewport display handlers of their own; they publish their
-        // snap target to SnapUtil and this draws whichever one is active.
+        // Draw the active snap target here; most draggable tools are not display handlers.
         const auto previousDisplayState = debugDisplay.GetState();
         debugDisplay.DepthWriteOff();
         SnapUtil::DrawActiveSnapTarget(debugDisplay);
@@ -745,9 +722,7 @@ namespace WhiteBox
             RecalculateWhiteBoxIntersectionData(DecideEdgeSelectionMode(m_currentSubMode));
         }
     
-        // Selection changes arrive through the manipulator manager, not through this class's mouse
-        // handler, so the gated buttons are re-evaluated here. Both refreshes early-out unless the
-        // answer changed, so a steady frame only pays for the queries.
+        // Selection changes arrive via the manipulator manager, so re-evaluate the gated buttons per frame.
         RefreshSketchClusterState();
         RefreshModelingClusterState();
 
@@ -1064,9 +1039,7 @@ namespace WhiteBox
         EditorWhiteBoxDefaultModeRequestBus::EventResult(
             vertices, GetEntityComponentIdPair(), &EditorWhiteBoxDefaultModeRequests::SelectedVertexHandles);
 
-        // Selecting geometry means clicking its manipulator, and the manipulator manager consumes that
-        // before HandleMouseInteraction ever runs - which is why refreshing on mouse-up never saw it.
-        // This runs per frame instead, and only talks to the widget when the answer actually changes.
+        // Per frame: the manipulator manager consumes selection clicks before the mouse handler sees them.
         const bool hasEdge = !edges.empty();
         const bool hasVertex = !vertices.empty();
         const auto enable = [this](const ViewportUi::ButtonId buttonId, const bool usable)
@@ -1239,17 +1212,12 @@ namespace WhiteBox
             return;
         }
 
-        // Top-right, its own column: a cluster is vertical, so putting it under the mode and modeling
-        // clusters would leave it nothing to grow into. Cluster rather than switcher because its buttons
-        // are checkable - the active primitive gets the same highlight the mode cluster uses - and
-        // because a cluster overflows into the toolbar's arrow when the viewport is too short for it.
+        // Top-right column; a cluster (not a switcher) so the active shape is highlighted and it overflows cleanly.
         ViewportUi::ViewportUiRequestBus::EventResult(
             m_shapeSwitcherId, ViewportUi::DefaultViewportId,
             &ViewportUi::ViewportUiRequestBus::Events::CreateCluster, ViewportUi::Alignment::TopRight);
 
-        // Ordered the way someone reaches for them, the click-defined polygon last. Room, Door and
-        // Circular Stairs are deliberately absent: they are parametric-only, created as a layer rather
-        // than dragged out as a brush.
+        // Room, Door and Circular Stairs are parametric-only, so they are not offered here.
         const AZStd::pair<DrawShapeType, AZStd::pair<const char*, const char*>> shapes[] = {
             { DrawShapeType::Box, { "ShapeBox", "Box" } },
             { DrawShapeType::Cylinder, { "ShapeCylinder", "Cylinder" } },
@@ -1315,9 +1283,7 @@ namespace WhiteBox
                     return;
                 }
 
-                // Both are serialized component state, so the change is undoable - picking from here
-                // behaves exactly like picking in the pane used to. The stamp flag and the primitive are
-                // mutually exclusive: whichever button was pressed is what a click now produces.
+                // Serialized state, so undoable. Stamp and primitive are mutually exclusive.
                 {
                     AzToolsFramework::ScopedUndoBatch undoBatch("White Box Draw Shape");
                     component->SetDrawUnitCube(cubeStamp);
@@ -1557,10 +1523,7 @@ namespace WhiteBox
                 }
                 if (buttonId == m_transformExtrudeButtonId || buttonId == m_transformInsetButtonId)
                 {
-                    // These two carry a latch, and a highlighted button has to be releasable by
-                    // clicking it - so a click on the armed one drops the latch instead of reopening
-                    // the window that armed it. The window offers both ways in: an amount to apply
-                    // once, and the latch for dragging polygon after polygon.
+                    // Clicking an armed latch button releases the latch instead of reopening its window.
                     const auto wanted = buttonId == m_transformInsetButtonId
                         ? TransformModelingLatch::Inset : TransformModelingLatch::Extrude;
                     TransformModelingLatch latch = TransformModelingLatch::None;
@@ -1920,9 +1883,7 @@ namespace WhiteBox
         EditorWhiteBoxTransformModeRequestBus::EventResult(
             insertVertex, pair, &EditorWhiteBoxTransformModeRequests::IsInsertVertexActive);
 
-        // This runs every frame, because selection changes arrive through the manipulator manager and
-        // the latch is armed from a floating window - neither goes through this class's mouse handler.
-        // Nothing below touches the widget unless one of those answers moved.
+        // Runs every frame; only touches the widget when the state changes.
         const AZ::u32 state = (static_cast<AZ::u32>(latch) << 5) | (edgeSelection ? 1u : 0u) |
             (bridge ? 2u : 0u) | (weld ? 4u : 0u) | (loopCut ? 8u : 0u) | (bevel ? 16u : 0u) | (knife ? 128u : 0u) |
             (fillHole ? 256u : 0u) | (deletePolygon ? 512u : 0u) | (mergePolygons ? 1024u : 0u) |
@@ -2073,9 +2034,7 @@ namespace WhiteBox
             &AzToolsFramework::ViewportUi::ViewportUiRequestBus::Events::SetClusterButtonTooltip,
             m_modeSelectionClusterId, m_paintModeButtonId, "Switch to Vertex Paint mode");
 
-        // The viewport toolbar constrains SVGs to its own icon size, regardless
-        // of their intrinsic dimensions. Resize just these two White Box tools
-        // after Qt has created their action widgets; do not change engine styles.
+        // The toolbar forces its own icon size; resize just these two tools once Qt created their widgets.
         QTimer::singleShot(0, qApp, []()
         {
             for (auto* widget : QApplication::allWidgets())

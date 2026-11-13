@@ -15,9 +15,7 @@
 
 namespace WhiteBox
 {
-    //! The Transform-mode modeling operations (Extrude, Inset, Bridge, Weld, Loop Cut, Bevel),
-    //! factored out of the White Box pane so the viewport cluster and the floating windows run the same
-    //! code rather than a copy each. Each reports what to show the user; no caller owns the logic.
+    //! The Transform-mode modeling operations, shared by the viewport cluster and the floating windows.
     namespace ModelingOps
     {
         //! What an operation did, for whichever surface invoked it to display.
@@ -27,9 +25,7 @@ namespace WhiteBox
             AZStd::string m_message; //!< The error when it failed, otherwise what just happened.
         };
 
-        //! The Transform-mode selection, read once. A polygon handle owns a vector of face handles,
-        //! so a caller that asks several of the questions below - the viewport cluster asks five of
-        //! them every frame - copies far less than by letting each question fetch its own.
+        //! The Transform-mode selection, read once and shared by the questions below.
         struct Selection
         {
             Api::PolygonHandles m_polygons;
@@ -40,9 +36,7 @@ namespace WhiteBox
         };
         Selection CurrentSelection(const AZ::EntityComponentIdPair& entityComponentIdPair);
 
-        //! Whether each operation would do anything with the given selection. Whichever surface offers
-        //! the operation uses these to enable its buttons, so what is clickable and what will actually
-        //! run are decided by the same code.
+        //! Whether each operation would do anything with the selection (drives the buttons' enabled state).
         bool CanBridge(const Selection& selection);
         bool CanFillHole(const Selection& selection);
         bool CanMergePolygons(const Selection& selection);
@@ -121,9 +115,7 @@ namespace WhiteBox
         Result Weld(const AZ::EntityComponentIdPair& entityComponentIdPair, bool atLastVertex);
         //! Enter the interactive loop cut. Switches to Transform sub-mode first if something else is active.
         Result BeginLoopCut(const AZ::EntityComponentIdPair& entityComponentIdPair);
-        //! Start a live bevel on the selection using the component's current bevel parameters. The
-        //! perimeter edges of a selected polygon region are included; its interior edges are not, so the
-        //! region does not gain cuts through the middle of it.
+        //! Start a live bevel with the current parameters; a polygon region bevels its perimeter only.
         Result BeginBevel(const AZ::EntityComponentIdPair& entityComponentIdPair);
     } // namespace ModelingOps
 } // namespace WhiteBox

@@ -27,9 +27,7 @@ namespace WhiteBox
 {
     class EditorWhiteBoxComponent;
 
-    //! What the paint brush carries: the material for Paint Material, the colour for Paint Color.
-    //! The operation itself is picked in the viewport cluster, not here - this window only holds the
-    //! payload that operation needs, and shows nothing at all for the two reset verbs, which have none.
+    //! The paint brush payload (material or colour); the operation itself is picked in the viewport cluster.
     class WhiteBoxPaintWindow : public WhiteBoxModelingWindow
     {
     public:

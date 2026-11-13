@@ -15,20 +15,10 @@
 #include <utility>
 #include <vector>
 
-// BSP-tree (brush-style) CSG solver.
-//
-// This is a self-contained, std-only implementation (no AZ/O3DE dependency, like the rest of the
-// CSG core) of the classic Naylor BSP boolean, the same algorithm popularised by Evan Wallace's
-// csg.js. It is a FACE/plane-based solid modeller: it splits polygons against BSP planes and
-// keeps/drops/flips them locally. Closed inputs are first normalized to outward winding for the
-// front/back classification, then the result is restored to the target's original orientation.
-// Consequently an inward-facing box can represent a room visually without changing Union,
-// Subtraction or Intersection into operations on the box's infinite complement. Other consequences:
-//   * open and non-manifold meshes do not simply fail,
-//   * coplanar faces are handled explicitly (shared walls between abutting boxes).
-// The price is lower numerical robustness than Manifold on tiny slivers, and output that may be
-// non-manifold - both acceptable for the blocky geometry White Box produces (the render path and
-// the collider cook already tolerate non-manifold triangle soups).
+// BSP-tree (brush-style) CSG solver: a std-only Naylor BSP boolean, as in csg.js. Closed inputs are
+// normalized to outward winding for classification and the result takes the target's orientation, so
+// inward-facing rooms are not treated as infinite complements. Tolerates open meshes; less robust than
+// Manifold on slivers and may emit non-manifold output.
 
 namespace WhiteBox
 {
@@ -105,9 +95,7 @@ namespace WhiteBox
 
                 Plane() = default;
 
-                //! Build a plane from three (assumed non-collinear) polygon vertices. Winding order
-                //! determines the normal direction - this is what lets an inverted (inward-wound)
-                //! shell keep its "solid is on the other side" meaning through the boolean.
+                //! Plane through three polygon vertices; winding sets the normal direction.
                 static Plane FromPoints(const Vec3& a, const Vec3& b, const Vec3& c)
                 {
                     Plane plane;
@@ -153,9 +141,7 @@ namespace WhiteBox
                 }
             };
 
-            //! Split @p polygon by @p plane, appending each resulting piece to the appropriate bucket.
-            //! Mirrors csg.js Plane.splitPolygon: a spanning polygon is cut into a front and a back
-            //! piece; a coplanar polygon is routed by whether it faces the same way as the plane.
+            //! Split @p polygon by @p plane into the front / back / coplanar buckets (csg.js splitPolygon).
             void SplitPolygon(
                 const Plane& plane, const Polygon& polygon, std::vector<Polygon>& coplanarFront,
                 std::vector<Polygon>& coplanarBack, std::vector<Polygon>& front, std::vector<Polygon>& back)
@@ -389,12 +375,8 @@ namespace WhiteBox
                 return polygons;
             }
 
-            //! A classic csg.js BSP assumes that the back of every boundary plane is inside the
-            //! solid. Reversing every triangle would therefore turn a finite solid into its infinite
-            //! complement. White Box uses reversed winding to render rooms from the inside, so for a
-            //! closed mesh detect that presentation choice and normalize it before classification.
-            //! Open/non-manifold meshes deliberately keep their supplied winding because they have
-            //! no well-defined enclosed volume to normalize.
+            //! BSP assumes the back of every plane is solid, so an inward-wound closed mesh (a room) is
+            //! normalized before classification. Open meshes keep their winding.
             bool IsClosedMesh(const TriangleMesh& mesh)
             {
                 std::unordered_map<uint64_t, uint32_t> edgeUses;
@@ -456,9 +438,7 @@ namespace WhiteBox
                     {
                         continue;
                     }
-                    // Not named "emit": Qt defines that as an empty macro, and this target is
-                    // built with AUTOMOC and unity builds, so a Qt-including translation unit
-                    // batched into the same unity blob would silently delete the name.
+                    // Not "emit": Qt defines that as an empty macro, which unity builds could pull in.
                     const auto emitVertex = [&mesh](const Vec3& v) -> uint32_t
                     {
                         const auto index = static_cast<uint32_t>(mesh.m_positions.size() / 3);
@@ -497,9 +477,7 @@ namespace WhiteBox
                 return false;
             }
 
-            // Treat winding as an output/presentation property for closed White Box solids, not as
-            // a request to boolean against infinite complement space. The target controls the final
-            // result orientation; the source's orientation never changes the requested geometry.
+            // Winding is presentation only for closed solids: the target decides the result's orientation.
             const bool targetWasInward = IsClosedInwardMesh(meshA);
             const bool sourceWasInward = IsClosedInwardMesh(meshB);
             if (targetWasInward)

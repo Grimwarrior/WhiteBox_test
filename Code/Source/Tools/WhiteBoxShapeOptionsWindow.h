@@ -19,14 +19,8 @@ namespace WhiteBox
 {
     class EditorWhiteBoxComponent;
 
-    //! Settings for the primitive the Draw Shape switcher has selected. Every control writes straight
-    //! to the component, so it is the same state the pane edits - the two stay in step by construction.
-    //! Only the rows the current primitive actually uses are shown; the rest are hidden rather than
-    //! disabled, because a Cylinder has no business showing Step Height at all.
-    //!
-    //! Room, Door and Circular Stairs draw with their builders' defaults: their parameters (wall
-    //! thickness, cavity gap, arch height, inner radius, sweep angle) live on the LAYER, not on
-    //! DrawShapeData, so there is nothing here to bind them to yet.
+    //! Settings for the selected Draw Shape primitive, written straight to the component. Only the rows
+    //! the primitive uses are shown.
     class WhiteBoxShapeOptionsWindow : public WhiteBoxModelingWindow
     {
     public:

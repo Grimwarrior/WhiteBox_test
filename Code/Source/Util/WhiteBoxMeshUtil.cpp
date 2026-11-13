@@ -196,9 +196,7 @@ namespace WhiteBox
 
     bool RestoreMeshFromSnapshot(WhiteBoxMesh& target, const WhiteBoxMesh& snapshot)
     {
-        // Round-trip through the serialised form - the same approach the vertex modifier has
-        // always used for its manipulator-invalidate restore, now shared so every drag tool can
-        // cancel the same way.
+        // Round-trip through the serialised form.
         Api::WhiteBoxMeshStream snapshotData;
         if (!Api::WriteMesh(snapshot, snapshotData))
         {

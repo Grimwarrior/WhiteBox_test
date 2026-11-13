@@ -23,14 +23,8 @@ namespace WhiteBox
 {
     namespace
     {
-        //! Bake an operand (boolean source or cutter) into the TARGET's unscaled local space so the
-        //! CSG can be run with an identity operand transform. An AZ::Transform cannot represent a
-        //! non-uniform scale, so both entities' non-uniform scales are applied to the vertices
-        //! directly. The full map for a vertex v is:
-        //!     v' = S_target^-1  *  ( T_target^-1 * T_operand )  *  ( S_operand * v )
-        //! i.e. scale by the operand's non-uniform scale, apply the rigid+uniform relative transform,
-        //! then apply the inverse of the target's non-uniform scale (the target mesh itself is in
-        //! unscaled local space and gets S_target re-applied downstream at render / physics bake).
+        //! Bake an operand into the target's unscaled local space, applying both non-uniform scales to the
+        //! vertices: v' = S_target^-1 * (T_target^-1 * T_operand) * (S_operand * v).
         Api::WhiteBoxMeshPtr BakeOperandIntoTargetSpace(
             const WhiteBoxMesh& operandMesh, const AZ::Vector3& operandNonUniformScale,
             const AZ::Transform& operandWorldTM, const AZ::Transform& targetWorldTM,
@@ -108,9 +102,7 @@ namespace WhiteBox
             return;
         }
 
-        // Operate on the COMBINED mesh (freeform + stamped-cube grids) so the boolean affects the whole
-        // visible solid. For a pure stamped-cube entity the freeform is empty and the cubes live in the
-        // (manifold, CSG-merged) grid meshes, so booleaning the freeform alone did nothing.
+        // Boolean the combined mesh (freeform plus stamped cubes), not just the freeform.
         Api::WhiteBoxMeshPtr combined = CombinedWithGrid(freeform);
         WhiteBoxMesh* targetMesh = combined ? combined.get() : freeform;
         if (Api::MeshFaceHandles(*targetMesh).empty())
@@ -119,9 +111,7 @@ namespace WhiteBox
             return;
         }
 
-        // Bake the source into this entity's unscaled local space. AZ::Transform only carries
-        // uniform scale, so passing the relative transform directly to CSG would lose either
-        // entity's Non-Uniform Scale component.
+        // Bake the source into local space; a transform alone would lose the non-uniform scales.
         AZ::Transform thisWorldTM = AZ::Transform::CreateIdentity();
         AZ::TransformBus::EventResult(thisWorldTM, GetEntityId(), &AZ::TransformBus::Events::GetWorldTM);
         AZ::Transform sourceWorldTM = AZ::Transform::CreateIdentity();
@@ -247,9 +237,7 @@ namespace WhiteBox
             return nullptr; // single source failed to resolve and no cutters -> nothing to do
         }
 
-        // Evaluate into a fresh mesh so the editable base is never modified. By default the cut
-        // applies to the WHOLE combined geometry (every visible layer, its grid/stamps and its
-        // transform); "Affect only the active layer" restricts it to the active layer's base mesh.
+        // Evaluate into a fresh mesh; the cut applies to all layers unless "Affect only the active layer".
         Api::WhiteBoxMeshPtr evaluated;
         if (m_boolean.m_affectActiveOnly)
         {
@@ -269,9 +257,7 @@ namespace WhiteBox
             return nullptr;
         }
 
-        // Apply the single-source operand first (preserves the existing single-source behaviour),
-        // then every overlapping global cutter in turn. A cutter that produces no result (e.g. no
-        // real overlap) is skipped rather than aborting the whole evaluation.
+        // The single source first, then each overlapping global cutter; cutters with no result are skipped.
         bool anyApplied = false;
         if (sourceOperand != nullptr &&
             Api::ApplyMeshBoolean(
@@ -326,10 +312,7 @@ namespace WhiteBox
             {
                 return; // AABB cull: a cutter that cannot touch this target does no work
             }
-            // The cached physics mesh has already had the cutter entity's non-uniform scale baked
-            // into its vertices. The visual mesh has not, so only that path supplies S_operand to
-            // BakeOperandIntoTargetSpace. Using the strict physics accessor avoids accidentally
-            // falling back to an unfiltered visual mesh when collision is disabled.
+            // The strict physics mesh already contains the cutter's non-uniform scale; only the visual one needs it.
             WhiteBoxMesh* cutterMesh =
                 physicsPass ? cutter->GetPhysicsCombinedMeshStrict() : cutter->GetEvaluatedWhiteBoxMesh();
             if (cutterMesh == nullptr || Api::MeshFaceHandles(*cutterMesh).empty())
@@ -384,9 +367,7 @@ namespace WhiteBox
 
     void EditorWhiteBoxComponent::RefreshGlobalBooleans()
     {
-        // Walk every White Box entity in the level and recompute each non-excluded target against
-        // the current set of cutters. Manual (button-driven) so the scene-wide N x M cost is only
-        // paid on demand, never per edit or per frame.
+        // Recompute every non-excluded target in the level. On demand only (N x M cost).
         AZStd::vector<EditorWhiteBoxComponent*> components;
         auto collect = [&components](AZ::Entity* entity)
         {
@@ -402,16 +383,12 @@ namespace WhiteBox
 
         for (EditorWhiteBoxComponent* component : components)
         {
-            // A cutter that overlaps a target now may not after this refresh (or vice versa), so
-            // recompute the active flag from scratch, then rebuild so the display/physics/bake all
-            // reflect the composed result (or revert to base when nothing overlaps).
+            // Recompute the active flag from scratch and rebuild display, physics and bake.
             const bool wasActive = component->m_globalBooleanActive;
             component->m_globalBooleanActive = component->HasOverlappingCutter();
             component->RebuildWhiteBox();
 
-            // Mark changed targets dirty so the prefab/undo captures the rebaked geometry and game
-            // mode reflects it. A target that is (or just stopped being) active had its baked data
-            // recomputed; leave untouched entities out so a refresh does not dirty the whole scene.
+            // Mark only targets whose baked data changed, so a refresh does not dirty the whole scene.
             if (component->m_globalBooleanActive || wasActive)
             {
                 AzToolsFramework::ToolsApplicationRequestBus::Broadcast(
@@ -431,28 +408,19 @@ namespace WhiteBox
 
     void EditorWhiteBoxComponent::EvaluateLiveBoolean()
     {
-        // Always evaluate the boolean whenever a source is set, independent of the live flag,
-        // so the baked game-mode boolean variant exists even when the live boolean is off.
-        // This is what lets runtime Lua toggle the boolean on from a base start. The live flag
-        // only affects what EvaluatedMesh() returns (what is displayed / used by the edit-time
-        // collider); the game entity always receives both variants when a source is present.
+        // Evaluate whenever a source is set, so the game entity gets both variants; the live flag only
+        // decides what is displayed.
         m_displayMesh = EvaluateBooleanMesh();
         m_physicsDisplayMesh = EvaluateBooleanMesh(true); // Physics pass
         
-        // The game-mode bake caches (m_bakedBaseRenderData / m_bakedBooleanRenderData) each cost a
-        // FULL recombine of every layer, so computing them inline here made every edit (and every
-        // frame of a live-boolean drag) pay for the game-mode bake. Recompute them debounced on
-        // tick instead (and on demand in BuildGameEntity); they only need to be current when the
-        // level saves or a game entity is built.
+        // The bake caches cost a full recombine, so recompute them debounced on tick (and in BuildGameEntity).
         m_rebuild.m_bakedDataDirty = true;
         m_rebuild.m_bakedDataDelay = 0.0f;
     }
 
     void EditorWhiteBoxComponent::RebuildBakedRenderData()
     {
-        // Cache the true (uncut) base render data (serialized) so the game-mode bake always has
-        // the base variant, even on a clone where GetWhiteBoxMesh() is null. Use the full combined
-        // base (all visible layers, grids and transforms) so the bake matches the editor view.
+        // Cache the full uncut base render data for the game-mode bake (serialized for clones).
         if (WhiteBoxMesh* baseMesh = GetWhiteBoxMesh())
         {
             // --- VISUAL BAKE ---
@@ -463,14 +431,9 @@ namespace WhiteBox
                 m_bakedBaseRenderData = CreateWhiteBoxRenderData(combined ? *combined : *baseMesh, m_material);
             }
 
-            // --- PHYSICS BAKE (ADD THIS) ---
-            // Physics doesn't care about per-layer vertex colors, just raw geometry without collision=false layers.
-            // BuildCombined(physicsPass=true) never returns null, so an empty result genuinely means "no
-            // collidable layers" (collision disabled) rather than "fall back to the full base mesh".
+            // Physics geometry without Collision-off layers; empty means nothing collides.
             const Api::WhiteBoxMeshPtr physicsCombined = BuildCombined(baseMesh, true);
-            // Bake the entity's non-uniform scale into the physics geometry (matches the edit-time
-            // m_physicsCombinedMesh), so the game-mode collider and its debug wireframe are scaled even
-            // on a clone where the live physics mesh is unavailable.
+            // Bake the non-uniform scale into the physics geometry, as the edit-time mesh does.
             if (const AZ::Vector3 nus = EntityNonUniformScale();
                 physicsCombined && !nus.IsClose(AZ::Vector3::CreateOne()))
             {
@@ -484,10 +447,7 @@ namespace WhiteBox
             m_physicsBaked = true;
         }
 
-        // Cache the boolean-evaluated render data (serialized) so the game-mode bake can supply the
-        // boolean render variant even when BuildGameEntity runs on a cloned entity (m_displayMesh
-        // null). In whole-mesh mode m_displayMesh is already the full combined result; in
-        // active-only mode fold the grids/other layers around the active boolean result.
+        // Cache the boolean render variant (serialized for clones); in active-only mode fold the other layers around it.
         if (m_displayMesh)
         {
             if (PerLayerRenderActive())
@@ -566,9 +526,7 @@ namespace WhiteBox
     AZ::u32 EditorWhiteBoxComponent::OnBooleanSourceChange()
     {
         OnLiveBooleanChange();
-        // The Boolean group's visibility depends on whether a source is set. EntityId
-        // fields don't reliably honor the ChangeNotify refresh-level return value, so
-        // force the property tree to rebuild explicitly so the group shows/hides.
+        // EntityId fields ignore the ChangeNotify refresh level, so rebuild the tree to show/hide the group.
         AzToolsFramework::ToolsApplicationEvents::Bus::Broadcast(
             &AzToolsFramework::ToolsApplicationEvents::InvalidatePropertyDisplay,
             AzToolsFramework::Refresh_EntireTree);
@@ -586,10 +544,7 @@ namespace WhiteBox
     {
         if (m_owner != nullptr)
         {
-            // Source moved: rebuild ONCE on the next tick. Transform notifications can arrive
-            // many times per frame while the source entity is dragged, and each rebuild costs a
-            // full recombine + CSG boolean - rebuilding per notification drove the framerate to
-            // zero once real geometry (e.g. cube stamps) existed.
+            // Rebuild once on the next tick: a dragged source sends many notifications per frame.
             m_owner->m_rebuild.m_liveBooleanPending = true;
         }
     }

@@ -711,9 +711,7 @@ namespace WhiteBox
 
     void TransformMode::UpdateToolStatus(const int viewportId)
     {
-        // A middle dot, built from its code point rather than typed into the literal below: nothing
-        // else in this gem ships a non-ASCII string literal, and MSVC without /utf-8 would mangle one.
-        // arg() replaces every occurrence of the lowest-numbered marker, so one call fills them all.
+        // A middle dot from its code point (MSVC without /utf-8 mangles non-ASCII literals).
         const QString dot = QStringLiteral(" ") + QChar(0x00B7) + QStringLiteral(" ");
         QString instructions;
         QString error;
@@ -1982,10 +1980,7 @@ namespace WhiteBox
 
     void TransformMode::PublishLatchMesh()
     {
-        // The deferred rebuild rather than the OnWhiteBoxMeshModified notification Sketch mode sends:
-        // same thing on screen, but the collider cook and the game-mode bake are debounced to OnTick
-        // instead of running on every mouse move. Anything sharing a mesh asset catches up from the
-        // notification the commit sends.
+        // Deferred rebuild: the collider cook and bake wait for OnTick instead of every mouse move.
         if (auto* component = FindWhiteBoxComponent(m_entityComponentIdPair))
         {
             component->RebuildWhiteBoxDeferred();
@@ -2229,9 +2224,7 @@ namespace WhiteBox
                     pick.m_rayOrigin + pick.m_rayDirection * t - m_latchAnchor);
             }
 
-            // Dragging back to where the press started means no extrusion - not the smallest amount
-            // that happened to be accepted on the way out. Releasing there would otherwise bake in a
-            // sliver, and slivers are what later operations choke on.
+            // Back at the start means no extrusion, not a sliver.
             const bool moved = m_latchPolygons.empty()
                 ? !offset.IsZero(m_latchExtent * 1e-3f)
                 : AZStd::abs(amount) > (m_modelingLatch == TransformModelingLatch::Inset ? 1e-3f : m_latchExtent * 1e-3f);
@@ -2319,9 +2312,7 @@ namespace WhiteBox
             return false;
         }
 
-        // Transform mode never changes topology, so writing back the positions captured when the
-        // drag began is a complete revert - no mesh snapshot needed (unlike the default-mode
-        // modifiers, which can extrude mid-drag).
+        // Transform mode never changes topology, so restoring the start positions is a full revert.
         size_t vertexIndex = 0;
         for (const Api::VertexHandle& vertexHandle : m_whiteBoxSelection->m_vertexHandles)
         {
@@ -2358,9 +2349,7 @@ namespace WhiteBox
             return;
         }
 
-        // The same space every other White Box manipulator uses. This used to read GetWorldTM
-        // directly, which both ignored the layer transform and kept a non-uniform entity scale the
-        // manipulators cannot represent.
+        // The same space as every other White Box manipulator (layer transform included).
         const AZ::Transform worldTransform = EditorSpaceFromLocal(m_entityComponentIdPair);
         AZStd::shared_ptr<AzToolsFramework::TranslationManipulators> translationManipulators =
             AZStd::make_shared<AzToolsFramework::TranslationManipulators>(

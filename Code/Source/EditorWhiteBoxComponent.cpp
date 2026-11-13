@@ -194,9 +194,7 @@ namespace WhiteBox
 
         if (classElement.GetVersion() <= 2)
         {
-            // v3 grouped the loose voxel / boolean / draw fields into structs. Move each old
-            // flat field's data into the new nested elements (missing fields are skipped and
-            // keep their defaults).
+            // v3 grouped the flat voxel / boolean / draw fields into structs; move each old field across.
 
             // -- voxel / legacy grid fields -> VoxelData ("Voxel") --
             {
@@ -326,9 +324,7 @@ namespace WhiteBox
 
         if (classElement.GetVersion() <= 5)
         {
-            // v6 moved the render data and the game-mode bakes out of reflection and into byte-stream
-            // blobs. All of it is derived from the (still serialized) mesh streams, so the old elements
-            // are simply dropped and PhysicsBaked is cleared to force Activate to bake once on load.
+            // v6 moved render data and bakes into byte-stream blobs; drop the old elements and rebake on load.
             for (const AZ::Crc32 field :
                  { AZ_CRC_CE("RenderData"), AZ_CRC_CE("BakedBooleanRenderData"), AZ_CRC_CE("BakedBaseRenderData"),
                    AZ_CRC_CE("BakedPhysicsBaseRenderData"), AZ_CRC_CE("BakedPhysicsBooleanRenderData") })
@@ -555,25 +551,17 @@ namespace WhiteBox
                 ->Field("LightmapMargin", &EditorWhiteBoxComponent::m_lightmapMargin)
                 ->Field("Voxel", &EditorWhiteBoxComponent::m_voxel)
                 ->Field("Boolean", &EditorWhiteBoxComponent::m_boolean)
-                // Persist whether this entity is an active global-boolean target so the composed
-                // result is the default shown geometry after reload and in game mode (the baked
-                // boolean render data carries the geometry; this flag says "show it by default").
+                // Whether this entity is an active global-boolean target (show the composed result by default).
                 ->Field("GlobalBooleanActive", &EditorWhiteBoxComponent::m_globalBooleanActive)
                 ->Field("CsgSolver", &EditorWhiteBoxComponent::m_csgSolver)
-                // The evaluated render data and the four game-mode bakes (including the
-                // collision-FILTERED physics ones the asset-processor clone needs, since it is never
-                // live-edited) are persisted as byte streams rather than as reflected face vectors -
-                // see m_renderDataBlob / m_bakedDataBlob for why.
+                // Render data and game-mode bakes, as byte streams (see m_renderDataBlob / m_bakedDataBlob).
                 ->Field("RenderDataBlob", &EditorWhiteBoxComponent::m_renderDataBlob)
                 ->Field("BakedDataBlob", &EditorWhiteBoxComponent::m_bakedDataBlob)
                 ->Field("PhysicsBaked", &EditorWhiteBoxComponent::m_physicsBaked);
 
             if (AZ::EditContext* editContext = serializeContext->GetEditContext())
             {
-                // The component is only the bridge that binds the White Box data to the entity.
-                // ALL editing UI (default shape, layers, draw settings, cube stamp, booleans,
-                // material and asset/export operations) lives in the dockable White Box pane
-                // (Tools > White Box), driven through the component's Pane API.
+                // The editing UI lives in the White Box pane; the card only holds per-entity settings.
                 editContext->Class<EditorWhiteBoxComponent>("White Box", "White Box level editing")
                     ->ClassElement(AZ::Edit::ClassElements::EditorData, "")
                     ->Attribute(AZ::Edit::Attributes::Category, "Shape")
@@ -589,9 +577,7 @@ namespace WhiteBox
                     ->Attribute(AZ::Edit::Attributes::ChangeNotify, &EditorWhiteBoxComponent::OnOpenPane)
                     ->Attribute(AZ::Edit::Attributes::ButtonText, "Open White Box Pane")
 
-                    // Everything below is set-once-per-entity state rather than per-gesture modelling, so
-                    // it belongs on the card: the Inspector gives it search, collapsing and prefab
-                    // override marks for free, and the pane is left to the layer stack.
+                    // Set-once per-entity state belongs on the card (search, collapsing, prefab overrides).
                     ->DataElement(
                         AZ::Edit::UIHandlers::ComboBox, &EditorWhiteBoxComponent::m_defaultShape, "Default Shape",
                         "The shape a new or reset White Box mesh starts as.")
@@ -1072,9 +1058,7 @@ namespace WhiteBox
         AZ::TransformNotificationBus::Handler::BusConnect(entityId);
         AzFramework::BoundsRequestBus::Handler::BusConnect(entityId);
         AzFramework::VisibleGeometryRequestBus::Handler::BusConnect(entityId);
-        // Join the editor's render geometry intersector so White Box meshes answer scene
-        // raycasts. Connecting notifies the intersector automatically (see the bus's
-        // ConnectionPolicy); geometry changes are signalled from RebuildRenderMesh.
+        // Answer scene raycasts; geometry changes are signalled from RebuildRenderMesh.
         AzFramework::RenderGeometry::IntersectionRequestBus::Handler::BusConnect(
             AzFramework::RenderGeometry::EntityIdAndContext(entityId, AzToolsFramework::GetEntityContextId()));
         AzFramework::EntityDebugDisplayEventBus::Handler::BusConnect(entityId);
@@ -1092,9 +1076,7 @@ namespace WhiteBox
 
         m_editorMeshAsset->Associate(entityComponentIdPair);
 
-        // The render data and game-mode bakes are serialized as byte streams; restore them first so a
-        // clone that never rebuilds (the asset-processor build) still has them, and so an undo/redo
-        // reload comes back with the state it was captured with.
+        // Restore the serialized render data and bakes first, for clones that never rebuild and for undo.
         UnpackRenderDataBlobs();
 
         // deserialize the white box data into a mesh object or load the serialized asset ref
@@ -1113,9 +1095,7 @@ namespace WhiteBox
             {
                 m_worldAabb.reset();
                 InvalidateSnapVertexCache(); // cached snap vertices fold in the non-uniform scale
-                // Full rebuild: RebuildCombinedMesh re-bakes the entity non-uniform scale into the
-                // physics mesh, RebuildRenderMesh re-applies the render transform (AtomRenderMesh reads
-                // the new scale), and the physics/baked passes re-cook the collider from the scaled mesh.
+                // Full rebuild: re-bakes the scale into the physics mesh and the render transform.
                 RebuildWhiteBox();
             });
         AZ::NonUniformScaleRequestBus::Event(
@@ -1126,11 +1106,7 @@ namespace WhiteBox
         EvaluateLiveBoolean();
         RebuildCombinedMesh(); // fold in the stamp/grid layer so it renders on load
 
-        // Ensure the collision-filtered physics bake exists on load. Levels saved before this data
-        // was persisted (m_physicsBaked == false) would otherwise fall back to the full visual mesh
-        // for physics in game mode, making the runtime collider wireframe show non-collidable layers.
-        // Baking here means entering game mode uses the filtered collider geometry immediately, and
-        // saving the level persists it for the exported / asset-processor build.
+        // Older levels have no collision-filtered physics bake; make it now so game mode uses it.
         if (!m_physicsBaked)
         {
             RebuildBakedRenderData();
@@ -1180,17 +1156,13 @@ namespace WhiteBox
 
     void EditorWhiteBoxComponent::OnTick(float deltaTime, AZ::ScriptTimePoint /*time*/)
     {
-        // The reflected layer container's native add / remove / reorder does not reliably invoke
-        // the DataElement ChangeNotify, so poll a hash of the layer id order here and do the full
-        // structural resync (which also refreshes the property grid) the moment anything changes.
+        // The layer container's own add/remove/reorder does not always notify, so poll the id order.
         if (LayerSignature() != m_layerRuntime.m_lastSignature)
         {
             SyncLayerStructure();
         }
 
-        // Coalesced live-boolean rebuild: the boolean source moved (possibly many transform
-        // notifications this frame) - re-evaluate ONCE, and skip the physics rebuild while the
-        // drag is still streaming (it is deferred until the source has been still briefly).
+        // The boolean source moved: re-evaluate once per frame, deferring physics until it settles.
         if (m_rebuild.m_liveBooleanPending)
         {
             m_rebuild.m_liveBooleanPending = false;
@@ -1210,9 +1182,7 @@ namespace WhiteBox
             }
         }
 
-        // Debounced game-mode bake caches for the DRAG path (boolean source moving): wait for
-        // the drag to settle instead of paying for the bake every frame. Discrete edits bake
-        // synchronously in RebuildWhiteBox instead.
+        // Debounced game-mode bake for drags; discrete edits bake synchronously in RebuildWhiteBox.
         if (m_rebuild.m_bakedDataDirty)
         {
             m_rebuild.m_bakedDataDelay += deltaTime;
@@ -1225,11 +1195,8 @@ namespace WhiteBox
                     SerializeWhiteBox(); // a preview left the working mesh out of the layer's stream
                 }
                 RebuildBakedRenderData();
-                // The bake writes SERIALIZED members; without a dirty mark the prefab state
-                // (what play-in-editor spawns from) would keep the stale previous bake.
-                // Never for an entity outside the prefab being edited: its change is written into the
-                // shared template, every instance reloads and re-bakes (the bake folds in each instance's
-                // own non-uniform scale) and writes back - an endless propagation loop in prefab edit mode.
+                // The bake writes serialized members, so mark the entity dirty - but never outside the prefab
+                // being edited, where it would propagate through the template endlessly.
                 const auto* focusModeInterface = AZ::Interface<AzToolsFramework::FocusModeInterface>::Get();
                 if (focusModeInterface == nullptr || focusModeInterface->IsInFocusSubTree(GetEntityId()))
                 {
@@ -1247,12 +1214,8 @@ namespace WhiteBox
         RebuildRenderMesh();
         RebuildPhysicsMesh();
 
-        // Recompute the game-mode bake caches SYNCHRONOUSLY for discrete edits: play-in-editor
-        // spawns the game entity from the SERIALIZED (prefab) state, which is captured the
-        // moment the edit marks the entity dirty - a debounced bake would land AFTER that
-        // capture, leaving game mode one edit behind. RebuildWhiteBox only runs per user
-        // gesture, so the cost is acceptable; the per-frame live-boolean drag path (OnTick)
-        // bypasses RebuildWhiteBox and keeps the debounce.
+        // Bake synchronously for discrete edits: play-in-editor spawns from the serialized state captured
+        // when the edit marks the entity dirty, so a debounced bake would leave game mode one edit behind.
         m_rebuild.m_bakedDataDirty = false;
         m_rebuild.m_bakedDataDelay = 0.0f;
         m_rebuild.m_physicsPending = false; // cooked synchronously just above
@@ -1261,10 +1224,7 @@ namespace WhiteBox
 
     void EditorWhiteBoxComponent::RebuildWhiteBoxDeferred()
     {
-        // The interactive half of RebuildWhiteBox: the geometry and what is on screen update now, while
-        // the collider cook and the game-mode bake - the two expensive steps, and the two nothing is
-        // looking at mid-drag - are queued for OnTick. Their timers restart on every call, so a stream
-        // of edits pays for them once, after the stream stops.
+        // Update geometry and display now; the collider cook and game-mode bake wait for OnTick until edits stop.
         EvaluateLiveBoolean();
         RebuildCombinedMesh();
 
@@ -1293,19 +1253,14 @@ namespace WhiteBox
         // note: it is important no edit time only functions are called here as BuildGameEntity
         // will be called by the Asset Processor when creating dynamic slices
 
-        // The bake caches are recomputed debounced on tick; if an edit landed within the debounce
-        // window, flush them now so the game entity is built from current data. (Safe on clones:
-        // with no live meshes the rebuild simply keeps the serialized caches.)
+        // Flush a pending debounced bake so the game entity is built from current data.
         if (m_rebuild.m_bakedDataDirty)
         {
             m_rebuild.m_bakedDataDirty = false;
             RebuildBakedRenderData();
         }
 
-        // Bake the base (un-boolean) render geometry. Prefer the live base mesh, but fall back
-        // to the cached/serialized BASE render data (not m_renderData - that is the evaluated
-        // mesh and would be the CUT result when the live boolean is on, which would make the
-        // "base" variant identical to the boolean one).
+        // Base render geometry: the live base mesh, else the cached base data (m_renderData may be the cut result).
         if (WhiteBoxMesh* baseMesh = GetWhiteBoxMesh())
         {
             // Per-layer tint / inverted-normal layers must bake the coloured (winding-flipped) faces
@@ -1316,9 +1271,7 @@ namespace WhiteBox
             }
             else
             {
-                // Full combine (all visible layers, transforms and winding flips) so the game
-                // entity matches the editor view - CombinedWithGrid alone only covered the
-                // active layer and ignored Invert Normals.
+                // Full combine, so the game entity matches the editor view.
                 const Api::WhiteBoxMeshPtr combined = BuildCombined(baseMesh);
                 whiteBoxComponent->GenerateWhiteBoxMesh(
                     CreateWhiteBoxRenderData(combined ? *combined : *baseMesh, m_material));
@@ -1333,15 +1286,8 @@ namespace WhiteBox
             whiteBoxComponent->GenerateWhiteBoxMesh(m_renderData);
         }
 
-        // Hand the runtime the BAKED physics render data (used only for the "Draw Collider"
-        // debug wireframe; the real body is the cooked collider config). This data already
-        // honours each layer's Collision flag - an empty result means "no collision", so it
-        // must NOT fall back to the full visual geometry (m_renderData), which is exactly what
-        // made the runtime collider wireframe show non-collidable layers. m_physicsBaked (now
-        // serialized) is true whenever the filtered physics geometry has been baked, so it is
-        // trustworthy even on the clone/asset-processor build; an empty bake then correctly means
-        // "collision off" rather than "missing". Only genuinely legacy data (m_physicsBaked false)
-        // falls back to the visual geometry.
+        // The baked physics render data drives the runtime "Draw Collider" wireframe. Once baked, empty
+        // means collision off - never fall back to the visual geometry; only legacy data does.
         if (m_physicsBaked)
         {
             whiteBoxComponent->SetPhysicsGeometryData(m_bakedPhysicsBaseRenderData);
@@ -1351,17 +1297,8 @@ namespace WhiteBox
             // Legacy data with no physics bake: fall back to the visual geometry.
             whiteBoxComponent->SetPhysicsGeometryData(m_renderData);
         }
-        // Also bake the boolean-evaluated variant. The CSG boolean can only be computed in
-        // the Editor (the Manifold/OpenMesh backed Tool API is not linked into the runtime),
-        // so we pre-bake both variants here. Use the cached display mesh (evaluated during
-        // editing) rather than re-evaluating: the boolean source entity id is not resolvable
-        // during the game-mode / spawnable build, so a fresh evaluation here returns nothing.
-        // At runtime the component toggles between the variants via the live-boolean
-        // parameter (see WhiteBoxComponent::SetLiveBoolean / BakeWhiteBox).
-        // Supply the boolean render variant from the (serialized) cached render data. Prefer a
-        // freshly built one from the live display mesh, but fall back to the cache so this works
-        // even when BuildGameEntity runs on a clone (where m_displayMesh is null but the cached
-        // render data survives via serialization).
+        // The boolean variant can only be evaluated in the Editor, and its source is not resolvable during
+        // the game build, so use the cached display mesh, or the serialized render data on a clone.
         WhiteBoxRenderData booleanRenderData;
         if (WhiteBoxMesh* displayMesh = GetLiveBooleanDisplayMesh())
         {
@@ -1449,11 +1386,8 @@ namespace WhiteBox
 
     void EditorWhiteBoxComponent::EnterComponentMode()
     {
-        // Enter component mode through the standard "edit selected components of this type" request
-        // (the same path the component card's Edit button uses). This routes through each
-        // component's ComponentModeDelegate, so the card's enter/exit affordance (the little arrows)
-        // stays in sync - issuing BeginComponentMode directly does not update the delegate and the
-        // exit button then disappears. The entity must be selected first.
+        // Go through the "edit selected components" request so the card's enter/exit button stays in sync.
+        // The entity must be selected first.
         namespace Cmf = AzToolsFramework::ComponentModeFramework;
         Cmf::ComponentModeSystemRequestBus::Broadcast(
             &Cmf::ComponentModeSystemRequests::AddSelectedComponentModesOfType,

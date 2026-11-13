@@ -31,9 +31,7 @@ namespace WhiteBox
     static bool ConvertToTriangles(
         const WhiteBoxMesh& whiteBox, AZStd::vector<AZ::Vector3>& vertices, AZStd::vector<AZ::u32>& indices);
 
-    //! The entity's non-uniform scale as baked into the White Box physics mesh. BuildGameEntity can run
-    //! on a clone that was never activated, where the bus has no handler, so read the Non-Uniform Scale
-    //! component's serialized value directly in that case.
+    //! The non-uniform scale baked into the physics mesh, read from the serialized component on an inactive clone.
     static AZ::Vector3 EntityBakedNonUniformScale(AZ::Entity* entity)
     {
         if (AZ::NonUniformScaleRequestBus::HasHandlers(entity->GetId()))
@@ -137,9 +135,7 @@ namespace WhiteBox
         // can't use buses here as EditorWhiteBoxComponentBus is addressed using component id. How do get component id?
         if (auto whiteBoxComponent = GetEntity()->FindComponent<WhiteBox::EditorWhiteBoxComponent>())
         {
-            // use the collision-filtered evaluated mesh so the edit-time collider matches the
-            // (possibly live-boolean) geometry that is rendered AND honours each layer's Collision
-            // flag. CreatePhysics tears down the body when this comes back empty (collision off).
+            // The collision-filtered evaluated mesh; empty (collision off) tears the body down.
             if (auto whiteBoxMesh = whiteBoxComponent->GetPhysicsFilteredMesh())
             {
                 CreatePhysics(*whiteBoxMesh);
@@ -162,11 +158,8 @@ namespace WhiteBox
 
     void EditorWhiteBoxColliderComponent::BuildGameEntity(AZ::Entity* gameEntity)
     {
-        // The boolean variant MUST come from the edit-time cook (CookColliderVariants):
-        // during the game-mode / spawnable build the boolean source entity id is being
-        // remapped and is not resolvable, so evaluating the CSG here returns nothing.
-        // The base mesh needs no source lookup, so we (re)cook it here to pick up the very
-        // latest edits, falling back to the edit-time cook if that fails.
+        // The boolean variant must come from the edit-time cook: its source entity cannot be resolved
+        // during the game build. The base is re-cooked here to pick up the latest edits.
         Physics::CookedMeshShapeConfiguration baseConfiguration = m_meshShapeConfiguration;
         AZStd::vector<Physics::CookedMeshShapeConfiguration> baseParts = m_partShapeConfigurations;
         AZStd::vector<Physics::CookedMeshShapeConfiguration> booleanParts = m_booleanPartShapeConfigurations;
@@ -190,16 +183,8 @@ namespace WhiteBox
                 }
             }
 
-            // Re-cook the base from the COLLISION-FILTERED mesh (layers with Collision off removed)
-            // to pick up the latest edits. Use the STRICT accessor: it returns the cached filtered
-            // mesh or null, and NEVER the unfiltered evaluated mesh, so a clone/asset-processor build
-            // (where the cached mesh is not built) keeps the serialized filtered cook instead of
-            // silently cooking the full geometry. No CSG runs here (it must not, in the game build).
-            // When the live boolean is on, the displayed mesh is the CUT result, so we do NOT re-cook
-            // the base here - the true (uncut) filtered base was already cooked into
-            // m_meshShapeConfiguration by the edit-time CookColliderVariants, so keep it. When the
-            // filtered mesh is present but empty (collision disabled for every layer), clear the base
-            // config so no collider is created in game mode.
+            // Re-cook the base from the strict collision-filtered mesh (null rather than unfiltered on a
+            // clone). With the live boolean on keep the edit-time base; an empty mesh means no collider.
             if (!liveBoolean)
             {
                 if (WhiteBoxMesh* baseMesh = whiteBoxComponent->GetPhysicsCombinedMeshStrict())
@@ -240,11 +225,7 @@ namespace WhiteBox
         {
             collider->SetDrawCollider(m_drawCollider);
 
-            // The strict physics mesh, the physics render data and the non-live-boolean base cook have the
-            // entity's non-uniform scale baked into their geometry (BakeEntityScaleIntoPhysicsMesh). The
-            // boolean variant (m_physicsDisplayMesh) and the live-boolean base (BuildPhysicsFilteredBaseMesh)
-            // are cooked in the entity's unscaled local space. The runtime applies only the scale that is
-            // left over on top of what each variant already contains.
+            // Some variants already contain the entity's non-uniform scale; the runtime applies only the rest.
             const AZ::Vector3 bakedScale = EntityBakedNonUniformScale(GetEntity());
             const AZ::Vector3 baseBakedScale = liveBoolean ? AZ::Vector3::CreateOne() : bakedScale;
             collider->SetBakedNonUniformScale(baseBakedScale, AZ::Vector3::CreateOne(), bakedScale);
@@ -254,14 +235,8 @@ namespace WhiteBox
                 collider->SetConvexParts(baseParts, booleanParts);
             }
 
-            // Bake the actual cooked collider geometry so the runtime "Draw Collider" wireframe shows
-            // the real physics shape (the coplanar-merged mesh) instead of the per-cube render mesh.
-            // Use the STRICT collision-filtered mesh: it is either the filtered geometry or null,
-            // never the UNFILTERED evaluated mesh. That last fallback was the bug - on the game/asset-
-            // processor build path the cached mesh is not built, so GetPhysicsFilteredMesh returned the
-            // full visual mesh and the wireframe showed every layer even though the real (serialized)
-            // collider was correctly filtered. When the strict mesh is unavailable we leave the debug
-            // mesh empty; the runtime then falls back to the serialized, filtered physics render data.
+            // Bake the cooked collider geometry for the runtime "Draw Collider" overlay, from the strict
+            // collision-filtered mesh only; without it the runtime uses the serialized physics render data.
             AZStd::vector<AZ::Vector3> hullVertices;
             AZStd::vector<AZ::u32> hullIndices;
             if (UseConvexParts())
@@ -299,9 +274,7 @@ namespace WhiteBox
         {
             if (auto* whiteBoxComponent = GetEntity()->FindComponent<EditorWhiteBoxComponent>())
             {
-                // Re-cook from the collision-filtered mesh so a scale change does not resurrect a
-                // collider for layers whose Collision flag is off. CreatePhysics tears the body
-                // down if this is empty (collision disabled).
+                // Re-cook from the collision-filtered mesh; empty tears the body down.
                 if (auto* mesh = whiteBoxComponent->GetPhysicsFilteredMesh())
                 {
                     CreatePhysics(*mesh);
@@ -358,12 +331,8 @@ namespace WhiteBox
             return;
         }
 
-        // Base mesh (used when the live-boolean is off). Cook the COLLISION-FILTERED evaluated
-        // mesh, not the raw freeform: the stamped cubes live in the grid meshes that are folded
-        // into the evaluated result (and it reflects carves and every visible layer), so the
-        // freeform alone omits them, and the filter drops layers whose Collision flag is off.
-        // CookToConfiguration coplanar-merges whatever mesh it is given. When the live-boolean is
-        // on the displayed mesh is the cut result, so build the true (uncut) filtered base there.
+        // Base variant: the collision-filtered evaluated mesh (stamps, carves and layers included). With
+        // the live boolean on, build the uncut base instead.
         Api::WhiteBoxMeshPtr ownedBase; // keeps a freshly built base alive for the cook below
         WhiteBoxMesh* baseMesh = nullptr;
         if (whiteBoxComponent->GetLiveBoolean())
@@ -389,16 +358,10 @@ namespace WhiteBox
             }
         }
 
-        // boolean-evaluated mesh (used when the live-boolean is on); empty if none. Use the
-        // White Box component's cached COLLISION-FILTERED display mesh - it was just re-evaluated
-        // by the mesh rebuild that drives this call, so it is current, and reading it needs no
-        // boolean source lookup (which is what fails during the game-mode build).
+        // Boolean variant: the cached collision-filtered display mesh (no source lookup needed).
         if (auto* displayMesh = whiteBoxComponent->GetPhysicsFilteredBooleanMesh())
         {
-            // Pass the White Box component so the boolean variant also uses the greedy (merged) voxel
-            // collider for any stamped cubes, instead of a heavy per-cube triangulation. The live
-            // boolean only cuts the freeform mesh, so the cubes are unaffected and cook identically to
-            // the base variant.
+            // Pass the component so stamped cubes use the greedy voxel collider here too.
             if (Api::MeshFaceCount(*displayMesh) > 0)
             {
                 m_hasBooleanMesh = UseConvexParts()
@@ -412,9 +375,7 @@ namespace WhiteBox
     {
         if (Api::MeshFaceCount(whiteBox) == 0)
         {
-            // No collidable geometry (e.g. every visible layer has its Collision flag off).
-            // Tear down any existing body and clear the cooked/debug data so disabling collision
-            // actually removes the collider instead of leaving the previous body alive.
+            // Nothing collidable: remove the body and the cooked data.
             DestroyPhysics();
             m_debugVertices.clear();
             m_debugIndices.clear();
@@ -430,9 +391,7 @@ namespace WhiteBox
         // which cannot cook a CSG result itself.
         CookColliderVariants();
 
-        // Capture a wireframe of the mesh actually being used as the collider (the evaluated mesh:
-        // base when the live-boolean is off, the boolean result when on) so the viewport shows exactly
-        // what the physics body is - the same coplanar-merged geometry the cook produces.
+        // Wireframe of the mesh actually cooked, for the viewport.
         m_debugVertices.clear();
         m_debugIndices.clear();
         if (!Api::BuildColliderTriangles(whiteBox, m_debugVertices, m_debugIndices))
@@ -478,10 +437,7 @@ namespace WhiteBox
         // and the body carries only translation + rotation).
         Physics::CookedMeshShapeConfiguration scaledConfiguration = viewportConfiguration;
         m_editorBuiltScale = GetTransform()->GetWorldUniformScale();
-        // Only the UNIFORM scale goes on the cooked shape - the entity's NON-uniform scale is baked
-        // directly into the White Box physics mesh geometry (see BakeEntityScaleIntoPhysicsMesh), which
-        // is what this shape was cooked from, because a cooked triangle-mesh shape does not reliably
-        // honour a non-uniform shape scale.
+        // Only uniform scale goes on the shape; non-uniform scale is baked into the mesh (cooked shapes ignore it).
         scaledConfiguration.m_scale = AZ::Vector3(m_editorBuiltScale);
 
         AzPhysics::StaticRigidBodyConfiguration bodyConfiguration;
@@ -526,22 +482,12 @@ namespace WhiteBox
     static bool ConvertToTriangles(
         const WhiteBoxMesh& whiteBox, AZStd::vector<AZ::Vector3>& vertices, AZStd::vector<AZ::u32>& indices)
     {
-        // Build the vertex and index buffers together, one face at a time. Do NOT size the
-        // vertex buffer from MeshHalfedgeCount and assume 3 vertices per face: after a CSG
-        // boolean the mesh can contain boundary half-edges and merged (n-gon) polygon faces,
-        // which made the old approach emit a mismatched buffer with uninitialised trailing
-        // vertices - PhysX then rejected the cooked data ("Unable to create a mesh object
-        // from the CookedMeshShapeConfiguration buffer"). Triangle-fanning each face handles
-        // both plain triangles and any n-gon faces safely.
+        // Build both buffers per face, fanning n-gons: CSG results can have n-gons and boundary
+        // half-edges, so 3 vertices per half-edge does not hold.
         vertices.clear();
         indices.clear();
 
-        // Weld vertices by their WhiteBox vertex handle so shared vertices collapse to a
-        // single entry, producing a proper indexed triangle mesh. The render path can
-        // tolerate an unwelded triangle soup (duplicate positions, zero-area tris), but
-        // PhysX cooking of a non-trivial mesh (e.g. a CSG boolean result or freeform edit)
-        // frequently rejects that, which is why only clean default shapes were getting a
-        // collider. We also drop any degenerate triangles here.
+        // Weld by vertex handle and drop degenerate triangles: PhysX rejects unwelded triangle soup.
         AZStd::unordered_map<int, AZ::u32> vertexRemap;
         const auto indexForVertex = [&](const Api::VertexHandle& vertexHandle) -> AZ::u32
         {
@@ -780,11 +726,7 @@ namespace WhiteBox
             indices.clear();
         }
 
-        // Coplanar-merge the ACTUAL mesh into a light collider (a flat stamped-cube region collapses to
-        // a few triangles, not two per cell). This always matches what is on screen - carves, multiple
-        // layers and layer transforms all come through because we cook the evaluated geometry itself,
-        // not a separate voxel-occupancy representation. Fall back to the raw per-face triangulation if
-        // merging produced nothing.
+        // Coplanar-merge the actual mesh into a light collider; fall back to per-face triangles.
         const bool merged = Api::BuildColliderTriangles(whiteBox, vertices, indices);
         if (!merged && !ConvertToTriangles(whiteBox, vertices, indices))
         {

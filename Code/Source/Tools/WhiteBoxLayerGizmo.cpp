@@ -157,10 +157,8 @@ namespace WhiteBox
         if (m_batchActive)
         {
             m_batchActive = false;
-            // The engine only accepts a dirty entity inside an open undo batch, and the prefab undo node is
-            // the difference between the prefab template and the entity as it is now. Opening the batch here
-            // instead of holding one open across the drag means nothing that runs between the mouse events
-            // can close it first, which dropped the dirty mark and left the prefab unsaved.
+            // Open the undo batch here, not across the drag: something between mouse events could close it
+            // and drop the dirty mark, leaving the prefab unsaved.
             {
                 AzToolsFramework::ScopedUndoBatch undoBatch(m_batchLabel.c_str());
                 undoBatch.MarkEntityDirty(m_entityId);
@@ -183,9 +181,7 @@ namespace WhiteBox
 
         const int viewportId = SnapUtil::ActiveViewportId();
 
-        // Resolve the anchor once, on the first move of the drag: which of this layer's vertices
-        // is nearest the cursor, expressed as an offset from the layer origin. Rotation and scale
-        // are fixed during a translate, so the offset stays valid for the rest of the drag.
+        // Resolve the snap anchor once, as an offset from the layer origin (valid for the whole translate).
         if (!m_snapAnchorResolved)
         {
             m_snapAnchorResolved = true;
@@ -356,10 +352,8 @@ namespace WhiteBox
                     AzFramework::ViewportColors::YAxisColor, AzFramework::ViewportColors::ZAxisColor);
                 m_scale->SetLocalPosition(meta.m_position);
 
-                // Multiplicative scaling, matching the White Box TransformMode: the drag start
-                // scale is captured when the batch (lazily) begins, and each move applies
-                // startScale * (1 + sign * offset). The uniform (center) handle uses the Z
-                // component of the offset splatted to all three axes.
+                // Multiplicative scaling as in TransformMode: startScale * (1 + sign * offset); the centre
+                // handle applies Z to all axes.
                 const auto scaleMove = [this, undoLabel](const Aztf::LinearManipulator::Action& action, bool uniform)
                 {
                     if (!m_batchActive)

@@ -136,14 +136,6 @@ namespace WhiteBox
             return row;
         }
 
-        //! The layer list, with drag-and-drop reordering.
-        //!
-        //! The rows are NOT moved by the view: letting Qt do an InternalMove would edit the
-        //! item model behind the component's back (and fire itemChanged mid-move, writing a
-        //! layer's name/visibility onto the wrong slot). Instead the drop is intercepted, the
-        //! from/to rows are computed and handed to the owner, which reorders the component's
-        //! layer list and rebuilds the widget from it - the component stays the source of truth.
-        //! No signals/slots of its own, so it needs no Q_OBJECT / moc.
         //! What a layer row carries beyond its name and check state.
         constexpr int LayerTintRole = Qt::UserRole + 1;
         constexpr int LayerCombineRole = Qt::UserRole + 2;
@@ -233,9 +225,7 @@ namespace WhiteBox
             return icon;
         }
 
-        //! Paint the compact layer buttons explicitly: the editor's tool-button style can leave
-        //! auto-raised buttons borderless. All colours come from the current widget palette, so
-        //! changing the editor theme also updates these frames and their artwork.
+        //! Layer buttons painted explicitly (the tool-button style can drop their borders), from the palette.
         class LayerToolButton : public QToolButton
         {
         public:
@@ -337,9 +327,7 @@ namespace WhiteBox
             }
         }
 
-        //! Draws each layer the way the mockup lays it out: visibility eye, tint swatch, name, and
-        //! the combine mode as a badge on the right. A delegate rather than a widget per row, so the
-        //! list keeps drag-to-reorder, rename-on-double-click and the theme's selection painting.
+        //! Paints a layer row: eye, tint swatch, name and combine-mode badge.
         class LayerRowDelegate : public QStyledItemDelegate
         {
         public:
@@ -533,9 +521,7 @@ namespace WhiteBox
         m_layerGizmo = AZStd::make_unique<WhiteBoxLayerGizmo>();
         m_entityGizmo = AZStd::make_unique<WhiteBoxEntityGizmo>();
 
-        // What is left is the layer stack and the things that only make sense beside it. Default Shape,
-        // Material / Display, Boolean and Mesh / Asset moved to the component card; Modeling, Vertex
-        // Paint and Draw Shape moved to the viewport clusters and their floating option windows.
+        // The pane holds the layer stack; other settings live on the component card and the viewport tools.
         mainLayout->addWidget(BuildEntitySection());
         mainLayout->addWidget(BuildEntityTransformSection());
         mainLayout->addWidget(BuildModeSection());
@@ -783,9 +769,7 @@ namespace WhiteBox
             connect(spin, QOverload<double>::of(&QDoubleSpinBox::valueChanged), this, applyEntityTransform);
         }
 
-        // Non-uniform scale is stored on the entity's Non-Uniform Scale component (separate from the
-        // Transform). Write it through the bus, adding the component the first time a non-(1,1,1)
-        // value is set so the field "just works" without the user hunting for the component.
+        // Non-uniform scale goes through its own component, added the first time it is not (1,1,1).
         const auto applyNonUniformScale = [this]()
         {
             if (m_updating || !m_currentEntityId.IsValid())
@@ -1267,10 +1251,7 @@ namespace WhiteBox
             return true;
         };
 
-        // Intermediate value of a drag or of a held spin-box arrow: regenerate the geometry so the
-        // viewport follows the control, but leave the collider cook, the game-mode bake and the undo
-        // step to the commit below. Those three dominate the cost of an edit and none of them is
-        // observable mid-drag.
+        // Intermediate values: regenerate geometry now; cook, bake and undo wait for the commit below.
         const auto previewShapeParams = [this, readShapeParams]()
         {
             if (m_updating)
@@ -2014,11 +1995,7 @@ namespace WhiteBox
         }
         m_currentEntityId = entityId;
 
-        // If a component mode is active it stays latched to the OLD entity even after the
-        // selection changes (the editor suppresses selection-driven mode exit while editing),
-        // leaving the pane/inspector showing one entity while the viewport edits another.
-        // End it explicitly first - and re-enter it on the new entity so switching entities
-        // from the pane keeps you in edit mode.
+        // Component mode stays latched to the old entity, so end it and re-enter it on the new one.
         namespace Cmf = AzToolsFramework::ComponentModeFramework;
         bool wasInComponentMode = false;
         Cmf::ComponentModeSystemRequestBus::BroadcastResult(
@@ -2192,9 +2169,7 @@ namespace WhiteBox
     void WhiteBoxPaneWidget::changeEvent(QEvent* event)
     {
         QScrollArea::changeEvent(event);
-        // The editor MainWindow disables every dock pane when component mode begins (whatever
-        // widget in our ancestor chain it targets, we receive EnabledChange). Undo it while a
-        // White Box is being edited - this pane IS the White Box editing UI.
+        // The editor disables dock panes in component mode; this pane is the editing UI, so undo that.
         if (event->type() == QEvent::EnabledChange && !isEnabled())
         {
             EnsureEnabledInComponentMode();
@@ -2203,10 +2178,8 @@ namespace WhiteBox
 
     void WhiteBoxPaneWidget::OnWhiteBoxMeshModified()
     {
-        // Fired for every mesh edit (including per-frame during a draw drag). The component's
-        // own handler - which may auto-create "Layer 1" when drawing into an empty white box -
-        // runs on the same bus with no ordering guarantee, so defer the check one event-loop
-        // tick and only do the full pane rebuild if the layer structure actually changed.
+        // Defer a tick (the component may auto-create a layer on the same bus) and rebuild only if the
+        // layer structure changed.
         QTimer::singleShot(
             0, this,
             [this]()

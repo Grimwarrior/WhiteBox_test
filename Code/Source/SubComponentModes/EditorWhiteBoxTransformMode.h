@@ -145,18 +145,14 @@ namespace WhiteBox
             Api::EdgeHandles m_edges;
             Api::VertexHandles m_vertices;
 
-            //! Vertex snapping (translate only). Which selected vertex leads the drag - resolved
-            //! on the first mouse move of a drag (there is no mouse-down callback here) and held
-            //! until mouse up, so the anchor cannot flip mid-drag.
+            //! Snap anchor (translate only), resolved on the first move of a drag and held until mouse up.
             AZStd::optional<size_t> m_snapAnchorIndex;
             bool m_snapAnchorResolved = false;
             //! The snap correction applied on the most recent move, so mouse up can fold it into
             //! m_localPosition and keep the gizmo on the geometry.
             AZ::Vector3 m_snapOffset = AZ::Vector3::CreateZero();
 
-            //! Set when Escape abandons the drag - suppresses further movement until the mouse
-            //! button is released. No mesh snapshot is needed here: transform mode never changes
-            //! topology, so restoring m_vertexPositions is a complete revert.
+            //! Set when Escape abandons the drag; blocks movement until the mouse is released.
             bool m_dragCancelled = false;
         };
 

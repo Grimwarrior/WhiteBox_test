@@ -133,11 +133,7 @@ namespace WhiteBox
         void NumericMoveSetAxisY()  override { if (m_numericInput.IsActive()) m_numericInput.SetAxis(NumericAxisConstraint::Y); }
         void NumericMoveSetAxisZ()  override { if (m_numericInput.IsActive()) m_numericInput.SetAxis(NumericAxisConstraint::Z); }
         void NumericMoveConfirm()   override { ApplyNumeric(); }
-        //! @note Escape is NOT routed here. ComponentModeCollection's s_backAction owns Escape
-        //! while in component mode (the phantom widget wins the shortcut), so the real handler is
-        //! HandleEscape, dispatched from EditorWhiteBoxComponentMode's back-action override.
-        //! Routing the drag cancel through both paths risked one consuming it and the other then
-        //! leaving component mode.
+        //! Escape is handled by HandleEscape (via the component mode's back action), not here.
         void NumericMoveCancel() override { m_numericInput.Reset(); }
         void NumericMoveBackspace() override { if (m_numericInput.IsActive()) m_numericInput.Backspace(); }
         void NumericMoveDecimal()   override { if (m_numericInput.IsActive()) m_numericInput.AppendDecimal(); }

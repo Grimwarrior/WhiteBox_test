@@ -128,9 +128,7 @@ namespace WhiteBox
                 sharedState->m_moved = sharedState->m_moved ||
                     action.LocalPositionOffset().GetLength() >= cl_whiteBoxMouseClickDeltaThreshold;
 
-                // Extrude is either Ctrl held, or the Sketch cluster's latched Extrude. Holding Ctrl
-                // keeps working for anyone who already knows the gesture; the toggle is what makes it
-                // findable for anyone who does not.
+                // Extrude with Ctrl held or the Sketch cluster's latched Extrude.
                 bool stickyExtrude = false;
                 EditorWhiteBoxComponentRequestBus::EventResult(
                     stickyExtrude, m_entityComponentIdPair, &EditorWhiteBoxComponentRequests::GetStickyExtrude);
@@ -205,10 +203,7 @@ namespace WhiteBox
                 {
                     const AZ::Vector3 dragOffset = action.LocalPositionOffset() - sharedState->m_activeAppendOffset;
 
-                    // vertex snapping: pull the whole polygon rigidly so the anchor vertex lands
-                    // exactly on the target under the cursor. Recomputed from the mouse-down base
-                    // positions every frame, so it is not cumulative - letting the cursor leave
-                    // range simply returns the polygon to the unsnapped drag position.
+                    // Snap the polygon so its anchor lands on the target; recomputed each frame, not cumulative.
                     AZStd::optional<AZ::Vector3> snapTarget;
                     AZ::Vector3 snapOffset = AZ::Vector3::CreateZero();
 
