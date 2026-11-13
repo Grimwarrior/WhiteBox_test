@@ -1,10 +1,6 @@
 /*
- * EditorWhiteBoxComponent - vertex snapping source.
- *
- * Publishes the mesh's vertices to the editor-wide vertex snapper provided by the
- * editor's ViewportSnapping API (ViewportSnapSourceRequestBus). This is the "provider" half of
- * snapping; the "consumer" half lives in the viewport modifiers, which ask the snapper for
- * a target while a drag is in progress.
+ * EditorWhiteBoxComponent - publishes the mesh to the editor's viewport snapper
+ * (ViewportSnapSourceRequestBus).
  *
  * SPDX-License-Identifier: Apache-2.0 OR MIT
  */
@@ -21,8 +17,7 @@ namespace WhiteBox
     AZ::Vector3 EditorWhiteBoxComponent::SnapWorldPosition(
         const AZ::Vector3& localPosition, const AZ::Vector3& nonUniformScale) const
     {
-        // The world transform carries uniform scale only; a Non-Uniform Scale component is applied
-        // separately. Mirrors what GetWorldBounds does, so candidates and bounds agree.
+        // Uniform scale comes from the transform; Non-Uniform Scale is applied here, as in GetWorldBounds.
         return m_worldFromLocal.TransformPoint(localPosition * nonUniformScale);
     }
 
@@ -30,15 +25,12 @@ namespace WhiteBox
     {
         AZ_PROFILE_FUNCTION(AzToolsFramework);
 
-        // clear() keeps the capacity, so a mesh being dragged re-fills the same allocation every
-        // frame rather than churning the heap.
+        // clear() keeps the capacity, so per-frame rebuilds during a drag don't reallocate.
         m_snapVertexCache.clear();
         m_snapVertexCacheBounds = AZ::Aabb::CreateNull();
         m_snapVertexCacheValid = true;
 
-        // EvaluatedMesh is the mesh used for render/collision/bounds/selection, so snapping
-        // targets what the user actually sees (including the voxel/grid layer and any live
-        // boolean result). It can be null while entities are still activating.
+        // Snap to what is displayed (EvaluatedMesh); null while the entity is still activating.
         WhiteBoxMesh* mesh = const_cast<EditorWhiteBoxComponent*>(this)->EvaluatedMesh();
         if (mesh == nullptr)
         {
@@ -58,8 +50,7 @@ namespace WhiteBox
             const AZ::Vector3 worldPosition =
                 SnapWorldPosition(Api::VertexPosition(*mesh, vertexHandle), nonUniformScale);
 
-            // The handle index is carried through as the opaque source index so a sub-element
-            // tool can exclude the very vertex it is dragging (see SnapQueryConfig).
+            // The handle index lets a tool exclude the vertex it is dragging.
             m_snapVertexCache.emplace_back(worldPosition, entityId, aznumeric_cast<AZ::s64>(vertexHandle.Index()));
             m_snapVertexCacheBounds.AddPoint(worldPosition);
         }
@@ -67,11 +58,8 @@ namespace WhiteBox
 
     AZ::Aabb EditorWhiteBoxComponent::GetSnapVertexBounds() const
     {
-        // Taken from the snap cache rather than GetWorldBounds. They describe the same volume,
-        // but GetWorldBounds recomputes GetLocalBounds (a full vertex walk) whenever the mesh
-        // changes - which during a drag is every frame - so using it here doubled the per-query
-        // vertex work. Returns a null Aabb while the mesh is not ready, which is exactly the
-        // "reject me" signal the snapper expects.
+        // From the snap cache: GetWorldBounds would walk every vertex again on each change. A null
+        // Aabb while the mesh is not ready tells the snapper to skip it.
         if (!m_snapVertexCacheValid)
         {
             RebuildSnapVertexCache();
@@ -97,9 +85,7 @@ namespace WhiteBox
         AZ::NonUniformScaleRequestBus::EventResult(
             nonUniformScale, GetEntityId(), &AZ::NonUniformScaleRequests::GetScale);
 
-        // Polygon border edges only - the wireframe the user actually sees. MeshEdgeHandles would
-        // also hand back the internal triangulation edges, and snapping to the diagonal across a
-        // quad is never what anyone means by "snap to edge".
+        // Polygon border edges only, not the triangulation diagonals.
         const Api::EdgeHandles edgeHandles = Api::MeshPolygonEdgeHandles(*mesh);
         m_snapEdgeCache.reserve(edgeHandles.size());
 
@@ -160,8 +146,7 @@ namespace WhiteBox
         AZ::NonUniformScaleRequestBus::EventResult(
             nonUniformScale, GetEntityId(), &AZ::NonUniformScaleRequests::GetScale);
 
-        // Polygons, not triangles - the centre of a quad wall, not the centre of one of the two
-        // triangles it happens to be built from.
+        // Polygon centres, not triangle centres.
         const Api::PolygonHandles polygonHandles = Api::MeshPolygonHandles(*mesh);
         m_snapFaceCenterCache.reserve(polygonHandles.size());
 
@@ -242,9 +227,7 @@ namespace WhiteBox
             RebuildSnapVertexCache();
         }
 
-        // Tight loop over contiguous, already-transformed positions - no allocation, no EBus
-        // traffic, no per-vertex API calls. The cone test rejects all but a handful, so the
-        // caller only has to project those few into screen space.
+        // Cached, already-transformed positions: no allocation or per-vertex API calls per query.
         for (const AzToolsFramework::ViewportSnapping::SnapVertex& vertex : m_snapVertexCache)
         {
             if (volume.Contains(vertex.m_worldPosition))

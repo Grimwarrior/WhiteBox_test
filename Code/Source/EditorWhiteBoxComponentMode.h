@@ -148,8 +148,7 @@ namespace WhiteBox
 
     private:
         // AzToolsFramework::ViewportSnapping::ViewportDragCancelRequestBus ...
-        //! Right click during a drag. Dispatched by the editor's viewport snapping drag handler,
-        //! which sees the click before the manipulator manager swallows it.
+        //! Right click during a drag (sent by the viewport snapping drag handler).
         bool CancelActiveDrag() override;
 
         // Active editing overlays must also render when entity helpers are hidden.

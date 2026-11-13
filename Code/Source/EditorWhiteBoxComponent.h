@@ -188,9 +188,7 @@ namespace WhiteBox
             const AzToolsFramework::ViewportSnapping::SnapQueryVolume& volume, AZStd::vector<AzToolsFramework::ViewportSnapping::SnapVertex>& out) const override;
         AZ::Aabb GetSnapVertexBounds() const override;
 
-        //! Drop every cached snap candidate set. Must be called whenever the mesh geometry, the
-        //! entity transform or the non-uniform scale changes, or snapping will target stale
-        //! positions.
+        //! Drop the cached snap candidates. Call on any mesh, transform or non-uniform scale change.
         void InvalidateSnapVertexCache()
         {
             m_snapVertexCacheValid = false;
@@ -983,23 +981,18 @@ namespace WhiteBox
         //! Holds a reference to an optional WhiteBoxMeshAsset and manages the lifecycle of adding/removing an asset.
         EditorWhiteBoxMeshAsset* m_editorMeshAsset = nullptr;
         //!@{
-        //! Rebuild a snap candidate set from the evaluated mesh. Each is built lazily on first use
-        //! after an invalidation, so a session that only ever uses vertex snapping never pays for
-        //! the edge or face sets.
+        //! Rebuild a snap candidate set from the evaluated mesh (lazily, on first use after invalidation).
         void RebuildSnapVertexCache() const;
         void RebuildSnapEdgeCache() const;
         void RebuildSnapEdgeMidpointCache() const;
         void RebuildSnapFaceCenterCache() const;
         //!@}
 
-        //! World transform helper shared by the snap cache builders - folds in the Non-Uniform
-        //! Scale component the same way GetWorldBounds does.
+        //! World position for the snap caches, including Non-Uniform Scale (as GetWorldBounds).
         AZ::Vector3 SnapWorldPosition(const AZ::Vector3& localPosition, const AZ::Vector3& nonUniformScale) const;
 
         //!@{
-        //! Vertex snapping: this mesh's vertices in world space, cached because the snapper asks
-        //! for them on every mouse move of every drag. Rebuilding them per query (deserialising
-        //! handles, per-vertex API calls, a fresh allocation) was the bulk of the cost.
+        //! Snap candidates in world space, cached because the snapper queries them on every mouse move.
         mutable AZStd::vector<AzToolsFramework::ViewportSnapping::SnapVertex> m_snapVertexCache;
         mutable AZ::Aabb m_snapVertexCacheBounds = AZ::Aabb::CreateNull();
         mutable bool m_snapVertexCacheValid = false;

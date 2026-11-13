@@ -50,8 +50,7 @@ namespace WhiteBox
             return AzToolsFramework::ViewportSnapping::IsSnappingEnabled();
         }
 
-        //! See the note in the header - written by the component mode's mouse handler, read by
-        //! manipulator callbacks whose Action type does not carry a viewport id.
+        //! See SetActiveViewportId in the header.
         static int s_activeViewportId = AzFramework::InvalidViewportId;
 
         void SetActiveViewportId(const int viewportId)
@@ -155,9 +154,7 @@ namespace WhiteBox
             }
 
             AzToolsFramework::ViewportSnapping::SnapQueryConfig config;
-            // Snapping one part of a mesh onto another part of the same mesh is a normal modelling
-            // operation, so the owning entity stays in the query - only the dragged geometry itself
-            // is excluded.
+            // Keep this entity in the query (snapping within one mesh is normal); exclude only the dragged geometry.
             config.m_excludeEntity = entityId;
             config.m_includeExcludedEntity = true;
             config.m_excludeSourceIndices = excludeSourceIndices;
@@ -188,9 +185,7 @@ namespace WhiteBox
             const AZ::Vector3& anchorLocal,
             const AZ::Vector3& targetWorld)
         {
-            // Applied as a post-correction on top of whatever movement the caller already did, so
-            // it works for both absolute (polygon: base + offset) and incremental (edge: previous +
-            // displacement) drag styles without either having to be restructured.
+            // A post-correction on top of the caller's move, so it suits absolute and incremental drags alike.
             const AZ::Vector3 offset = MeshLocalFromWorld(entityId, targetWorld) - anchorLocal;
 
             for (const Api::VertexHandle vertexHandle : vertexHandles)
@@ -210,7 +205,7 @@ namespace WhiteBox
             debugDisplay.DepthTestOn();
         }
 
-        //! See the note in the header - single drag in flight, viewport thread only.
+        //! See SetActiveSnapTarget in the header.
         static AZStd::optional<AZ::Vector3> s_activeSnapTarget;
 
         void SetActiveSnapTarget(const AZStd::optional<AZ::Vector3>& worldPosition)
