@@ -34,7 +34,7 @@
 #include <AzToolsFramework/ComponentMode/ComponentModeDelegate.h>
 #include <AzToolsFramework/ToolsComponents/EditorComponentBase.h>
 #include <AzToolsFramework/ToolsComponents/EditorVisibilityBus.h>
-#include <SnapApi/VertexSnapBus.h>
+#include <AzToolsFramework/ViewportSnapping/ViewportSnapSourceBus.h>
 #include <WhiteBox/EditorWhiteBoxComponentBus.h>
 #include <WhiteBox/WhiteBoxToolApi.h>
 
@@ -73,7 +73,7 @@ namespace WhiteBox
         , public AzFramework::VisibleGeometryRequestBus::Handler
         , public AzFramework::RenderGeometry::IntersectionRequestBus::Handler
         , public EditorWhiteBoxComponentRequestBus::Handler
-        , public SnapApi::VertexSourceRequestBus::Handler
+        , public AzToolsFramework::ViewportSnapping::ViewportSnapSourceRequestBus::Handler
         , private EditorWhiteBoxComponentNotificationBus::Handler
         , private AZ::TransformNotificationBus::Handler
         , private AzFramework::EntityDebugDisplayEventBus::Handler
@@ -176,16 +176,16 @@ namespace WhiteBox
         AzFramework::RenderGeometry::RayResult RenderGeometryIntersect(
             const AzFramework::RenderGeometry::RayRequest& ray) const override;
 
-        // SnapApi::VertexSourceRequestBus overrides ...
+        // AzToolsFramework::ViewportSnapping::ViewportSnapSourceRequestBus overrides ...
         // Publishes this mesh's vertices to the editor-wide vertex snapper.
         void CollectSnapVertices(
-            const SnapApi::SnapQueryVolume& volume, AZStd::vector<SnapApi::SnapVertex>& out) const override;
+            const AzToolsFramework::ViewportSnapping::SnapQueryVolume& volume, AZStd::vector<AzToolsFramework::ViewportSnapping::SnapVertex>& out) const override;
         void CollectSnapEdges(
-            const SnapApi::SnapQueryVolume& volume, AZStd::vector<SnapApi::SnapEdge>& out) const override;
+            const AzToolsFramework::ViewportSnapping::SnapQueryVolume& volume, AZStd::vector<AzToolsFramework::ViewportSnapping::SnapEdge>& out) const override;
         void CollectSnapEdgeMidpoints(
-            const SnapApi::SnapQueryVolume& volume, AZStd::vector<SnapApi::SnapVertex>& out) const override;
+            const AzToolsFramework::ViewportSnapping::SnapQueryVolume& volume, AZStd::vector<AzToolsFramework::ViewportSnapping::SnapVertex>& out) const override;
         void CollectSnapFaceCenters(
-            const SnapApi::SnapQueryVolume& volume, AZStd::vector<SnapApi::SnapVertex>& out) const override;
+            const AzToolsFramework::ViewportSnapping::SnapQueryVolume& volume, AZStd::vector<AzToolsFramework::ViewportSnapping::SnapVertex>& out) const override;
         AZ::Aabb GetSnapVertexBounds() const override;
 
         //! Drop every cached snap candidate set. Must be called whenever the mesh geometry, the
@@ -1000,18 +1000,18 @@ namespace WhiteBox
         //! Vertex snapping: this mesh's vertices in world space, cached because the snapper asks
         //! for them on every mouse move of every drag. Rebuilding them per query (deserialising
         //! handles, per-vertex API calls, a fresh allocation) was the bulk of the cost.
-        mutable AZStd::vector<SnapApi::SnapVertex> m_snapVertexCache;
+        mutable AZStd::vector<AzToolsFramework::ViewportSnapping::SnapVertex> m_snapVertexCache;
         mutable AZ::Aabb m_snapVertexCacheBounds = AZ::Aabb::CreateNull();
         mutable bool m_snapVertexCacheValid = false;
 
         //! Polygon border edges (the wireframe the user sees), not triangulation edges.
-        mutable AZStd::vector<SnapApi::SnapEdge> m_snapEdgeCache;
+        mutable AZStd::vector<AzToolsFramework::ViewportSnapping::SnapEdge> m_snapEdgeCache;
         mutable bool m_snapEdgeCacheValid = false;
 
-        mutable AZStd::vector<SnapApi::SnapVertex> m_snapEdgeMidpointCache;
+        mutable AZStd::vector<AzToolsFramework::ViewportSnapping::SnapVertex> m_snapEdgeMidpointCache;
         mutable bool m_snapEdgeMidpointCacheValid = false;
 
-        mutable AZStd::vector<SnapApi::SnapVertex> m_snapFaceCenterCache;
+        mutable AZStd::vector<AzToolsFramework::ViewportSnapping::SnapVertex> m_snapFaceCenterCache;
         mutable bool m_snapFaceCenterCacheValid = false;
         //!@}
 

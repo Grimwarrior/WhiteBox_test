@@ -5,8 +5,7 @@
  * tool that can be dragged: the vertex/edge/polygon modifiers, the transform sub-mode and the
  * draw-mode cube stamp.
  *
- * Every entry point is safe to call when no snapper gem is installed or snapping is switched
- * off - they simply report "no snap" and the caller keeps its original behaviour.
+ * Every entry point is safe to call when snapping is switched off - they simply report "no snap" and the caller keeps its original behaviour.
  *
  * SPDX-License-Identifier: Apache-2.0 OR MIT
  */
@@ -30,7 +29,7 @@ namespace WhiteBox
     //! Vertex snapping helpers shared by the White Box viewport tools.
     namespace SnapUtil
     {
-        //! Is the user's Snap to Vertex toggle on (and a snapper gem present).
+        //! Is the user's Snap to Vertex toggle on.
         //! Cheap - call it to skip snapping work entirely before building exclusion lists.
         bool SnappingActive();
 

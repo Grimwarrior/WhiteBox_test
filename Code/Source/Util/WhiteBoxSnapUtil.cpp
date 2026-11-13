@@ -21,7 +21,7 @@
 #include <AzToolsFramework/Maths/TransformUtils.h>
 #include <AzToolsFramework/Viewport/ViewportMessages.h>
 #include <AzToolsFramework/ViewportSelection/EditorSelectionUtil.h>
-#include <SnapApi/VertexSnapInterface.h>
+#include <AzToolsFramework/ViewportSnapping/ViewportSnapping.h>
 
 #include <limits>
 
@@ -47,7 +47,7 @@ namespace WhiteBox
 
         bool SnappingActive()
         {
-            return SnapApi::IsSnappingEnabled();
+            return AzToolsFramework::ViewportSnapping::IsSnappingEnabled();
         }
 
         //! See the note in the header - written by the component mode's mouse handler, read by
@@ -154,7 +154,7 @@ namespace WhiteBox
                 return AZStd::nullopt;
             }
 
-            SnapApi::SnapQueryConfig config;
+            AzToolsFramework::ViewportSnapping::SnapQueryConfig config;
             // Snapping one part of a mesh onto another part of the same mesh is a normal modelling
             // operation, so the owning entity stays in the query - only the dragged geometry itself
             // is excluded.
@@ -162,7 +162,7 @@ namespace WhiteBox
             config.m_includeExcludedEntity = true;
             config.m_excludeSourceIndices = excludeSourceIndices;
 
-            if (const auto snap = SnapApi::QuerySnapTarget(viewportId, cursor.value(), config))
+            if (const auto snap = AzToolsFramework::ViewportSnapping::QuerySnapTarget(viewportId, cursor.value(), config))
             {
                 return snap->m_worldPosition;
             }

@@ -1080,9 +1080,8 @@ namespace WhiteBox
         AzFramework::EntityDebugDisplayEventBus::Handler::BusConnect(entityId);
         AzToolsFramework::EditorComponentSelectionRequestsBus::Handler::BusConnect(entityId);
         AzToolsFramework::EditorVisibilityNotificationBus::Handler::BusConnect(entityId);
-        // Offer this mesh's vertices to the editor-wide vertex snapper. Connecting is harmless
-        // when no snapper gem is installed - nothing will ever call us.
-        SnapApi::VertexSourceRequestBus::Handler::BusConnect(entityId);
+        // Offer this mesh's vertices to the editor-wide vertex snapper.
+        AzToolsFramework::ViewportSnapping::ViewportSnapSourceRequestBus::Handler::BusConnect(entityId);
         AZ::TickBus::Handler::BusConnect();
 
         m_componentModeDelegate.ConnectWithSingleComponentMode<EditorWhiteBoxComponent, EditorWhiteBoxComponentMode>(
@@ -1156,7 +1155,7 @@ namespace WhiteBox
         m_authoring.reset();
         m_nonUniformScaleChangedHandler.Disconnect();
         AZ::TickBus::Handler::BusDisconnect();
-        SnapApi::VertexSourceRequestBus::Handler::BusDisconnect();
+        AzToolsFramework::ViewportSnapping::ViewportSnapSourceRequestBus::Handler::BusDisconnect();
         AzToolsFramework::EditorVisibilityNotificationBus::Handler::BusDisconnect();
         AzToolsFramework::EditorComponentSelectionRequestsBus::Handler::BusDisconnect();
         AzFramework::EntityDebugDisplayEventBus::Handler::BusDisconnect();

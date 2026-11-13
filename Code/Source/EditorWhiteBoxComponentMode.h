@@ -18,7 +18,7 @@
 #include <AzCore/std/smart_ptr/unique_ptr.h>
 #include <AzToolsFramework/ComponentMode/EditorBaseComponentMode.h>
 #include <AzToolsFramework/ViewportUi/ViewportUiRequestBus.h>
-#include <SnapApi/DragCancelBus.h>
+#include <AzToolsFramework/ViewportSnapping/ViewportDragCancelBus.h>
 #include <QPointer>
 #include <EditorWhiteBoxComponentModeBus.h>
 #include <EditorWhiteBoxComponentModeTypes.h>
@@ -56,7 +56,7 @@ namespace WhiteBox
         , private AZ::TransformNotificationBus::Handler
         , private EditorWhiteBoxComponentNotificationBus::Handler
         , public EditorWhiteBoxComponentModeRequestBus::Handler
-        , private SnapApi::DragCancelRequestBus::Handler
+        , private AzToolsFramework::ViewportSnapping::ViewportDragCancelRequestBus::Handler
     {
     public:
         AZ_CLASS_ALLOCATOR_DECL
@@ -147,8 +147,8 @@ namespace WhiteBox
         void OverrideKeyboardModifierQuery(const KeyboardModifierQueryFn& keyboardModifierQueryFn) override;
 
     private:
-        // SnapApi::DragCancelRequestBus ...
-        //! Right click during a drag. Dispatched from the snapper gem's viewport selection decorator,
+        // AzToolsFramework::ViewportSnapping::ViewportDragCancelRequestBus ...
+        //! Right click during a drag. Dispatched by the editor's viewport snapping drag handler,
         //! which sees the click before the manipulator manager swallows it.
         bool CancelActiveDrag() override;
 

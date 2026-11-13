@@ -104,15 +104,6 @@ if(PAL_TRAIT_BUILD_HOST_TOOLS)
                 Gem::${gem_name}.Static
                 3rdParty::OpenMesh # Needs to be public, so that the below .Editor gem module includes the lib.
                 3rdParty::Manifold # CSG boolean operations (Api::ApplyMeshBoolean). Public for the same reason as OpenMesh.
-                # Vertex snapping contract (headers only). Editor targets only - it must never
-                # reach ${gem_name}.Static or the runtime module, or an editor-only concern would
-                # be pulled into game builds.
-                #
-                # SnapApi contains no code, which is the point: White Box depends on the *contract*
-                # rather than on whichever gem implements it. Calls go out through EBus and
-                # AZ::Interface, so with no snapper installed this still builds and runs - the
-                # interface simply resolves to null and snapping reports "no target".
-                Gem::SnapApi.API
             PRIVATE
                 3rdParty::WhiteBox.v-hacd # Header-only convex decomposition for the Convex Parts collider.
                 3rdParty::OpenMeshTools # Decimater for the Triangle Mesh (Simplified) collider.

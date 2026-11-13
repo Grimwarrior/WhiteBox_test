@@ -23,7 +23,6 @@
         "Atom_RPI",
         "Atom_Feature_Common",
         "CommonFeaturesAtom",
-        "EditorPythonBindings",
-        "SnapApi"
+        "EditorPythonBindings"
     ]
 }

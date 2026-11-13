@@ -2,7 +2,7 @@
  * EditorWhiteBoxComponent - vertex snapping source.
  *
  * Publishes the mesh's vertices to the editor-wide vertex snapper provided by the
- * SnapApi contract (SnapApi::VertexSourceRequestBus). This is the "provider" half of
+ * editor's ViewportSnapping API (ViewportSnapSourceRequestBus). This is the "provider" half of
  * snapping; the "consumer" half lives in the viewport modifiers, which ask the snapper for
  * a target while a drag is in progress.
  *
@@ -176,7 +176,7 @@ namespace WhiteBox
     }
 
     void EditorWhiteBoxComponent::CollectSnapEdges(
-        const SnapApi::SnapQueryVolume& volume, AZStd::vector<SnapApi::SnapEdge>& out) const
+        const AzToolsFramework::ViewportSnapping::SnapQueryVolume& volume, AZStd::vector<AzToolsFramework::ViewportSnapping::SnapEdge>& out) const
     {
         AZ_PROFILE_FUNCTION(AzToolsFramework);
 
@@ -185,7 +185,7 @@ namespace WhiteBox
             RebuildSnapEdgeCache();
         }
 
-        for (const SnapApi::SnapEdge& edge : m_snapEdgeCache)
+        for (const AzToolsFramework::ViewportSnapping::SnapEdge& edge : m_snapEdgeCache)
         {
             if (volume.IntersectsSegment(edge.m_start, edge.m_end))
             {
@@ -195,7 +195,7 @@ namespace WhiteBox
     }
 
     void EditorWhiteBoxComponent::CollectSnapEdgeMidpoints(
-        const SnapApi::SnapQueryVolume& volume, AZStd::vector<SnapApi::SnapVertex>& out) const
+        const AzToolsFramework::ViewportSnapping::SnapQueryVolume& volume, AZStd::vector<AzToolsFramework::ViewportSnapping::SnapVertex>& out) const
     {
         AZ_PROFILE_FUNCTION(AzToolsFramework);
 
@@ -204,7 +204,7 @@ namespace WhiteBox
             RebuildSnapEdgeMidpointCache();
         }
 
-        for (const SnapApi::SnapVertex& midpoint : m_snapEdgeMidpointCache)
+        for (const AzToolsFramework::ViewportSnapping::SnapVertex& midpoint : m_snapEdgeMidpointCache)
         {
             if (volume.Contains(midpoint.m_worldPosition))
             {
@@ -214,7 +214,7 @@ namespace WhiteBox
     }
 
     void EditorWhiteBoxComponent::CollectSnapFaceCenters(
-        const SnapApi::SnapQueryVolume& volume, AZStd::vector<SnapApi::SnapVertex>& out) const
+        const AzToolsFramework::ViewportSnapping::SnapQueryVolume& volume, AZStd::vector<AzToolsFramework::ViewportSnapping::SnapVertex>& out) const
     {
         AZ_PROFILE_FUNCTION(AzToolsFramework);
 
@@ -223,7 +223,7 @@ namespace WhiteBox
             RebuildSnapFaceCenterCache();
         }
 
-        for (const SnapApi::SnapVertex& center : m_snapFaceCenterCache)
+        for (const AzToolsFramework::ViewportSnapping::SnapVertex& center : m_snapFaceCenterCache)
         {
             if (volume.Contains(center.m_worldPosition))
             {
@@ -233,7 +233,7 @@ namespace WhiteBox
     }
 
     void EditorWhiteBoxComponent::CollectSnapVertices(
-        const SnapApi::SnapQueryVolume& volume, AZStd::vector<SnapApi::SnapVertex>& out) const
+        const AzToolsFramework::ViewportSnapping::SnapQueryVolume& volume, AZStd::vector<AzToolsFramework::ViewportSnapping::SnapVertex>& out) const
     {
         AZ_PROFILE_FUNCTION(AzToolsFramework);
 
@@ -245,7 +245,7 @@ namespace WhiteBox
         // Tight loop over contiguous, already-transformed positions - no allocation, no EBus
         // traffic, no per-vertex API calls. The cone test rejects all but a handful, so the
         // caller only has to project those few into screen space.
-        for (const SnapApi::SnapVertex& vertex : m_snapVertexCache)
+        for (const AzToolsFramework::ViewportSnapping::SnapVertex& vertex : m_snapVertexCache)
         {
             if (volume.Contains(vertex.m_worldPosition))
             {

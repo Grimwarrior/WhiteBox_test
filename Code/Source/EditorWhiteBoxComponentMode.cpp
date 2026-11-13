@@ -100,7 +100,7 @@ namespace WhiteBox
         EditorWhiteBoxComponentModeRequestBus::Handler::BusConnect(entityComponentIdPair);
         AZ::TransformNotificationBus::Handler::BusConnect(entityComponentIdPair.GetEntityId());
         EditorWhiteBoxComponentNotificationBus::Handler::BusConnect(entityComponentIdPair);
-        SnapApi::DragCancelRequestBus::Handler::BusConnect();
+        AzToolsFramework::ViewportSnapping::ViewportDragCancelRequestBus::Handler::BusConnect();
 
         // default behavior for querying modifier keys (ask the QApplication)
         m_keyboardModifierQueryFn = []()
@@ -143,7 +143,7 @@ namespace WhiteBox
 
         RemoveSubModeSelectionCluster();
 
-        SnapApi::DragCancelRequestBus::Handler::BusDisconnect();
+        AzToolsFramework::ViewportSnapping::ViewportDragCancelRequestBus::Handler::BusDisconnect();
         EditorWhiteBoxComponentNotificationBus::Handler::BusDisconnect();
         AZ::TransformNotificationBus::Handler::BusDisconnect();
         EditorWhiteBoxComponentModeRequestBus::Handler::BusDisconnect();
