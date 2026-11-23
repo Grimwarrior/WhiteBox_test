@@ -215,6 +215,17 @@ namespace WhiteBox
         // layer list always reflects the latest edits.
         StoreLayer(m_layerRuntime.m_loadedIndex);
         m_rebuild.m_workingMeshUnwritten = false;
+
+        // The layer now holds the stream, and loading (DeserializeWhiteBox / LoadActiveLayer) refills the
+        // working copy from the active layer, so keeping it too would save every mesh twice. Only a
+        // component without layers (old data) loads from it. Mesh-asset White Boxes keep it: their
+        // serialize path does not rewrite it from the mesh.
+        const bool storedInLayer =
+            m_layerRuntime.m_loadedIndex >= 0 && m_layerRuntime.m_loadedIndex < static_cast<int>(m_layers.size());
+        if (storedInLayer && !m_editorMeshAsset->InUse())
+        {
+            m_whiteBoxData.clear();
+        }
     }
 
     void EditorWhiteBoxComponent::ExportToFile()

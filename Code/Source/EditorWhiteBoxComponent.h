@@ -1026,6 +1026,8 @@ namespace WhiteBox
         //! whatever the undo system or a level save serializes next is current.
         void PackRenderDataBlob();
         void PackBakedDataBlob();
+        //! Packs the render data blob and the baked data blob together (the baked one may refer to the other).
+        void PackRenderDataBlobs();
         //! Restore the live render data from the serialized blobs (on load, undo and redo).
         void UnpackRenderDataBlobs();
         //! UnpackRenderDataBlobs, but only when the live render data is empty and a blob is not - for

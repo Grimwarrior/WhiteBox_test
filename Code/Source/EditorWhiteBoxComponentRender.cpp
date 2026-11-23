@@ -805,13 +805,23 @@ namespace WhiteBox
 
     void EditorWhiteBoxComponent::PackRenderDataBlob()
     {
-        m_renderDataBlob = PackWhiteBoxRenderData({ &m_renderData });
+        PackRenderDataBlobs();
     }
 
     void EditorWhiteBoxComponent::PackBakedDataBlob()
     {
-        m_bakedDataBlob = PackWhiteBoxRenderData({ &m_bakedBaseRenderData, &m_bakedPhysicsBaseRenderData,
-                                                   &m_bakedBooleanRenderData, &m_bakedPhysicsBooleanRenderData });
+        PackRenderDataBlobs();
+    }
+
+    void EditorWhiteBoxComponent::PackRenderDataBlobs()
+    {
+        // Both blobs are packed together: the baked sets are usually the render data again (the base
+        // without a boolean, and its physics twin), and are stored as references to it, which is only
+        // sound when the render data they refer to was packed at the same moment.
+        m_renderDataBlob = PackWhiteBoxRenderData({ &m_renderData });
+        m_bakedDataBlob = PackWhiteBoxRenderData(
+            { &m_bakedBaseRenderData, &m_bakedPhysicsBaseRenderData, &m_bakedBooleanRenderData, &m_bakedPhysicsBooleanRenderData },
+            { &m_renderData });
     }
 
     void EditorWhiteBoxComponent::EnsureRenderDataUnpacked()
@@ -828,11 +838,12 @@ namespace WhiteBox
 
     void EditorWhiteBoxComponent::UnpackRenderDataBlobs()
     {
-        // Order must match PackRenderDataBlob / PackBakedDataBlob.
+        // Order must match PackRenderDataBlobs: the baked sets may refer to the render data.
         UnpackWhiteBoxRenderData(m_renderDataBlob, { &m_renderData });
         UnpackWhiteBoxRenderData(
             m_bakedDataBlob, { &m_bakedBaseRenderData, &m_bakedPhysicsBaseRenderData, &m_bakedBooleanRenderData,
-                               &m_bakedPhysicsBooleanRenderData });
+                               &m_bakedPhysicsBooleanRenderData },
+            { &m_renderData });
     }
 
     void EditorWhiteBoxComponent::OnTransformChanged(

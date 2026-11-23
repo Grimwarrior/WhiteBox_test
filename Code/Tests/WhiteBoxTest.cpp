@@ -5800,6 +5800,44 @@ namespace UnitTest
         }
     }
 
+    TEST_F(WhiteBoxTestFixture, RenderDataBlobStoresRepeatedSetsOnce)
+    {
+        namespace Api = WhiteBox::Api;
+        auto cube = Api::CreateWhiteBoxMesh();
+        Api::InitializeAsUnitCube(*cube);
+        const WhiteBox::WhiteBoxRenderData render = WhiteBox::CreateWhiteBoxRenderData(*cube, WhiteBox::WhiteBoxMaterial{});
+        ASSERT_FALSE(render.m_faces.empty());
+        WhiteBox::WhiteBoxRenderData moved = render;
+        moved.m_faces[0].m_v1.m_position += AZ::Vector3(1.0f, 0.0f, 0.0f);
+        const WhiteBox::WhiteBoxRenderData empty;
+
+        // The two copies of the reference and the repeat of an earlier set are stored as references;
+        // only the changed set is written out in full.
+        const auto single = WhiteBox::PackWhiteBoxRenderData({ &moved });
+        const auto blob = WhiteBox::PackWhiteBoxRenderData({ &render, &moved, &render, &moved, &empty }, { &render });
+        EXPECT_LT(blob.size(), single.size() + 64);
+
+        WhiteBox::WhiteBoxRenderData a, b, c, d, e;
+        ASSERT_TRUE(WhiteBox::UnpackWhiteBoxRenderData(blob, { &a, &b, &c, &d, &e }, { &render }));
+        for (const auto& [unpacked, source] : AZStd::vector<AZStd::pair<const WhiteBox::WhiteBoxRenderData*, const WhiteBox::WhiteBoxRenderData*>>{
+                 { &a, &render }, { &b, &moved }, { &c, &render }, { &d, &moved } })
+        {
+            ASSERT_EQ(unpacked->m_faces.size(), source->m_faces.size());
+            for (size_t i = 0; i < source->m_faces.size(); ++i)
+            {
+                EXPECT_TRUE(unpacked->m_faces[i].m_v1.m_position.IsClose(source->m_faces[i].m_v1.m_position));
+                EXPECT_TRUE(unpacked->m_faces[i].m_v3.m_position.IsClose(source->m_faces[i].m_v3.m_position));
+                EXPECT_TRUE(unpacked->m_faces[i].m_normal.IsClose(source->m_faces[i].m_normal));
+            }
+        }
+        EXPECT_TRUE(e.m_faces.empty());
+
+        // Without the referenced set the blob cannot be read, and nothing half-read is left behind.
+        WhiteBox::WhiteBoxRenderData lost;
+        EXPECT_FALSE(WhiteBox::UnpackWhiteBoxRenderData(blob, { &lost }));
+        EXPECT_TRUE(lost.m_faces.empty());
+    }
+
     TEST_F(WhiteBoxTestFixture, VertexBlendSurvivesLayerMergeAndFlip)
     {
         namespace Api = WhiteBox::Api;

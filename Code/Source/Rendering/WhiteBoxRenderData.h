@@ -78,12 +78,18 @@ namespace WhiteBox
     WhiteBoxFaces BuildCulledWhiteBoxFaces(const WhiteBoxFaces& sourceData);
 
     //! Packs render data sets into one byte blob, so serialization is a single string rather than a
-    //! prefab DOM node per triangle.
-    AZStd::vector<AZ::u8> PackWhiteBoxRenderData(const AZStd::vector<const WhiteBoxRenderData*>& renderDataSets);
+    //! prefab DOM node per triangle. A set identical to an earlier one in the blob, or to one of
+    //! @p references (sets the reader has already unpacked from elsewhere), is written as a reference
+    //! to it instead of a second copy of every face.
+    AZStd::vector<AZ::u8> PackWhiteBoxRenderData(
+        const AZStd::vector<const WhiteBoxRenderData*>& renderDataSets,
+        const AZStd::vector<const WhiteBoxRenderData*>& references = {});
 
     //! Unpacks a blob produced by PackWhiteBoxRenderData into @p renderDataSets, in the packed order.
+    //! @p references must be the sets passed to PackWhiteBoxRenderData, holding the same data they held then.
     //! Sets beyond the blob's contents (and every set when the blob is empty or malformed) are cleared.
     bool UnpackWhiteBoxRenderData(
-        const AZStd::vector<AZ::u8>& blob, const AZStd::vector<WhiteBoxRenderData*>& renderDataSets);
+        const AZStd::vector<AZ::u8>& blob, const AZStd::vector<WhiteBoxRenderData*>& renderDataSets,
+        const AZStd::vector<const WhiteBoxRenderData*>& references = {});
 
 } // namespace WhiteBox

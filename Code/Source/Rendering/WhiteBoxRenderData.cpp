@@ -105,7 +105,16 @@ namespace WhiteBox
 namespace
 {
     constexpr AZ::u32 RenderDataBlobMagic = 0x44524257; // 'WBRD'
-    constexpr AZ::u32 RenderDataBlobVersion = 2; //!< 2 adds the lightmap settings to the material; 1 still reads.
+    //! 2 adds the lightmap settings to the material; 3 lets a set refer to an identical earlier set or
+    //! reference instead of repeating it. 1 and 2 still read.
+    constexpr AZ::u32 RenderDataBlobVersion = 3;
+    //! Version 3: how each set is stored.
+    enum RenderDataSetKind : AZ::u8
+    {
+        SetKind_Inline = 0,    //!< the set's material and faces follow
+        SetKind_Earlier = 1,   //!< a u32 index of an identical earlier set in this blob follows
+        SetKind_Reference = 2, //!< a u32 index into the references passed to (un)pack follows
+    };
     constexpr AZ::u32 NoMaterialIndex = 0xFFFFFFFFu;
 
     // Per-face flag bits. Everything they gate is defaulted on the vast majority of faces, so leaving
@@ -337,32 +346,11 @@ namespace
 
 namespace WhiteBox
 {
-    AZStd::vector<AZ::u8> PackWhiteBoxRenderData(const AZStd::vector<const WhiteBoxRenderData*>& renderDataSets)
+    namespace
     {
-        AZStd::vector<AZ::u8> blob;
-
-        size_t totalFaces = 0;
-        for (const WhiteBoxRenderData* renderData : renderDataSets)
+        //! One set's material, material table and faces.
+        void BlobWriteSet(AZStd::vector<AZ::u8>& blob, const WhiteBoxRenderData& set)
         {
-            totalFaces += renderData ? renderData->m_faces.size() : 0;
-        }
-        if (totalFaces == 0)
-        {
-            return blob; // nothing baked - an empty blob round-trips to empty sets
-        }
-        // 109 bytes covers a face with no material override and default colours; the reserve only has
-        // to be close, a face that does carry them simply grows the vector once more.
-        blob.reserve(64 + totalFaces * 109);
-
-        BlobWrite(blob, RenderDataBlobMagic);
-        BlobWrite(blob, RenderDataBlobVersion);
-        BlobWrite(blob, aznumeric_cast<AZ::u32>(renderDataSets.size()));
-
-        const WhiteBoxRenderData empty;
-        for (const WhiteBoxRenderData* renderData : renderDataSets)
-        {
-            const WhiteBoxRenderData& set = renderData ? *renderData : empty;
-
             BlobWriteMaterial(blob, set.m_material);
 
             MaterialTable table;
@@ -437,11 +425,156 @@ namespace WhiteBox
             }
         }
 
+        //! Reads one set written by BlobWriteSet.
+        bool BlobReadSet(const AZStd::vector<AZ::u8>& blob, size_t& offset, WhiteBoxRenderData& set, const AZ::u32 version)
+        {
+            if (!BlobReadMaterial(blob, offset, set.m_material, version))
+            {
+                return false;
+            }
+
+            AZStd::vector<AZ::Data::Asset<AZ::RPI::MaterialAsset>> faceAssets;
+            if (!BlobReadAssetTable(blob, offset, faceAssets))
+            {
+                return false;
+            }
+
+            AZ::u32 faceCount = 0;
+            if (!BlobRead(blob, offset, faceCount))
+            {
+                return false;
+            }
+            set.m_faces.clear();
+            set.m_faces.reserve(faceCount);
+
+            for (AZ::u32 faceIndex = 0; faceIndex < faceCount; ++faceIndex)
+            {
+                WhiteBoxFace face;
+                AZ::u8 flags = 0;
+                if (!BlobRead(blob, offset, flags) || !BlobReadVector3(blob, offset, face.m_v1.m_position) ||
+                    !BlobReadVector2(blob, offset, face.m_v1.m_uv) ||
+                    !BlobReadVector3(blob, offset, face.m_v2.m_position) ||
+                    !BlobReadVector2(blob, offset, face.m_v2.m_uv) ||
+                    !BlobReadVector3(blob, offset, face.m_v3.m_position) ||
+                    !BlobReadVector2(blob, offset, face.m_v3.m_uv) ||
+                    !BlobReadVector3(blob, offset, face.m_normal))
+                {
+                    return false;
+                }
+                if ((flags & FaceFlag_Color) != 0 && !BlobReadVector4(blob, offset, face.m_color))
+                {
+                    return false;
+                }
+                if ((flags & FaceFlag_PaintColor) != 0 && !BlobRead(blob, offset, face.m_paintColor))
+                {
+                    return false;
+                }
+                if ((flags & FaceFlag_MaterialAsset) != 0)
+                {
+                    AZ::u32 materialIndex = NoMaterialIndex;
+                    if (!BlobRead(blob, offset, materialIndex) || materialIndex >= faceAssets.size())
+                    {
+                        return false;
+                    }
+                    face.m_materialAsset = faceAssets[materialIndex];
+                }
+                if ((flags & FaceFlag_CornerNormals) != 0 &&
+                    (!BlobReadVector3(blob, offset, face.m_v1.m_normal) || !BlobReadVector3(blob, offset, face.m_v2.m_normal) ||
+                     !BlobReadVector3(blob, offset, face.m_v3.m_normal)))
+                {
+                    return false;
+                }
+                if ((flags & FaceFlag_Blend) != 0 &&
+                    (!BlobReadVector3(blob, offset, face.m_v1.m_blend) || !BlobReadVector3(blob, offset, face.m_v2.m_blend) ||
+                     !BlobReadVector3(blob, offset, face.m_v3.m_blend)))
+                {
+                    return false;
+                }
+                set.m_faces.push_back(AZStd::move(face));
+            }
+            return true;
+        }
+    } // namespace
+
+    AZStd::vector<AZ::u8> PackWhiteBoxRenderData(
+        const AZStd::vector<const WhiteBoxRenderData*>& renderDataSets, const AZStd::vector<const WhiteBoxRenderData*>& references)
+    {
+        AZStd::vector<AZ::u8> blob;
+
+        size_t totalFaces = 0;
+        for (const WhiteBoxRenderData* renderData : renderDataSets)
+        {
+            totalFaces += renderData ? renderData->m_faces.size() : 0;
+        }
+        if (totalFaces == 0)
+        {
+            return blob; // nothing baked - an empty blob round-trips to empty sets
+        }
+
+        // Each set packed on its own first, so identical sets can be found by comparing bytes. A
+        // reference's bytes are only made when some set has the same face count as it.
+        const WhiteBoxRenderData empty;
+        AZStd::vector<AZStd::vector<AZ::u8>> packedSets(renderDataSets.size());
+        AZStd::vector<AZStd::vector<AZ::u8>> packedReferences(references.size());
+        AZStd::vector<bool> referencePacked(references.size(), false);
+        size_t total = 0;
+        for (size_t setIndex = 0; setIndex < renderDataSets.size(); ++setIndex)
+        {
+            BlobWriteSet(packedSets[setIndex], renderDataSets[setIndex] ? *renderDataSets[setIndex] : empty);
+            total += packedSets[setIndex].size();
+        }
+        blob.reserve(64 + total);
+
+        BlobWrite(blob, RenderDataBlobMagic);
+        BlobWrite(blob, RenderDataBlobVersion);
+        BlobWrite(blob, aznumeric_cast<AZ::u32>(renderDataSets.size()));
+
+        for (size_t setIndex = 0; setIndex < renderDataSets.size(); ++setIndex)
+        {
+            const AZStd::vector<AZ::u8>& bytes = packedSets[setIndex];
+            const size_t faces = renderDataSets[setIndex] ? renderDataSets[setIndex]->m_faces.size() : 0;
+            bool written = false;
+            // Empty sets are a few bytes: not worth a reference.
+            for (size_t earlier = 0; earlier < setIndex && faces > 0 && !written; ++earlier)
+            {
+                if (packedSets[earlier] == bytes)
+                {
+                    BlobWrite(blob, AZ::u8(SetKind_Earlier));
+                    BlobWrite(blob, aznumeric_cast<AZ::u32>(earlier));
+                    written = true;
+                }
+            }
+            for (size_t reference = 0; reference < references.size() && faces > 0 && !written; ++reference)
+            {
+                if (references[reference] == nullptr || references[reference]->m_faces.size() != faces)
+                {
+                    continue;
+                }
+                if (!referencePacked[reference])
+                {
+                    BlobWriteSet(packedReferences[reference], *references[reference]);
+                    referencePacked[reference] = true;
+                }
+                if (packedReferences[reference] == bytes)
+                {
+                    BlobWrite(blob, AZ::u8(SetKind_Reference));
+                    BlobWrite(blob, aznumeric_cast<AZ::u32>(reference));
+                    written = true;
+                }
+            }
+            if (!written)
+            {
+                BlobWrite(blob, AZ::u8(SetKind_Inline));
+                blob.insert(blob.end(), bytes.begin(), bytes.end());
+            }
+        }
+
         return blob;
     }
 
     bool UnpackWhiteBoxRenderData(
-        const AZStd::vector<AZ::u8>& blob, const AZStd::vector<WhiteBoxRenderData*>& renderDataSets)
+        const AZStd::vector<AZ::u8>& blob, const AZStd::vector<WhiteBoxRenderData*>& renderDataSets,
+        const AZStd::vector<const WhiteBoxRenderData*>& references)
     {
         const auto clearAll = [&renderDataSets]()
         {
@@ -469,88 +602,60 @@ namespace WhiteBox
             return false;
         }
 
+        // Where each set landed, so a later set can refer to it. Sets past the end of the caller's list
+        // still have to be read to stay in sync with the stream (a newer build may have packed more of
+        // them); they land in scratch storage.
+        AZStd::vector<AZStd::unique_ptr<WhiteBoxRenderData>> scratch;
+        AZStd::vector<const WhiteBoxRenderData*> landed;
+        landed.reserve(setCount);
         for (AZ::u32 setIndex = 0; setIndex < setCount; ++setIndex)
         {
-            // Sets past the end of the caller's list still have to be walked to stay in sync with the
-            // stream (a newer build may have packed more of them), they just have nowhere to land.
-            WhiteBoxRenderData scratch;
-            WhiteBoxRenderData& set = (setIndex < renderDataSets.size() && renderDataSets[setIndex] != nullptr)
-                ? *renderDataSets[setIndex]
-                : scratch;
+            WhiteBoxRenderData* target = setIndex < renderDataSets.size() ? renderDataSets[setIndex] : nullptr;
+            if (target == nullptr)
+            {
+                scratch.push_back(AZStd::make_unique<WhiteBoxRenderData>());
+                target = scratch.back().get();
+            }
 
-            if (!BlobReadMaterial(blob, offset, set.m_material, version))
+            AZ::u8 kind = SetKind_Inline;
+            if (version >= 3 && !BlobRead(blob, offset, kind))
             {
                 clearAll();
                 return false;
             }
-
-            AZStd::vector<AZ::Data::Asset<AZ::RPI::MaterialAsset>> faceAssets;
-            if (!BlobReadAssetTable(blob, offset, faceAssets))
+            bool read = false;
+            if (kind == SetKind_Inline)
             {
-                clearAll();
-                return false;
+                read = BlobReadSet(blob, offset, *target, version);
             }
-
-            AZ::u32 faceCount = 0;
-            if (!BlobRead(blob, offset, faceCount))
+            else
             {
-                clearAll();
-                return false;
-            }
-            set.m_faces.clear();
-            set.m_faces.reserve(faceCount);
-
-            for (AZ::u32 faceIndex = 0; faceIndex < faceCount; ++faceIndex)
-            {
-                WhiteBoxFace face;
-                AZ::u8 flags = 0;
-                if (!BlobRead(blob, offset, flags) || !BlobReadVector3(blob, offset, face.m_v1.m_position) ||
-                    !BlobReadVector2(blob, offset, face.m_v1.m_uv) ||
-                    !BlobReadVector3(blob, offset, face.m_v2.m_position) ||
-                    !BlobReadVector2(blob, offset, face.m_v2.m_uv) ||
-                    !BlobReadVector3(blob, offset, face.m_v3.m_position) ||
-                    !BlobReadVector2(blob, offset, face.m_v3.m_uv) ||
-                    !BlobReadVector3(blob, offset, face.m_normal))
+                AZ::u32 index = 0;
+                if (BlobRead(blob, offset, index))
                 {
-                    clearAll();
-                    return false;
-                }
-                if ((flags & FaceFlag_Color) != 0 && !BlobReadVector4(blob, offset, face.m_color))
-                {
-                    clearAll();
-                    return false;
-                }
-                if ((flags & FaceFlag_PaintColor) != 0 && !BlobRead(blob, offset, face.m_paintColor))
-                {
-                    clearAll();
-                    return false;
-                }
-                if ((flags & FaceFlag_MaterialAsset) != 0)
-                {
-                    AZ::u32 materialIndex = NoMaterialIndex;
-                    if (!BlobRead(blob, offset, materialIndex) || materialIndex >= faceAssets.size())
+                    const WhiteBoxRenderData* source = nullptr;
+                    if (kind == SetKind_Earlier && index < landed.size())
                     {
-                        clearAll();
-                        return false;
+                        source = landed[index];
                     }
-                    face.m_materialAsset = faceAssets[materialIndex];
+                    else if (kind == SetKind_Reference && index < references.size())
+                    {
+                        source = references[index];
+                    }
+                    if (source != nullptr)
+                    {
+                        *target = *source;
+                        read = true;
+                    }
                 }
-                if ((flags & FaceFlag_CornerNormals) != 0 &&
-                    (!BlobReadVector3(blob, offset, face.m_v1.m_normal) || !BlobReadVector3(blob, offset, face.m_v2.m_normal) ||
-                     !BlobReadVector3(blob, offset, face.m_v3.m_normal)))
-                {
-                    clearAll();
-                    return false;
-                }
-                if ((flags & FaceFlag_Blend) != 0 &&
-                    (!BlobReadVector3(blob, offset, face.m_v1.m_blend) || !BlobReadVector3(blob, offset, face.m_v2.m_blend) ||
-                     !BlobReadVector3(blob, offset, face.m_v3.m_blend)))
-                {
-                    clearAll();
-                    return false;
-                }
-                set.m_faces.push_back(AZStd::move(face));
             }
+            if (!read)
+            {
+                AZ_Warning("White Box", false, "Baked render data blob is not readable - it will be rebuilt.");
+                clearAll();
+                return false;
+            }
+            landed.push_back(target);
         }
 
         return true;
