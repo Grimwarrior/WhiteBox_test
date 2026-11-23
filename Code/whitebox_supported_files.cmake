@@ -10,6 +10,7 @@ set(FILES
     Include/WhiteBox/WhiteBoxBus.h
     Include/WhiteBox/WhiteBoxComponentBus.h
     Include/WhiteBox/WhiteBoxColliderBus.h
+    Include/WhiteBox/WhiteBoxStaircase.h
     Source/WhiteBoxComponent.cpp
     Source/WhiteBoxComponent.h
     Source/WhiteBoxSystemComponent.cpp

@@ -35,6 +35,7 @@
 #include <AzToolsFramework/ViewportSelection/EditorSelectionUtil.h>
 #include <WhiteBox/EditorWhiteBoxComponentBus.h>
 #include <WhiteBox/WhiteBoxToolApi.h>
+#include <WhiteBox/WhiteBoxStaircase.h>
 #include <AzToolsFramework/API/ToolsApplicationAPI.h>
 #include <AzToolsFramework/ComponentMode/EditorComponentModeBus.h>
 
@@ -413,119 +414,36 @@ namespace WhiteBox
         return ring;
     }
 
-    // Build a watertight stepped "staircase" solid that rises along +v (the drawn
-    // footprint's second axis) and spans the vertical range [baseUp, topUp].
-    //
-    // Unlike a naive stack of boxes, only the OUTER shell is emitted - bottom, back,
-    // each step's tread + riser, and two stepped side caps - so there are no internal
-    // walls between steps and the result reads as one merged solid. Every vertex lies
-    // on an (N+1) x (N+1) grid and is shared between faces (created on demand), which
-    // also avoids T-junctions, keeping the topology clean and manifold.
     void Detail::BuildStaircaseSolid(
         WhiteBoxMesh& mesh, const AZ::Transform& localFromWorld,
         const AZ::Vector3& center, const AZ::Vector3& uAxis, const AZ::Vector3& vAxis, const AZ::Vector3& up,
         const float baseUp, const float topUp, const int stepsIn)
     {
-        const int N = AZ::GetClamp(stepsIn, 1, 256);
-
+        const int count = AZ::GetClamp(stepsIn, 1, 256);
         const AZ::Vector3 origin = center - uAxis * 0.5f - vAxis * 0.5f + up * baseUp;
-        const float totalRise = topUp - baseUp;                 // signed: follows the pull direction
-        const float signR = (totalRise >= 0.0f) ? 1.0f : -1.0f; // up/down orientation of the steps
-
-        const AZ::Vector3 uHat  = uAxis.GetNormalizedSafe();
-        const AZ::Vector3 vHat  = vAxis.GetNormalizedSafe();
-        const AZ::Vector3 upHat = up.GetNormalizedSafe();
-
-        // Shared vertex grid, indexed by (uSide, vi, hi) and created on demand.
-        AZStd::vector<AZ::Vector3> localPos;
-        AZStd::vector<Api::VertexHandle> vh;
-        const int stride = N + 1;
-        AZStd::vector<int> vertIndex(static_cast<size_t>(2) * stride * stride, -1);
-
-        const auto worldPos = [&](int uSide, int vi, int hi) -> AZ::Vector3
-        {
-            return origin + uAxis * static_cast<float>(uSide)
-                + vAxis * (static_cast<float>(vi) / static_cast<float>(N))
-                + up * (totalRise * static_cast<float>(hi) / static_cast<float>(N));
-        };
-        const auto getV = [&](int uSide, int vi, int hi) -> AZ::u32
-        {
-            const int key = (uSide * stride + vi) * stride + hi;
-            if (vertIndex[key] < 0)
+        const AZ::Vector3 riseAxis = up * (topUp - baseUp);
+        const bool mirrored = uAxis.Cross(vAxis).Dot(riseAxis) * localFromWorld.GetUniformScale() < 0.0f;
+        BuildStaircaseShell(count, 0.0f, mirrored,
+            [count](size_t i)
             {
-                const AZ::Vector3 local = localFromWorld.TransformPoint(worldPos(uSide, vi, hi));
-                vertIndex[key] = aznumeric_cast<int>(vh.size());
-                localPos.push_back(local);
-                vh.push_back(Api::AddVertex(mesh, local));
-            }
-            return aznumeric_cast<AZ::u32>(vertIndex[key]);
-        };
-
-        // Add one convex polygon (ordered grid points) wound so its outward normal
-        // matches @p outwardWorld. Fan-triangulated, emitted as a single white box
-        // polygon so the internal triangulation edges are not shown.
-        const auto addPoly =
-            [&](const AZStd::vector<AZStd::array<int, 3>>& pts, const AZ::Vector3& outwardWorld)
-        {
-            AZStd::vector<AZ::u32> loop;
-            loop.reserve(pts.size());
-            for (const auto& p : pts)
+                const float fraction = static_cast<float>(i + 1) / static_cast<float>(count);
+                return StairTread{ fraction, fraction };
+            },
+            [&](int side, float run, float height)
             {
-                loop.push_back(getV(p[0], p[1], p[2]));
-            }
-            const AZ::Vector3 a = localPos[loop[0]];
-            const AZ::Vector3 b = localPos[loop[1]];
-            const AZ::Vector3 c = localPos[loop[2]];
-            const AZ::Vector3 nrm = (b - a).Cross(c - a);
-            const AZ::Vector3 outLocal = AzToolsFramework::TransformDirectionNoScaling(localFromWorld, outwardWorld);
-            const bool flip = nrm.Dot(outLocal) < 0.0f;
-
-            Api::FaceVertHandlesList faces;
-            faces.reserve(loop.size() - 2);
-            for (size_t i = 1; i + 1 < loop.size(); ++i)
+                return Api::AddVertex(mesh, localFromWorld.TransformPoint(
+                    origin + uAxis * static_cast<float>(side) + vAxis * run + riseAxis * height));
+            },
+            [&](const auto& triangles)
             {
-                Api::VertexHandle v0 = vh[loop[0]];
-                Api::VertexHandle v1 = vh[loop[i]];
-                Api::VertexHandle v2 = vh[loop[i + 1]];
-                if (flip)
+                Api::FaceVertHandlesList faces;
+                faces.reserve(triangles.size());
+                for (const auto& t : triangles)
                 {
-                    AZStd::swap(v1, v2);
+                    faces.push_back(Api::FaceVertHandles{ { t[0], t[1], t[2] } });
                 }
-                faces.push_back(Api::FaceVertHandles{ { v0, v1, v2 } });
-            }
-            Api::AddPolygon(mesh, faces);
-        };
-
-        for (int i = 0; i < N; ++i)
-        {
-            // Stepped side caps. The left edge of each cap (i >= 1) is split at (i,i)
-            // so it matches the neighbouring cap column below + the riser above (no
-            // T-junction). Ordered from the bottom-right corner so the fan never makes
-            // a degenerate (collinear) triangle.
-            AZStd::vector<AZStd::array<int, 3>> capL, capR;
-            if (i == 0)
-            {
-                capL = { {0, 1, 0}, {0, 1, 1}, {0, 0, 1}, {0, 0, 0} };
-                capR = { {1, 1, 0}, {1, 1, 1}, {1, 0, 1}, {1, 0, 0} };
-            }
-            else
-            {
-                capL = { {0, i + 1, 0}, {0, i + 1, i + 1}, {0, i, i + 1}, {0, i, i}, {0, i, 0} };
-                capR = { {1, i + 1, 0}, {1, i + 1, i + 1}, {1, i, i + 1}, {1, i, i}, {1, i, 0} };
-            }
-            addPoly(capL, -uHat);
-            addPoly(capR, uHat);
-
-            // Bottom slab under this column (outward away from the steps).
-            addPoly({ {0, i, 0}, {1, i, 0}, {1, i + 1, 0}, {0, i + 1, 0} }, upHat * (-signR));
-            // Tread (the top surface of this step).
-            addPoly({ {0, i, i + 1}, {1, i, i + 1}, {1, i + 1, i + 1}, {0, i + 1, i + 1} }, upHat * signR);
-            // Riser (the vertical front face of this step).
-            addPoly({ {0, i, i}, {1, i, i}, {1, i, i + 1}, {0, i, i + 1} }, -vHat);
-        }
-
-        // Back face (rear of the tallest step).
-        addPoly({ {0, N, 0}, {1, N, 0}, {1, N, N}, {0, N, N} }, vHat);
+                Api::AddPolygon(mesh, faces);
+            });
     }
 
     // Build a UV ellipsoid ("sphere") inscribed in the drawn footprint: in-plane
