@@ -43,4 +43,6 @@ set(FILES
     Source/Rendering/Atom/WhiteBoxBuffer.h
     Source/Util/WhiteBoxMathUtil.h
     Source/Util/WhiteBoxMathUtil.cpp
+    Source/Util/WhiteBoxStoredBytes.h
+    Source/Util/WhiteBoxStoredBytes.cpp
 )

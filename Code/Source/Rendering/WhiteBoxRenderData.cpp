@@ -8,6 +8,7 @@
 
 #include "WhiteBoxRenderData.h"
 #include "Util/WhiteBoxMathUtil.h"
+#include "Util/WhiteBoxStoredBytes.h"
 
 #include <AzCore/Casting/numeric_cast.h>
 #include <AzCore/Debug/Trace.h>
@@ -517,13 +518,10 @@ namespace WhiteBox
         AZStd::vector<AZStd::vector<AZ::u8>> packedSets(renderDataSets.size());
         AZStd::vector<AZStd::vector<AZ::u8>> packedReferences(references.size());
         AZStd::vector<bool> referencePacked(references.size(), false);
-        size_t total = 0;
         for (size_t setIndex = 0; setIndex < renderDataSets.size(); ++setIndex)
         {
             BlobWriteSet(packedSets[setIndex], renderDataSets[setIndex] ? *renderDataSets[setIndex] : empty);
-            total += packedSets[setIndex].size();
         }
-        blob.reserve(64 + total);
 
         BlobWrite(blob, RenderDataBlobMagic);
         BlobWrite(blob, RenderDataBlobVersion);
@@ -569,11 +567,12 @@ namespace WhiteBox
             }
         }
 
+        CompressStoredBytes(blob);
         return blob;
     }
 
     bool UnpackWhiteBoxRenderData(
-        const AZStd::vector<AZ::u8>& blob, const AZStd::vector<WhiteBoxRenderData*>& renderDataSets,
+        const AZStd::vector<AZ::u8>& stored, const AZStd::vector<WhiteBoxRenderData*>& renderDataSets,
         const AZStd::vector<const WhiteBoxRenderData*>& references)
     {
         const auto clearAll = [&renderDataSets]()
@@ -588,6 +587,13 @@ namespace WhiteBox
         };
 
         clearAll();
+        AZStd::vector<AZ::u8> expanded;
+        if (!ExpandStoredBytes(stored, expanded))
+        {
+            AZ_Warning("White Box", false, "Compressed render data is unreadable - it will be rebuilt.");
+            return false;
+        }
+        const auto& blob = expanded.empty() ? stored : expanded;
         if (blob.empty())
         {
             return true; // nothing was baked, which is a valid state rather than a failure

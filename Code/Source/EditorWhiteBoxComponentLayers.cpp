@@ -14,6 +14,7 @@
 #include "SubComponentModes/EditorWhiteBoxDefaultModeBus.h"
 #include "SubComponentModes/EditorWhiteBoxTransformModeBus.h"
 #include "Util/WhiteBoxMeshUtil.h"
+#include "Util/WhiteBoxStoredBytes.h"
 #include "Util/WhiteBoxVoxelUtil.h"
 #include "Viewport/WhiteBoxShapeBuilders.h"
 
@@ -160,7 +161,7 @@ namespace WhiteBox
         WhiteBoxLayer& layer = m_layers[index];
         // Direct topology/vertex/paint edits implicitly bake a live bevel. Never
         // regenerate over hand edits from an obsolete source snapshot.
-        if (!layer.m_bevelSource.empty() && layer.m_freeformData != m_whiteBoxData)
+        if (!layer.m_bevelSource.empty() && !StoredBytesEqual(layer.m_freeformData, m_whiteBoxData))
         {
             layer.m_bevelSource.clear();
             layer.m_bevelEdges.clear();
@@ -200,7 +201,7 @@ namespace WhiteBox
         if (readResult == Api::ReadResult::Full && !layer.m_bevelSource.empty())
         {
             // OpenMesh may reorder connectivity on read; re-baseline so StoreLayer does not see an edit.
-            if (Api::WriteMesh(*m_whiteBox, m_whiteBoxData)) { layer.m_freeformData = m_whiteBoxData; }
+            if (Api::WriteMeshForStorage(*m_whiteBox, m_whiteBoxData)) { layer.m_freeformData = m_whiteBoxData; }
         }
         m_gridMesh = Api::CreateWhiteBoxMesh();
         Api::ReadMesh(*m_gridMesh, m_voxel.m_legacyGridData);
@@ -411,7 +412,7 @@ namespace WhiteBox
             layer.m_paramCeiling, layer.m_paramDoorFrame, layer.m_paramArchHeight,
             layer.m_paramInnerRadius, layer.m_paramSweepAngle, layer.m_paramStepsByHeight, layer.m_paramStepHeight,
             layer.m_paramHoleRatio, layer.m_paramTubeSides);
-        Api::WriteMesh(*mesh, layer.m_freeformData);
+        Api::WriteMeshForStorage(*mesh, layer.m_freeformData);
 
         m_layers.push_back(AZStd::move(layer));
         m_activeLayerIndex = static_cast<int>(m_layers.size()) - 1;
@@ -449,7 +450,7 @@ namespace WhiteBox
             stored.m_wallThickness, stored.m_cavityGap, stored.m_floor, stored.m_ceiling, stored.m_doorFrame,
             stored.m_archHeight, stored.m_innerRadius, stored.m_sweepAngle, stored.m_stepsByHeight,
             stored.m_stepHeight, stored.m_holeRatio, stored.m_tubeSides);
-        Api::WriteMesh(*mesh, m_layers[index].m_freeformData);
+        Api::WriteMeshForStorage(*mesh, m_layers[index].m_freeformData);
 
         m_activeLayerIndex = index;
         m_layerRuntime.m_lastCount = static_cast<int>(m_layers.size());
@@ -576,7 +577,7 @@ namespace WhiteBox
         if (!updating)
         {
             if (edges.empty()) { error = "Select edges or polygons in Transform mode."; return false; }
-            if (!Api::WriteMesh(*GetWhiteBoxMesh(), source) || Api::ReadMesh(*result, source) != Api::ReadResult::Full)
+            if (!Api::WriteMeshForStorage(*GetWhiteBoxMesh(), source) || Api::ReadMesh(*result, source) != Api::ReadResult::Full)
             {
                 error = "Could not save the bevel source."; return false;
             }
@@ -628,7 +629,7 @@ namespace WhiteBox
         layer.m_bevelSegments = params.m_segments;
         layer.m_bevelProfile = params.m_profile;
         // Keep StoreLayer's direct-edit detection from baking our own update.
-        Api::WriteMesh(*GetWhiteBoxMesh(), layer.m_freeformData);
+        Api::WriteMeshForStorage(*GetWhiteBoxMesh(), layer.m_freeformData);
         SerializeWhiteBox();
         RefreshComponentMode();
         if (updating) { RebuildWhiteBoxDeferred(); }
@@ -687,7 +688,7 @@ namespace WhiteBox
         }
         else
         {
-            Api::WriteMesh(*mesh, layer.m_freeformData);
+            Api::WriteMeshForStorage(*mesh, layer.m_freeformData);
         }
         m_layerRuntime.m_meshCache.erase(layer.m_id); // the cached display mesh is stale now
         if (commit)
@@ -774,7 +775,7 @@ namespace WhiteBox
         layer.m_position = source.m_position;
         layer.m_rotation = source.m_rotation;
         layer.m_scale = source.m_scale;
-        Api::WriteMesh(*detached, layer.m_freeformData);
+        Api::WriteMeshForStorage(*detached, layer.m_freeformData);
         m_layers.insert(m_layers.begin() + m_activeLayerIndex + 1, AZStd::move(layer));
 
         ++m_activeLayerIndex;
@@ -985,8 +986,8 @@ namespace WhiteBox
         m_voxel.m_cells.clear();
         m_voxel.m_sizes.clear();
         m_voxel.m_legacyMerged.clear();
-        Api::WriteMesh(*m_whiteBox, m_whiteBoxData);
-        Api::WriteMesh(*m_gridMesh, m_voxel.m_legacyGridData);
+        Api::WriteMeshForStorage(*m_whiteBox, m_whiteBoxData);
+        Api::WriteMeshForStorage(*m_gridMesh, m_voxel.m_legacyGridData);
         m_voxel.m_legacyGridMergedData.clear();
         m_layerRuntime.m_loadedIndex = -1;
         m_layerRuntime.m_loadedId = 0;
@@ -1037,7 +1038,7 @@ namespace WhiteBox
             AppendMesh(*freeform, *grid);
         }
         freeform = ApplyLayerModifiers(AZStd::move(freeform), layer);
-        Api::WriteMesh(*freeform, layer.m_freeformData);
+        Api::WriteMeshForStorage(*freeform, layer.m_freeformData);
         layer.m_gridData.clear();
         layer.m_gridMergedData.clear();
         layer.m_voxelCells.clear();
@@ -1098,7 +1099,7 @@ namespace WhiteBox
         }
         ApplyTransformToMesh(*freeform, layer.m_position, layer.m_rotation, layer.m_scale);
 
-        Api::WriteMesh(*freeform, layer.m_freeformData);
+        Api::WriteMeshForStorage(*freeform, layer.m_freeformData);
         layer.m_gridData.clear();
         layer.m_gridMergedData.clear();
         layer.m_voxelCells.clear();

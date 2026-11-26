@@ -935,6 +935,9 @@ namespace WhiteBox
 
         bool WriteMesh(const WhiteBoxMesh& whiteBox, WhiteBoxMeshStream& output);
 
+        //! Write the component/undo representation. ReadMesh accepts this and raw OpenMesh bytes.
+        bool WriteMeshForStorage(const WhiteBoxMesh& whiteBox, WhiteBoxMeshStream& output);
+
         //! Clones the white box mesh object into a new mesh.
         //! @return Will return null if any error was encountered during serialization, otherwise the cloned mesh.
         WhiteBoxMeshPtr CloneMesh(const WhiteBoxMesh& whiteBox);

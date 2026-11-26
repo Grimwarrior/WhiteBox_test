@@ -8,6 +8,7 @@
 
 #include <cmath>
 #include "Util/WhiteBoxMathUtil.h"
+#include "Util/WhiteBoxStoredBytes.h"
 #include "Util/WhiteBoxTextureUtil.h"
 
 #include <AzCore/Console/Console.h>
@@ -4503,6 +4504,16 @@ namespace WhiteBox
             return false;
         }
 
+        bool WriteMeshForStorage(const WhiteBoxMesh& whiteBox, WhiteBoxMeshStream& output)
+        {
+            if (!WriteMesh(whiteBox, output))
+            {
+                return false;
+            }
+            CompressStoredBytes(output);
+            return true;
+        }
+
         ReadResult ReadMesh(WhiteBoxMesh& whiteBox, const WhiteBoxMeshStream& input)
         {
             AZ_PROFILE_FUNCTION(AzToolsFramework);
@@ -4512,12 +4523,13 @@ namespace WhiteBox
                 return ReadResult::Empty;
             }
 
-            std::string inputStr;
-            inputStr.reserve(input.size());
-            AZStd::copy(input.cbegin(), input.cend(), AZStd::back_inserter(inputStr));
-
-            std::stringstream whiteBoxStream;
-            whiteBoxStream.str(inputStr);
+            WhiteBoxMeshStream expanded;
+            if (!ExpandStoredBytes(input, expanded))
+            {
+                return ReadResult::Error;
+            }
+            const auto& bytes = expanded.empty() ? input : expanded;
+            std::istringstream whiteBoxStream(std::string(reinterpret_cast<const char*>(bytes.data()), bytes.size()));
             whiteBoxStream >> std::noskipws;
 
             return ReadMesh(whiteBox, whiteBoxStream);

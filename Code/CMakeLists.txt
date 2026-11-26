@@ -45,6 +45,8 @@ ly_add_target(
             Gem::Atom_Feature_Common.Public
             Gem::CommonFeaturesAtom.Static
             Legacy::CryCommon
+        PRIVATE
+            3rdParty::ZLIB
 )
 
 ly_add_target(

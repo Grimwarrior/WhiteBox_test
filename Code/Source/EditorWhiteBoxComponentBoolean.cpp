@@ -148,7 +148,7 @@ namespace WhiteBox
             Api::ReadMesh(*freeform, stream);
 
             m_gridMesh = Api::CreateWhiteBoxMesh();
-            Api::WriteMesh(*m_gridMesh, m_voxel.m_legacyGridData);
+            Api::WriteMeshForStorage(*m_gridMesh, m_voxel.m_legacyGridData);
             m_voxel.m_legacyGridMergedData.clear();
             m_voxel.m_cells.clear();
             m_voxel.m_sizes.clear();

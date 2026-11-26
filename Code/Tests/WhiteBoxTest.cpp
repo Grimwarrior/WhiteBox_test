@@ -17,6 +17,7 @@
 #include "Util/WhiteBoxGltfExport.h"
 #include "Util/WhiteBoxUvOps.h"
 #include "Util/WhiteBoxMeshUtil.h"
+#include "Util/WhiteBoxStoredBytes.h"
 #include "Viewport/WhiteBoxShapeBuilders.h"
 #include "Core/WhiteBoxCsgCore.h"
 #include "Rendering/WhiteBoxLightmapUv.h"
@@ -5797,6 +5798,51 @@ namespace UnitTest
         {
             EXPECT_TRUE(unpacked.m_faces[i].m_v1.m_blend.IsClose(renderData.m_faces[i].m_v1.m_blend));
             EXPECT_TRUE(unpacked.m_faces[i].m_v3.m_blend.IsClose(renderData.m_faces[i].m_v3.m_blend));
+        }
+    }
+
+    TEST_F(WhiteBoxTestFixture, StoredMeshPreservesOpenMeshBytesAndRejectsDamagedStreams)
+    {
+        namespace Api = WhiteBox::Api;
+        auto mesh = WhiteBox::BuildParametricShapeMesh(WhiteBox::DrawShapeType::Staircase, 1.5f, 4.0f, 2.0f, 16, 12);
+        Api::WhiteBoxMeshStream raw, packed, expanded;
+        ASSERT_TRUE(Api::WriteMesh(*mesh, raw));
+        ASSERT_TRUE(Api::WriteMeshForStorage(*mesh, packed));
+        ASSERT_LT(packed.size(), raw.size());
+        ASSERT_TRUE(WhiteBox::ExpandStoredBytes(packed, expanded));
+        EXPECT_EQ(expanded, raw);
+        EXPECT_TRUE(WhiteBox::StoredBytesEqual(raw, packed));
+        auto restored = Api::CreateWhiteBoxMesh();
+        EXPECT_EQ(Api::ReadMesh(*restored, packed), Api::ReadResult::Full);
+        EXPECT_EQ(Api::MeshFaceCount(*restored), Api::MeshFaceCount(*mesh));
+        EXPECT_EQ(Api::ReadMesh(*restored, raw), Api::ReadResult::Full);
+
+        packed.push_back(0);
+        EXPECT_EQ(Api::ReadMesh(*restored, packed), Api::ReadResult::Error);
+        packed.pop_back();
+        packed.back() ^= 1;
+        EXPECT_FALSE(WhiteBox::ExpandStoredBytes(packed, expanded));
+        EXPECT_TRUE(expanded.empty());
+    }
+
+    TEST_F(WhiteBoxTestFixture, StoredRenderDataReadsRawAndCompressedForms)
+    {
+        namespace Api = WhiteBox::Api;
+        auto cube = Api::CreateWhiteBoxMesh();
+        Api::InitializeAsUnitCube(*cube);
+        auto render = WhiteBox::CreateWhiteBoxRenderData(*cube, WhiteBox::WhiteBoxMaterial{});
+        const auto cubeFaces = render.m_faces;
+        render.m_faces.insert(render.m_faces.end(), cubeFaces.begin(), cubeFaces.end());
+        const auto packed = WhiteBox::PackWhiteBoxRenderData({ &render });
+        AZStd::vector<AZ::u8> raw;
+        ASSERT_TRUE(WhiteBox::ExpandStoredBytes(packed, raw));
+        ASSERT_GT(raw.size(), packed.size());
+        const AZStd::vector<AZ::u8>* encodings[] = { &raw, &packed };
+        for (const auto* bytes : encodings)
+        {
+            WhiteBox::WhiteBoxRenderData restored;
+            ASSERT_TRUE(WhiteBox::UnpackWhiteBoxRenderData(*bytes, { &restored }));
+            EXPECT_EQ(WhiteBox::PackWhiteBoxRenderData({ &restored }), packed);
         }
     }
 

@@ -110,7 +110,7 @@ namespace WhiteBox
                 {
                     Api::CalculateNormals(*freeform);
                     Api::CalculatePlanarUVs(*freeform);
-                    Api::WriteMesh(*freeform, migrate.m_freeformData);
+                    Api::WriteMeshForStorage(*freeform, migrate.m_freeformData);
                 }
                 migrate.m_gridData.clear();
                 migrate.m_gridMergedData.clear();
@@ -170,7 +170,7 @@ namespace WhiteBox
     {
         if (m_editorMeshAsset->Loaded())
         {
-            Api::WriteMesh(*m_editorMeshAsset->GetWhiteBoxMesh(), m_whiteBoxData);
+            Api::WriteMeshForStorage(*m_editorMeshAsset->GetWhiteBoxMesh(), m_whiteBoxData);
         }
     }
 
@@ -182,13 +182,13 @@ namespace WhiteBox
         }
         else
         {
-            Api::WriteMesh(*m_whiteBox, m_whiteBoxData);
+            Api::WriteMeshForStorage(*m_whiteBox, m_whiteBoxData);
         }
 
         // The stamp/grid layer is component-local, persist it alongside the freeform mesh.
         if (m_gridMesh)
         {
-            Api::WriteMesh(*m_gridMesh, m_voxel.m_legacyGridData);
+            Api::WriteMeshForStorage(*m_gridMesh, m_voxel.m_legacyGridData);
         }
 
         // If there are no layers yet but the working mesh now has geometry (a draw/stamp into an
